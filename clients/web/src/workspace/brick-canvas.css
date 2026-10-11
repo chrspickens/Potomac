@@ -1,0 +1,155 @@
+/* Tableau-like layout affordances for the workspace editor. */
+.brick-grid.is-editing {
+  --brick-grid-guide: rgb(117 164 196 / 8%);
+  --brick-grid-guide-strong: rgb(117 164 196 / 13%);
+  background-color: rgb(9 22 33 / 35%);
+  background-image:
+    linear-gradient(to right, var(--brick-grid-guide) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--brick-grid-guide) 1px, transparent 1px),
+    linear-gradient(to right, var(--brick-grid-guide-strong) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--brick-grid-guide-strong) 1px, transparent 1px);
+  background-size: calc((100% + 10px) / 12) 100%, 100% 100px,
+    calc((100% + 10px) / 12) 100%, 100% 100px;
+  background-position: 0 0, 0 0, calc((100% + 10px) / 12 - 1px) 0, 0 99px;
+  border: 1px solid rgb(74 117 148 / 22%);
+  border-radius: 10px;
+  isolation: isolate;
+  padding: 8px;
+}
+
+.brick-grid.is-editing .brick {
+  position: relative;
+  transition: box-shadow 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+
+.brick-grid.is-editing .brick:hover {
+  border-color: #426986;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 25%), 0 0 0 1px rgb(82 168 249 / 20%);
+}
+
+.brick-grid.is-editing .brick.is-dragging {
+  z-index: 3;
+  opacity: 0.82;
+  border-color: #52a8f9;
+  box-shadow: 0 14px 34px rgb(0 0 0 / 42%), 0 0 0 2px rgb(82 168 249 / 55%);
+  cursor: grabbing;
+}
+
+.brick-grid.is-editing .brick.is-resizing {
+  z-index: 2;
+  border-color: #75d5ef;
+  box-shadow: 0 0 0 2px rgb(117 213 239 / 35%);
+}
+
+.brick-grid.is-editing .brick.drag-invalid {
+  border-color: #e4777d;
+  box-shadow: 0 0 0 2px rgb(228 119 125 / 42%);
+}
+
+.brick-drag-handle,
+.brick-resize-handle {
+  display: none;
+}
+
+.brick-grid.is-editing .brick-drag-handle {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  margin: -5px 0 -5px -7px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #789bb4;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.brick-grid.is-editing .brick-drag-handle::before {
+  content: "⠿";
+  font-size: 19px;
+  line-height: 1;
+}
+
+.brick-grid.is-editing .brick-drag-handle:hover {
+  color: #b9e2ff;
+  border-color: #31506a;
+  background: #172a3c;
+}
+
+.brick-grid.is-editing .brick-drag-handle:active,
+.brick-grid.is-editing .brick-drag-handle[aria-pressed="true"] {
+  cursor: grabbing;
+  color: #d8f0ff;
+  background: #1d4261;
+}
+
+.brick-grid.is-editing .brick-drag-handle:focus-visible,
+.brick-grid.is-editing .brick-resize-handle:focus-visible {
+  outline: 2px solid #75c7ff;
+  outline-offset: 2px;
+  z-index: 1;
+}
+
+.brick-grid.is-editing .brick-resize-handle {
+  display: block;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 0 8px 0;
+  background: transparent;
+  color: #75bde9;
+  cursor: nwse-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.brick-grid.is-editing .brick-resize-handle::before {
+  content: "";
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 13px;
+  height: 13px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  opacity: 0.72;
+}
+
+.brick-grid.is-editing .brick-resize-handle:hover {
+  color: #bce8ff;
+  background: linear-gradient(135deg, transparent 45%, rgb(82 168 249 / 13%) 100%);
+}
+
+.brick-layout-caption {
+  margin: 8px 2px 12px;
+  color: #94aabd;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 800px) {
+  .brick-grid.is-editing {
+    background-size: 100% 100px;
+    background-position: 0 0, 0 0, 0 0, 0 99px;
+  }
+
+  .brick-grid.is-editing .brick-drag-handle,
+  .brick-grid.is-editing .brick-resize-handle {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brick-grid.is-editing .brick {
+    transition: none;
+  }
+}

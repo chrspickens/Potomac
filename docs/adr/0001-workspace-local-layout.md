@@ -15,7 +15,7 @@ Workspace 0.2 needs small, versioned personal dashboards. These contain brick ID
 
 ## Decision
 
-Use a schema-versioned `localStorage` key scoped by campaign and an explicitly local profile label. Validate and recover on every load. Use keyboard-operable move/resize controls in a twelve-column grid rather than a drag-and-drop dependency. The local profile label is never sent to the host and grants no access.
+Use a schema-versioned `localStorage` key scoped by campaign and an explicitly local profile label. Validate and recover on every load. Use a twelve-column tiled grid with direct pointer drag/resize, snap-to-grid placement, and deterministic downward reflow of colliding neighbors. Keep keyboard-operable move/resize controls as an equal path. This avoids a drag-and-drop dependency while keeping the simple layout contract. The local profile label is never sent to the host and grants no access.
 
 ## Consequences
 
@@ -23,4 +23,4 @@ Layouts are browser-local and may disappear when storage is cleared. They are no
 
 ## Follow-up / validation
 
-Run storage recovery and two-profile persistence tests, then revisit IndexedDB if layouts become larger or join an offline document store. Test pointer drag, responsive breakpoints, and production identity separately.
+Run storage recovery, geometry, pointer interaction, and two-profile persistence tests, then revisit IndexedDB if layouts become larger or join an offline document store. Floating/overlapping items, nested layout containers, device-specific saved layouts, and production identity remain separate decisions.
