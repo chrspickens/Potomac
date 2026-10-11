@@ -16,9 +16,9 @@ The initial design documentation will be developed in `docs/`. Architectural cho
 - Game-system-neutral apps powered by modular schemas, interfaces, and rules.
 - Versioned offline edits, explicit review policies, and an auditable activity history.
 
-## Contributing
+## Contributing and coding standards
 
-Documentation and implementation are still being planned. Please discuss significant architectural decisions before implementing them.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Engineering Standards](docs/engineering-standards.md) before implementing changes. Coding agents should also follow [AGENTS.md](AGENTS.md). Use focused pull requests and capture cross-package decisions in [ADRs](docs/adr/README.md). The standards are proposed for adoption and do not imply the foundation experiment has shipped.
 
 ## Foundation experiment (local implementation)
 
