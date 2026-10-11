@@ -1,0 +1,12 @@
+{
+  "name": "potomac",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @potomac/host --filter @potomac/web dev",
+    "dev:host": "pnpm --filter @potomac/host dev",
+    "dev:web": "pnpm --filter @potomac/web dev",
+    "build": "pnpm -r build"
+  }
+}

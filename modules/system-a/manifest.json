@@ -1,0 +1,14 @@
+{
+  "formatVersion": 1,
+  "id": "example.system-a",
+  "name": "Emberbound",
+  "tagline": "D20 fantasy · System A",
+  "type": "game-system",
+  "version": "0.1.0",
+  "requires": { "potomacApi": "0.1.x" },
+  "provides": {
+    "actorSchema": "./schemas/character.schema.json",
+    "actorView": "./ui/character-sheet.json",
+    "rules": "./rules/actions.json"
+  }
+}

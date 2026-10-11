@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "moduleId": "example.system-b",
+  "viewId": "character-sheet",
+  "title": "Wayfarer",
+  "layout": [
+    { "control": "text", "label": "Name", "field": "name" },
+    { "control": "stat", "label": "Agility", "field": "traits.agility" },
+    { "control": "stat", "label": "Instinct", "field": "traits.instinct" },
+    { "control": "resource", "label": "Stress", "field": "resources.stress" },
+    { "control": "resource", "label": "Hope", "field": "resources.hope" },
+    { "control": "stat", "label": "Composure", "field": "derived.composure", "readOnly": true },
+    { "control": "actionButton", "actionId": "spend-hope", "label": "Spend 1 Hope" },
+    { "control": "actionButton", "actionId": "instinct-test", "label": "Roll Instinct Test" }
+  ],
+  "brick": [
+    { "control": "text", "label": "Name", "field": "name" },
+    { "control": "resource", "label": "Stress", "field": "resources.stress" },
+    { "control": "resource", "label": "Hope", "field": "resources.hope" },
+    { "control": "actionButton", "actionId": "spend-hope", "label": "Spend 1 Hope" },
+    { "control": "actionButton", "actionId": "instinct-test", "label": "Instinct Test", "parameters": { "difficulty": 8 } }
+  ]
+}

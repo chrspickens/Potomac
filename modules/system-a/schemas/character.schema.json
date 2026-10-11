@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://potomac.example/modules/system-a/character.schema.json",
+  "title": "System A Character",
+  "description": "A fantasy adventurer using physical and mental attributes, hit points, and mana.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["moduleId", "moduleVersion", "schemaVersion", "entityId", "revision", "name", "attributes", "resources"],
+  "properties": {
+    "moduleId": { "const": "example.system-a" },
+    "moduleVersion": { "const": "0.1.0" },
+    "schemaVersion": { "const": 1 },
+    "entityId": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 0 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "epithet": { "type": "string", "maxLength": 120 },
+    "secretNote": { "type": "string", "maxLength": 2000 },
+    "attributes": {
+      "type": "object", "additionalProperties": false, "required": ["strength", "intelligence"],
+      "properties": {
+        "strength": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "intelligence": { "type": "integer", "minimum": 1, "maximum": 20 }
+      }
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false, "required": ["hp", "mana"],
+      "properties": {
+        "hp": { "$ref": "#/$defs/currentMaximum" },
+        "mana": { "$ref": "#/$defs/currentMaximum" }
+      }
+    },
+    "derived": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "meleeBonus": { "type": "integer", "minimum": -5, "maximum": 5 } }
+    }
+  },
+  "$defs": {
+    "currentMaximum": {
+      "type": "object", "additionalProperties": false, "required": ["current", "maximum"],
+      "properties": {
+        "current": { "type": "integer", "minimum": 0 },
+        "maximum": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "moduleId": "example.system-b",
+  "rulesVersion": 1,
+  "derivedValues": [
+    { "id": "composure", "value": { "op": "subtract", "left": { "ref": "resources.stress.maximum" }, "right": { "ref": "resources.stress.current" } } }
+  ],
+  "actions": [
+    {
+      "id": "spend-hope",
+      "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+      "requires": { "op": "gt", "left": { "ref": "resources.hope.current" }, "right": { "literal": 0 } },
+      "effects": [{ "op": "changeResource", "target": "self", "resource": "hope.current", "amount": { "literal": -1 } }]
+    },
+    {
+      "id": "instinct-test",
+      "input": { "type": "object", "properties": { "difficulty": { "type": "integer", "minimum": 1, "maximum": 12 } }, "required": ["difficulty"], "additionalProperties": false },
+      "resolution": { "kind": "check", "dice": [{ "count": 2, "sides": 6, "role": "hope" }, { "count": 2, "sides": 6, "role": "stress" }], "compareTotals": true, "modifier": { "ref": "traits.instinct" }, "targetInput": "difficulty", "comparison": "gte" },
+      "requires": { "op": "gte", "left": { "ref": "traits.instinct" }, "right": { "literal": -2 } },
+      "effects": []
+    }
+  ]
+}
