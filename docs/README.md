@@ -9,6 +9,7 @@ Status: **proposed, v0.1 — 2026-10-10**. These documents capture a working pro
 | [Architecture](architecture.md) | Clients, host, persistence, permissions, sync boundaries |
 | [Module and rules specification](module-spec.md) | Manifest, schema, UI contributions, constrained rules IR |
 | [Foundation experiment](foundation-experiment.md) | Minimal vertical slice, milestones, acceptance criteria |
+| [Workspace 0.2 requirements](workspace-0.2-requirements.md) | Brick registry, personal dashboards, context bindings and acceptance tests |
 | [Engineering standards](engineering-standards.md) | Code organization, module contracts, security, UX, and testing expectations |
 | [Architectural decision records](adr/README.md) | Template and decision-record conventions |
 | [Decisions and questions](decisions.md) | Proposals, assumptions, unresolved tradeoffs |
