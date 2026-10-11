@@ -15,7 +15,7 @@ Workspace 0.2 needs small, versioned personal dashboards. These contain brick ID
 
 ## Decision
 
-Use a schema-versioned `localStorage` key scoped by campaign and an explicitly local profile label. Validate and recover on every load. Use a twelve-column tiled grid with direct pointer drag/resize, snap-to-grid placement, and deterministic downward reflow of colliding neighbors. Keep keyboard-operable move/resize controls as an equal path. This avoids a drag-and-drop dependency while keeping the simple layout contract. The local profile label is never sent to the host and grants no access.
+Use a schema-versioned `localStorage` key scoped by campaign and an explicitly local profile label. Validate and recover on every load. Use a twelve-column tiled grid with direct pointer drag/resize. During a gesture the active brick follows the pointer continuously and a target previews its destination; on release it snaps to the grid and colliding neighbors reflow deterministically downward. Escape cancels the uncommitted gesture. Keep keyboard-operable move/resize controls as an equal path. This avoids a drag-and-drop dependency while keeping the simple layout contract. The local profile label is never sent to the host and grants no access.
 
 ## Consequences
 

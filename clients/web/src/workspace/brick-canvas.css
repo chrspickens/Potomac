@@ -19,7 +19,11 @@
 
 .brick-grid.is-editing .brick {
   position: relative;
-  transition: box-shadow 140ms ease, border-color 140ms ease, opacity 140ms ease;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.75, 0.25, 1),
+    box-shadow 160ms ease,
+    border-color 160ms ease,
+    opacity 160ms ease;
 }
 
 .brick-grid.is-editing .brick:hover {
@@ -29,16 +33,43 @@
 
 .brick-grid.is-editing .brick.is-dragging {
   z-index: 3;
-  opacity: 0.82;
+  opacity: 0.96;
   border-color: #52a8f9;
-  box-shadow: 0 14px 34px rgb(0 0 0 / 42%), 0 0 0 2px rgb(82 168 249 / 55%);
+  box-shadow: 0 18px 42px rgb(0 0 0 / 48%), 0 0 0 2px rgb(82 168 249 / 62%);
   cursor: grabbing;
+  will-change: transform;
+  /* The hook translates this brick every pointer frame; never ease behind it. */
+  transition: none;
 }
 
 .brick-grid.is-editing .brick.is-resizing {
   z-index: 2;
   border-color: #75d5ef;
   box-shadow: 0 0 0 2px rgb(117 213 239 / 35%);
+  will-change: width, height;
+  transition: none;
+}
+
+.brick-grid.is-editing .brick-drop-target {
+  position: relative;
+  z-index: 0;
+  min-width: 0;
+  min-height: 0;
+  border: 1px dashed rgb(117 197 244 / 48%);
+  border-radius: 9px;
+  background: linear-gradient(145deg, rgb(64 130 172 / 11%), rgb(64 130 172 / 5%));
+  box-shadow: inset 0 0 0 1px rgb(117 197 244 / 5%);
+  pointer-events: none;
+  animation: brick-target-appear 140ms ease-out both;
+}
+
+.brick-grid:not(.is-editing) .brick-drop-target {
+  display: none;
+}
+
+@keyframes brick-target-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .brick-grid.is-editing .brick.drag-invalid {
@@ -151,5 +182,9 @@
 @media (prefers-reduced-motion: reduce) {
   .brick-grid.is-editing .brick {
     transition: none;
+  }
+
+  .brick-grid.is-editing .brick-drop-target {
+    animation: none;
   }
 }
