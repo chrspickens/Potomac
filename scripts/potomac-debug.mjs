@@ -182,7 +182,7 @@ async function smoke() {
       const a = state.actors.find(item => item.id === actorA);
       assert.equal(a.data.resources.mana.current, 1);
       assert.equal(a.revision, 2);
-      assert.equal(state.events.filter(item => item.operationId === command.operationId).length, 1);
+      assert.equal(state.events.filter(item => item.payload?.operationId === command.operationId).length, 1);
       aRevision = a.revision;
     });
 
@@ -206,7 +206,7 @@ async function smoke() {
       const die = result.resolution?.groups?.[0]?.dice?.[0];
       assert.ok(Number.isInteger(die) && die >= 1 && die <= 20, 'Missing host-generated d20 result');
       const state = requiredStatus(await get('/api/state', gm), 200, 'GM roll history');
-      const event = state.events.find(item => item.operationId === command.operationId);
+      const event = state.events.find(item => item.payload?.operationId === command.operationId);
       assert.equal(event?.payload?.verified, true);
       assert.deepEqual(event.payload.rolls, [die]);
     });
