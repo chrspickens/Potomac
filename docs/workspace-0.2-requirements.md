@@ -3,10 +3,12 @@
 **Status:** Proposed for review  
 **Version:** 0.2.0-draft.1  
 **Scope:** First customizable Workspace/dashboard vertical slice  
-**Predecessor:** [Foundation experiment v0.1](foundation-experiment.md) (implementation currently proposed separately from `main`)  
+**Predecessor:** [Foundation experiment v0.1](foundation-experiment.md) (the localhost implementation is present on `main`; older PR #4 still carries diagnostics under reconciliation)
 **Related:** [Architecture](architecture.md) · [Engineering standards](engineering-standards.md) · [Module contract](module-spec.md) · [Initial requirements](requirements.md)
 
-> This is a **requirements document**, not a claim that any 0.2 features exist. The example JSON/contracts below are illustrative and not yet ratified as a stable public API.
+> This is a **requirements document**; the example JSON/contracts below are illustrative, not a ratified public API. The current implementation status is summarized here and in the README, not inferred from the requirements alone.
+
+**Implementation snapshot (2026-10-11):** The localhost experiment has registered first-party Character, Encounter Summary, and Activity bricks; personal `localStorage` dashboards/groups; tiled pointer and keyboard move/resize; a GM-selected fixture encounter followed via SSE; host-validated character actions; and role-filtered actor/event projections. `pnpm check` runs build, rules/host/workspace tests, isolated host diagnostics, and an isolated two-client Chrome/Edge scenario. This does not establish production authentication, a durable offline queue, full app handoffs, cross-device layout sync, or Internet-safe hosting. PR CI outcomes must be checked on the integration PR before treating this hardening pass as merged.
 
 ## 1. Outcome and hypothesis
 

@@ -2,6 +2,8 @@
 
 Status: **proposed, v0.1 — 2026-10-10**. These documents capture a working product direction, not finished implementation or frozen specifications.
 
+Implementation note (2026-10-11): the Workspace 0.2 localhost experiment uses SSE for live notifications and `localStorage` for personal layouts. Architecture references to WebSockets, IndexedDB offline edits, Electron, and production identity describe targets, not implemented behavior.
+
 | Document | Purpose |
 | --- | --- |
 | [Vision and scope](vision.md) | Product goals, vocabulary, principles, non-goals |
@@ -11,6 +13,7 @@ Status: **proposed, v0.1 — 2026-10-10**. These documents capture a working pro
 | [Foundation experiment](foundation-experiment.md) | Minimal vertical slice, milestones, acceptance criteria |
 | [Workspace 0.2 requirements](workspace-0.2-requirements.md) | Brick registry, personal dashboards, context bindings and acceptance tests |
 | [Engineering standards](engineering-standards.md) | Code organization, module contracts, security, UX, and testing expectations |
+| [Agent and developer diagnostics](agent-debugging.md) | Localhost-only debug commands and isolated smoke checks |
 | [Architectural decision records](adr/README.md) | Template and decision-record conventions |
 | [Decisions and questions](decisions.md) | Proposals, assumptions, unresolved tradeoffs |
 

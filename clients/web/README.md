@@ -1,6 +1,6 @@
 # Potomac web foundation demo
 
-React/Vite client for the foundation localhost host. One character renderer reads module supplied stat, resource, section, and action definitions. GM and player select separate bearer-token projections. The dashboard includes live encounter context, activity events, and compact party character bricks that dispatch the same action request as the full view.
+React/Vite client for the foundation localhost host. Dashboard bricks are first-party contributions registered with a typed renderer, binding options, and resolver. Resolvers receive only the client snapshot returned for the selected role through an authorized data adapter; they must resolve saved IDs against that projection and must not fetch records directly. Unknown brick types and stale or unsupported bindings show repair placeholders while retaining the saved instance and settings. Downloaded module code is not evaluated as a brick contribution. GM and player select separate bearer-token projections. The dashboard includes live encounter context, activity events, and compact party character bricks that dispatch the same action request as the full view.
 
 ## Start
 

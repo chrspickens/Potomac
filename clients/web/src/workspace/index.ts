@@ -9,7 +9,7 @@ export type {
   WorkspaceLoadResult,
   WorkspaceState,
 } from './types.ts';
-export { brickDefinitions, getBrickDefinition } from './registry.ts';
+export { getBrickDefinition, getBrickDefinitions, registerBrickDefinition } from './registry.ts';
 export {
   WORKSPACE_SCHEMA_VERSION,
   addBrick,

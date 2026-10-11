@@ -69,14 +69,14 @@ Candidate action definition:
 }
 ```
 
-The rules engine accepts current typed input and emits *proposed effects*, never direct DB writes or network calls.
+The shared `@potomac/rules-engine` API evaluates expressions and applies declared `changeResource` effects to a cloned state, returning a proposed state. It has no I/O or ambient randomness. The host remains responsible for validating action parameters, authorizing the actor and action, supplying cryptographically generated roll results, and atomically committing accepted state and audit events. The host and shared evaluator use the same bounded expression implementation.
 
 ### Initial safe operators
 
 - Pure arithmetic, comparisons, Boolean operators, references to declared fields and built-in fixed functions such as floor.
 - Action preconditions and typed effects (`changeResource`, `setField` where policy permits).
 - Host-provided random results for rolls; log inputs, outcomes and rule provenance.
-- Type checking, resource/fuel budgets, bounded depth, deterministic error behavior, no I/O, arbitrary JavaScript or unbounded loops.
+- Runtime scalar/type checks, a 256-node expression and dice budget, maximum expression depth 32, bounded resource changes, deterministic error behavior, no I/O, arbitrary JavaScript or unbounded loops.
 
 Events/reactions and custom PRL text syntax are **deferred**. Avoid allowing a module to modify visibility/access policy as an ordinary effect.
 
