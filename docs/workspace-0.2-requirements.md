@@ -150,7 +150,7 @@ type BrickDefinition = {
   version: number;
   ownerAppId: string;
   title: string;
-  supportedBindings: Array<"follow" | "pinned">;
+  supportedBindings: Array<"follow" | "pinned" | "none">;
   defaultSize: { w: number; h: number };
   // Configuration schema, rendering component and data resolver
   // are supplied through trusted app registration.
@@ -167,7 +167,8 @@ type BrickInstance = {
 
 type BrickBinding =
   | { mode: "follow"; contextKey: "session.activeEncounter" }
-  | { mode: "pinned"; entityId: string };
+  | { mode: "pinned"; entityId: string }
+  | { mode: "none" }; // e.g., campaign-scoped activity feed
 ```
 
 ### 6.2 Dashboard storage (client-owned for v0.2)
