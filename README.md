@@ -33,6 +33,17 @@ The host listens on `http://127.0.0.1:4177`; Vite serves the browser client on i
 
 The current online slice supports module/actor registration, GM-only field filtering, revision-checked and deduplicated actions, host-generated verified rolls, context updates, and replayable SSE events. Actor validation covers the JSON Schema features used by these fixtures; it is not a full JSON Schema 2020-12 implementation. The offline operation queue, review proposals, stale dependency conflict workflow, and production authentication remain follow-on work, so the full foundation acceptance checklist is not complete.
 
+
+## Agent diagnostics
+
+An agent-friendly CLI can check the local host, stream authorized campaign events, and run an isolated end-to-end smoke test without touching your campaign database. See [Agent and developer diagnostics](docs/agent-debugging.md).
+
+```sh
+pnpm debug:smoke
+pnpm debug:doctor
+pnpm debug:watch -- --role gm --since now
+```
+
 ## Licensing
 
 No project license has been chosen yet. Do not assume the repository is open-source licensed merely because it is public.
