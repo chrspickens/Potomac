@@ -33,6 +33,14 @@ The host listens on `http://127.0.0.1:4177`; Vite serves the browser client on i
 
 The current online slice supports module/actor registration, GM-only field filtering, revision-checked and deduplicated actions, host-generated verified rolls, context updates, and replayable SSE events. Actor validation covers the JSON Schema features used by these fixtures; it is not a full JSON Schema 2020-12 implementation. The offline operation queue, review proposals, stale dependency conflict workflow, and production authentication remain follow-on work, so the full foundation acceptance checklist is not complete.
 
+## Workspace 0.2 experiment (local branch)
+
+The browser client includes a customizable dashboard shell inspired by the two concept images in the repository. A local profile can arrange Character, Encounter Summary, and Activity Log bricks, manage dashboard groups, and save personal layouts in browser storage. The GM can select one of two stable fixture encounters; encounter followers update from the host stream, while pinned Character bricks keep their references. The full Characters view and compact brick use the same host command adapter.
+
+Run `pnpm dev` and open the Vite URL. Use separate browser profiles for a GM and player layout demo, or change the **Local profile** preference to compare layouts in one browser. The profile name is not authentication. The role selector and static localhost bearer tokens are development fixtures only; do not expose this host publicly. If a saved layout is corrupt, the client recovers a safe layout and reports the issue.
+
+Available checks: `pnpm build`, `node --test server/host/index.test.mjs`, and `node --test clients/web/src/workspace/workspace.test.mjs`. The Workspace 0.2 requirements remain a target: browser-level two-client automation, production identity, full app handoffs, offline edits, complex docking, and maps are not included in this experiment.
+
 ## Licensing
 
 No project license has been chosen yet. Do not assume the repository is open-source licensed merely because it is public.

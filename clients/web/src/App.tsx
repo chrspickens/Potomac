@@ -1,63 +1,194 @@
-import { useEffect, useMemo, useState } from 'react'
-import { host, type Role, type Snapshot } from './api'
+import { Component, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { host, type ConnectionStatus, type Role, type Snapshot } from './api'
 import type { Actor } from './modules'
+import { brickDefinitions, createDefaultWorkspace, loadWorkspaceWithRecovery, saveWorkspace, type BrickInstance, type WorkspaceState } from './workspace'
 
-function fieldValue(source: any, path = ''): any { return path.split('.').filter(Boolean).reduce((value, key) => value?.[key], source) }
+const profileKey = 'potomac.workspace.demo-profile'
+const newId = () => crypto.randomUUID()
+const displayError = (cause: unknown) => cause instanceof Error ? cause.message : 'Request failed'
+const fieldValue = (source: Record<string, any>, path = '') => path.split('.').filter(Boolean).reduce((value, key) => value?.[key], source as any)
 
-function Character({ actor, gm, busy, action, compact = false }: { actor: Actor; gm: boolean; busy: boolean; action: (actor: Actor, id: string) => void; compact?: boolean }) {
-  const module = actor.module
-  const controls = compact ? module.view.brick : module.view.layout
+class BrickBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  render() { return this.state.failed ? <div className="brick-message" role="alert">This brick could not render. Your layout is preserved.</div> : this.props.children }
+}
+
+function Character({ actor, compact, busy, onAction, gm }: { actor: Actor; compact?: boolean; busy: boolean; onAction: (actor: Actor, actionId: string) => void; gm: boolean }) {
+  const controls = compact ? actor.module.view.brick : actor.module.view.layout
   const stats = controls.filter(item => item.control === 'stat')
   const resources = controls.filter(item => item.control === 'resource')
   const actions = controls.filter(item => item.control === 'actionButton')
-  return <article className="character-card">
-    <header className="character-header"><div><span className="eyebrow">{module.manifest.name} · v{module.manifest.version}</span><h2>{actor.name}</h2><p>{actor.epithet}</p></div><span className="revision">REV {actor.revision}</span></header>
-    {stats.length > 0 && <div className="stats">{stats.map((stat, index) => <div className="stat" key={`${stat.field}-${index}`}><span>{stat.label}</span><strong>{String(fieldValue(actor.data, stat.field) ?? '—')}</strong><small>{stat.field}</small></div>)}</div>}
-    {resources.length > 0 && <div className="resources">{resources.map((resource, index) => { const value = fieldValue(actor.data, resource.field); const current = typeof value === 'object' ? value.current : value; const maximum = typeof value === 'object' ? value.maximum : current; const ratio = maximum ? current / maximum * 100 : 0; return <div className="resource" key={`${resource.field}-${index}`}><div><span>{resource.label}</span><strong>{String(current ?? '—')}<small> / {String(maximum ?? '—')}</small></strong></div><div className="meter"><i style={{ width: `${Math.max(0, Math.min(100, ratio))}%` }} /></div></div>})}</div>}
-    <div className="actions">{actions.map((item, index) => <button key={`${item.actionId}-${index}`} disabled={busy} title={item.label} onClick={() => item.actionId && action(actor, item.actionId)}>{item.label}</button>)}</div>
-    {gm && actor.secretNote && <aside className="secret"><b>GM only</b> {actor.secretNote}</aside>}
-    <footer className="card-footer">{module.manifest.tagline}<span>{compact ? 'Reusable brick' : module.view.title}</span></footer>
-  </article>
+  return <div className="character-view">
+    <div className="character-identity"><div className="avatar">{actor.name.slice(0, 1)}</div><div><p className="eyebrow">{actor.module.manifest.name} · {actor.module.manifest.version}</p><h3>{actor.name}</h3><p>{actor.epithet}</p></div><span className="revision">REV {actor.revision}</span></div>
+    {stats.length > 0 && <div className="stat-grid">{stats.map((item, index) => <div className="stat" key={`${item.field}-${index}`}><span>{item.label}</span><strong>{String(fieldValue(actor.data, item.field) ?? '—')}</strong></div>)}</div>}
+    {resources.length > 0 && <div className="resource-grid">{resources.map((item, index) => {
+      const data = fieldValue(actor.data, item.field)
+      const current = typeof data === 'object' ? data?.current : data
+      const maximum = typeof data === 'object' ? data?.maximum : current
+      const ratio = typeof current === 'number' && typeof maximum === 'number' && maximum > 0 ? Math.max(0, Math.min(100, current / maximum * 100)) : 0
+      return <div className="resource" key={`${item.field}-${index}`}><div><span>{item.label}</span><strong>{String(current ?? '—')} / {String(maximum ?? '—')}</strong></div><div className="meter"><i style={{ width: `${ratio}%` }} /></div></div>
+    })}</div>}
+    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => <button type="button" key={`${item.actionId}-${index}`} disabled={busy} onClick={() => item.actionId && onAction(actor, item.actionId)}>{item.label}</button>)}</div>}
+    {gm && actor.secretNote && <div className="gm-note"><b>GM only</b> {actor.secretNote}</div>}
+  </div>
+}
+
+function ActivityLog({ snapshot }: { snapshot: Snapshot | null }) {
+  return <div className="activity-list">{snapshot?.activity.length ? snapshot.activity.slice(-12).reverse().map(item => <div className="activity-item" key={item.id}><span className="activity-dot" /><div><strong>{item.action}</strong><p>{item.detail || 'Campaign event'}</p><small>{item.actor} · {item.time}{item.visibility === 'gm' ? ' · GM only' : ''}</small></div></div>) : <p className="brick-message">Actions and encounter changes will appear here.</p>}</div>
+}
+
+function defaultBinding(typeId: string, snapshot: Snapshot | null): BrickInstance['binding'] {
+  if (typeId === 'encounters.summary') return { mode: 'follow', contextKey: 'session.activeEncounter' }
+  if (typeId === 'activity.log') return { mode: 'none' }
+  return { mode: 'pinned', entityId: snapshot?.actors[0]?.entityId || 'actor-unknown' }
+}
+
+function BrickContent({ brick, snapshot, role, busy, onAction }: { brick: BrickInstance; snapshot: Snapshot | null; role: Role; busy: boolean; onAction: (actor: Actor, actionId: string) => void }) {
+  if (!brickDefinitions.some(definition => definition.typeId === brick.typeId)) return <p className="brick-message">Brick “{brick.typeId}” is unavailable. Its saved settings are preserved.</p>
+  if (!snapshot) return <p className="brick-message">Waiting for the host…</p>
+  if (brick.typeId === 'activity.log') return <ActivityLog snapshot={snapshot} />
+  if (brick.typeId === 'encounters.summary') {
+    const pinnedId = brick.binding.mode === 'pinned' ? brick.binding.entityId : null
+    const encounter = brick.binding.mode === 'follow' ? snapshot.context.activeEncounter : pinnedId ? snapshot.encounters.find(item => item.id === pinnedId) : null
+    return encounter ? <div className="encounter-summary"><p className="eyebrow">{brick.binding.mode === 'follow' ? 'FOLLOWING SESSION' : 'PINNED ENCOUNTER'}</p><h3>{encounter.name}</h3><p>{encounter.summary}</p><small>Stable ID · {encounter.id}</small></div> : <p className="brick-message">No accessible encounter for this binding.</p>
+  }
+  if (brick.typeId === 'characters.sheet') {
+    const pinnedId = brick.binding.mode === 'pinned' ? brick.binding.entityId : null
+    const actor = pinnedId ? snapshot.actors.find(item => item.entityId === pinnedId) : null
+    return actor ? <Character actor={actor} compact gm={role === 'gm'} busy={busy} onAction={onAction} /> : <p className="brick-message">Character unavailable for this binding.</p>
+  }
+  return <p className="brick-message">This brick has no renderer.</p>
 }
 
 export default function App() {
   const [role, setRole] = useState<Role>('gm')
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
-  const [selected, setSelected] = useState('')
+  const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [encounter, setEncounter] = useState('')
+  const [actionState, setActionState] = useState('')
+  const [section, setSection] = useState<'dashboard' | 'characters'>('dashboard')
+  const [selectedActorId, setSelectedActorId] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [picker, setPicker] = useState(false)
+  const [profileId, setProfileId] = useState(() => {
+    try { return localStorage.getItem(profileKey) || 'local-demo' } catch { return 'local-demo' }
+  })
+  const [workspace, setWorkspace] = useState<WorkspaceState>(() => createDefaultWorkspace('foundation-demo', profileId))
+  const [loadedWorkspace, setLoadedWorkspace] = useState(false)
+  const [encounterDraft, setEncounterDraft] = useState('')
 
   useEffect(() => {
-    let mounted = true
-    void host.load(role).then(value => { if (mounted) { setSnapshot(value); setEncounter(value.context.activeEncounter?.name || ''); setError('') } }).catch(cause => { if (mounted) setError(cause.message) })
-    const stop = host.subscribe(role, value => { if (mounted) { setSnapshot(value); setEncounter(value.context.activeEncounter?.name || '') } })
-    return () => { mounted = false; stop() }
+    setSnapshot(null)
+    setConnection('connecting')
+    const stop = host.subscribe(role, value => { setSnapshot(value); setError('') }, setConnection)
+    if (host.mode === 'demo') void host.load(role).then(value => { setSnapshot(value); setError('') }).catch(cause => setError(displayError(cause)))
+    return stop
   }, [role])
 
-  const actor = useMemo(() => snapshot?.actors.find(item => item.entityId === selected) || snapshot?.actors[0], [snapshot, selected])
-  async function refresh() { const value = await host.load(role); setSnapshot(value); setError('') }
-  async function act(target: Actor, actionId: string) {
-    setBusy(true); setError('')
-    try { const parameters = target.module.view.layout.concat(target.module.view.brick).find(item => item.actionId === actionId)?.parameters || {}; await host.command({ operationId: crypto.randomUUID(), entityId: target.entityId, baseRevision: target.revision, actionId, parameters }); await refresh() }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Action failed') }
+  useEffect(() => {
+    if (!snapshot) return
+    const campaignId = snapshot.context.campaignId
+    const loaded = loadWorkspaceWithRecovery(campaignId, profileId, snapshot.actors.map(item => item.entityId))
+    setWorkspace(loaded.state)
+    if (loaded.recovered && loaded.reason !== 'missing') setError('Saved layout had invalid data. A safe layout was recovered; review it before editing.')
+    setLoadedWorkspace(true)
+  }, [snapshot?.context.campaignId, profileId])
+  useEffect(() => {
+    if (!loadedWorkspace) return
+    try { saveWorkspace(workspace) } catch { setError('Layout could not be saved in this browser.') }
+  }, [workspace, loadedWorkspace])
+  useEffect(() => { setEncounterDraft(snapshot?.context.activeEncounter?.id || '') }, [snapshot?.context.activeEncounter?.id])
+
+  const dashboard = workspace.dashboards.find(item => item.id === workspace.activeDashboardId) || workspace.dashboards[0]
+  const activeGroup = workspace.groups.find(item => item.id === workspace.activeGroupId) || workspace.groups[0]
+  const groupDashboards = workspace.dashboards.filter(item => activeGroup?.dashboardIds.includes(item.id))
+  const selectedActor = useMemo(() => snapshot?.actors.find(item => item.entityId === selectedActorId) || snapshot?.actors[0], [snapshot, selectedActorId])
+  const update = (next: WorkspaceState) => setWorkspace(next)
+  const updateDashboard = (id: string, transform: (dashboard: WorkspaceState['dashboards'][number]) => WorkspaceState['dashboards'][number]) =>
+    update({ ...workspace, dashboards: workspace.dashboards.map(item => item.id === id ? transform(item) : item) })
+  const updateBrick = (id: string, transform: (brick: BrickInstance) => BrickInstance) => {
+    if (!dashboard) return
+    updateDashboard(dashboard.id, item => ({ ...item, bricks: item.bricks.map(brick => brick.id === id ? transform(brick) : brick) }))
+  }
+  const createDashboard = () => {
+    const name = window.prompt('Dashboard name', 'New dashboard')?.trim()
+    if (!name || !activeGroup) return
+    const id = newId()
+    update({ ...workspace, activeDashboardId: id, groups: workspace.groups.map(group => group.id === activeGroup.id ? { ...group, dashboardIds: [...group.dashboardIds, id] } : group), dashboards: [...workspace.dashboards, { id, name, bricks: [] }] })
+  }
+  const renameDashboard = () => {
+    if (!dashboard) return
+    const name = window.prompt('Rename dashboard', dashboard.name)?.trim()
+    if (name) updateDashboard(dashboard.id, item => ({ ...item, name }))
+  }
+  const deleteDashboard = () => {
+    if (!dashboard || !window.confirm(`Delete “${dashboard.name}” from this local profile?`)) return
+    const dashboards = workspace.dashboards.filter(item => item.id !== dashboard.id)
+    const groups = workspace.groups.map(group => ({ ...group, dashboardIds: group.dashboardIds.filter(id => id !== dashboard.id) }))
+    update({ ...workspace, dashboards, groups, activeDashboardId: dashboards[0]?.id || '' })
+  }
+  const createGroup = () => {
+    const name = window.prompt('Group name', 'New group')?.trim()
+    if (!name) return
+    const id = newId()
+    const dashboardId = newId()
+    update({ ...workspace, activeGroupId: id, activeDashboardId: dashboardId, groups: [...workspace.groups, { id, name, dashboardIds: [dashboardId] }], dashboards: [...workspace.dashboards, { id: dashboardId, name: 'New dashboard', bricks: [] }] })
+  }
+  const renameGroup = () => {
+    if (!activeGroup) return
+    const name = window.prompt('Rename group', activeGroup.name)?.trim()
+    if (name) update({ ...workspace, groups: workspace.groups.map(group => group.id === activeGroup.id ? { ...group, name } : group) })
+  }
+  const addBrick = (typeId: string) => {
+    if (!dashboard) return
+    const definition = brickDefinitions.find(item => item.typeId === typeId)
+    if (!definition) return
+    const bottom = Math.max(0, ...dashboard.bricks.map(item => item.layout.y + item.layout.h))
+    const brick: BrickInstance = { id: newId(), typeId, definitionVersion: definition.version, binding: defaultBinding(typeId, snapshot), options: {}, layout: { x: 0, y: bottom, w: definition.defaultSize.w, h: definition.defaultSize.h } }
+    updateDashboard(dashboard.id, item => ({ ...item, bricks: [...item.bricks, brick] }))
+    setPicker(false)
+  }
+  const act = async (actor: Actor, actionId: string) => {
+    const parameters = actor.module.view.layout.concat(actor.module.view.brick).find(item => item.actionId === actionId)?.parameters || {}
+    setBusy(true); setError(''); setActionState(`Sending ${actionId} for ${actor.name}…`)
+    try {
+      await host.command(role, { operationId: newId(), entityId: actor.entityId, baseRevision: actor.revision, actionId, parameters })
+      setSnapshot(await host.load(role))
+      setActionState(`${actionId} accepted by host.`)
+    } catch (cause) { setError(displayError(cause)); setActionState(`${actionId} rejected; no local state was committed.`) }
     finally { setBusy(false) }
   }
-  async function saveEncounter() {
-    try { await host.setEncounter(encounter.trim() || null); await refresh() }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not update encounter') }
+  const saveEncounter = async () => {
+    setBusy(true); setError('')
+    try { await host.setEncounter(role, encounterDraft || null); setSnapshot(await host.load(role)) }
+    catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const changeProfile = () => {
+    const id = window.prompt('Local layout profile (not an account or permission)', profileId)?.trim()
+    if (!id) return
+    try { localStorage.setItem(profileKey, id) } catch { setError('Profile preference could not be saved.') }
+    setProfileId(id)
   }
 
-  return <main className="shell">
-    <nav className="topbar"><a className="brand" href="#"><span>p</span> POTOMAC</a><span className={`connection ${host.mode}`}>● {host.mode === 'host' ? 'LOCAL HOST' : 'LOCAL PREVIEW'}</span><label className="role">CLIENT PROJECTION<select value={role} onChange={event => { setSnapshot(null); setSelected(''); setRole(event.target.value as Role) }}><option value="gm">Game master</option><option value="player">Player</option></select></label></nav>
-    <section className="hero"><div><p className="eyebrow">FOUNDATION EXPERIMENT · TABLE</p><h1>{role === 'gm' ? 'The table is yours.' : 'Welcome back.'}</h1><p>Two game systems. One character view. Campaign data stays on your host.</p></div><div className="campaign-badge"><span>CAMPAIGN</span><b>{snapshot?.context.campaignId || 'Connecting…'}</b><small>Cursor {snapshot?.context.cursor ?? '—'}</small></div></section>
-    {error && <div className="error" role="alert">{error}<button onClick={() => void refresh()}>Retry</button></div>}
-    <section className="encounter"><div><p className="eyebrow">ACTIVE ENCOUNTER · SHARED CONTEXT</p>{role === 'gm' ? <div className="encounter-edit"><input aria-label="Active encounter" placeholder="Encounter name" value={encounter} onChange={event => setEncounter(event.target.value)} /><button onClick={() => void saveEncounter()}>Update context</button></div> : <h2>{snapshot?.context.activeEncounter?.name || 'No active encounter'}</h2>}<p className="muted">{snapshot?.context.activeEncounter ? 'Updates are delivered to connected clients.' : 'Start an encounter to set the table context.'}</p></div><span className="live">● LIVE</span></section>
-    <div className="layout"><section className="characters"><div className="section-heading"><div><p className="eyebrow">CHARACTERS · MODULE-DRIVEN</p><h2>{actor?.name || 'Characters'}</h2></div><div className="actor-tabs">{snapshot?.actors.map(item => <button className={item.entityId === actor?.entityId ? 'active' : ''} onClick={() => setSelected(item.entityId)} key={item.entityId}>{item.name}</button>)}</div></div>
-      {actor ? <Character actor={actor} gm={role === 'gm'} busy={busy} action={act} /> : <div className="empty">No actors were returned. Connect as GM to create the example actors.</div>}
-      <div className="section-heading party-heading"><div><p className="eyebrow">REUSABLE PARTY BRICK</p><h2>At the table</h2></div><span className="live">● SUBSCRIBED</span></div><div className="bricks">{snapshot?.actors.filter(item => item.entityId !== actor?.entityId).map(item => <Character compact key={item.entityId} actor={item} gm={role === 'gm'} busy={busy} action={act} />)}</div>
-    </section>
-    <aside className="feed"><div className="section-heading"><div><p className="eyebrow">AUDIT EVENTS · CURSOR {snapshot?.context.cursor ?? '—'}</p><h2>Session activity</h2></div></div>{snapshot?.activity.map(item => <article className="event" key={item.id}><div><strong>{item.action}</strong><span>{item.actor} · {item.time}</span></div><p>{item.detail || 'Campaign event'}</p>{item.visibility === 'gm' && <small className="private">GM PRIVATE</small>}</article>)}{!snapshot?.activity.length && <p className="muted">Actions and context changes will appear here.</p>}<p className="feed-note">Host filtered projection · revisions from server</p></aside></div>
-    <footer className="footnote">{host.mode === 'host' ? 'Connected to the localhost foundation host' : 'Preview state is in memory and not authoritative'}<span>Module view definitions contain no system ID branches.</span></footer>
-  </main>
+  return <div className="app-shell">
+    <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{snapshot?.context.campaignId || 'Connecting…'}</strong></div><nav aria-label="Applications"><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▦ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><div className="rail-future">Encounters <small>Coming later</small></div><div className="rail-future">Maps <small>Coming later</small></div><div className="rail-future">Lore <small>Coming later</small></div></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
+    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : 'Characters'}</strong></div><div className="topbar-right"><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection.toUpperCase()}</span><label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId('') }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
+    {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
+    {actionState && <div className="action-status" role="status">{actionState}</div>}
+    {section === 'dashboard' ? <main className="dashboard-page">
+      <div className="page-intro"><div><p className="eyebrow">YOUR CAMPAIGN, YOUR LAYOUT</p><h1>{dashboard?.name || 'Start a dashboard'}</h1><p>Personal panels follow shared play, while your arrangement stays yours.</p></div><div className="intro-actions"><button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>
+      <div className="dashboard-toolbar"><label>Group <select value={activeGroup?.id || ''} onChange={event => { const group = workspace.groups.find(item => item.id === event.target.value); update({ ...workspace, activeGroupId: event.target.value, activeDashboardId: group?.dashboardIds[0] || '' }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div className="dashboard-tabs" role="tablist" aria-label="Dashboards">{groupDashboards.map(item => <button role="tab" aria-selected={item.id === dashboard?.id} className={item.id === dashboard?.id ? 'active' : ''} key={item.id} onClick={() => update({ ...workspace, activeDashboardId: item.id })}>{item.name}</button>)}</div>{editing && <div className="toolbar-actions"><label>Move to <select aria-label="Move dashboard to group" value={activeGroup?.id || ''} disabled={!dashboard} onChange={event => { if (!dashboard) return; const groupId = event.target.value; update({ ...workspace, activeGroupId: groupId, groups: workspace.groups.map(group => ({ ...group, dashboardIds: group.id === groupId ? [...group.dashboardIds.filter(id => id !== dashboard.id), dashboard.id] : group.dashboardIds.filter(id => id !== dashboard.id) })) }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><button onClick={createGroup}>+ Group</button><button onClick={renameGroup} disabled={!activeGroup}>Rename group</button><button onClick={createDashboard}>+ Dashboard</button><button onClick={renameDashboard} disabled={!dashboard}>Rename</button><button onClick={deleteDashboard} disabled={!dashboard}>Delete</button><button className="primary" onClick={() => setPicker(!picker)}>+ Add brick</button></div>}</div>
+      {picker && editing && <div className="brick-picker"><strong>Brick library</strong><div>{brickDefinitions.map(definition => <button key={definition.typeId} onClick={() => addBrick(definition.typeId)}><span>{definition.title}</span><small>{definition.ownerAppId}</small></button>)}</div></div>}
+      <div className="session-strip"><div><p className="eyebrow">SHARED SESSION CONTEXT</p><strong>{snapshot?.context.activeEncounter?.name || 'No active encounter'}</strong><small>Followers update for connected clients. Pinned bricks do not move.</small></div>{role === 'gm' && <div className="context-control"><label htmlFor="encounter-select">Active encounter</label><select id="encounter-select" value={encounterDraft} onChange={event => setEncounterDraft(event.target.value)}><option value="">None</option>{snapshot?.encounters.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button disabled={busy || connection === 'disconnected'} onClick={() => void saveEncounter()}>Set active</button></div>}</div>
+      {dashboard?.bricks.length ? <div className="brick-grid">{dashboard.bricks.map(brick => {
+        const definition = brickDefinitions.find(item => item.typeId === brick.typeId)
+        const pinnedEntityId = brick.binding.mode === 'pinned' ? brick.binding.entityId : ''
+        return <section className="brick" key={brick.id} style={{ gridColumn: `${brick.layout.x + 1} / span ${brick.layout.w}`, gridRow: `${brick.layout.y + 1} / span ${brick.layout.h}` }}><header className="brick-head"><div><span className="brick-icon">◇</span><strong>{definition?.title || brick.typeId}</strong></div><small>{brick.binding.mode === 'follow' ? '↻ Following' : brick.binding.mode === 'pinned' ? '◆ Pinned' : 'Session'}</small></header><BrickBoundary><BrickContent brick={brick} snapshot={snapshot} role={role} busy={busy || connection === 'disconnected'} onAction={act} /></BrickBoundary>{editing && <div className="brick-edit"><label>Binding <select value={brick.binding.mode} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: event.target.value === 'follow' ? { mode: 'follow', contextKey: 'session.activeEncounter' } : event.target.value === 'none' ? { mode: 'none' } : defaultBinding(brick.typeId, snapshot) }))}>{definition?.supportedBindings.map(mode => <option value={mode} key={mode}>{mode}</option>)}</select></label>{brick.binding.mode === 'pinned' && <label>Entity <select value={pinnedEntityId} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: { mode: 'pinned', entityId: event.target.value } }))}><option value={pinnedEntityId}>{pinnedEntityId}</option>{(brick.typeId === 'characters.sheet' ? snapshot?.actors.map(item => ({ id: item.entityId, name: item.name })) : snapshot?.encounters)?.filter(item => item.id !== pinnedEntityId).map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="brick-edit-buttons"><button aria-label="Move brick left" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, x: Math.max(0, item.layout.x - 1) } }))}>←</button><button aria-label="Move brick right" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, x: Math.min(11, item.layout.x + 1) } }))}>→</button><button aria-label="Move brick up" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, y: Math.max(0, item.layout.y - 1) } }))}>↑</button><button aria-label="Move brick down" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, y: item.layout.y + 1 } }))}>↓</button><button aria-label="Make brick narrower" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, w: Math.max(2, item.layout.w - 1) } }))}>− width</button><button aria-label="Make brick wider" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, w: Math.min(12 - item.layout.x, item.layout.w + 1) } }))}>+ width</button><button aria-label="Make brick shorter" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, h: Math.max(2, item.layout.h - 1) } }))}>− height</button><button aria-label="Make brick taller" onClick={() => updateBrick(brick.id, item => ({ ...item, layout: { ...item.layout, h: item.layout.h + 1 } }))}>+ height</button><button className="danger" onClick={() => updateDashboard(dashboard.id, item => ({ ...item, bricks: item.bricks.filter(value => value.id !== brick.id) }))}>Remove</button></div></div>}</section>
+      })}</div> : <div className="empty-dashboard"><h2>No bricks here yet</h2><p>{editing ? 'Open the brick library to add a character, encounter, or activity panel.' : 'Turn on Edit layout to build this dashboard.'}</p><button onClick={() => { setEditing(true); setPicker(true) }}>Add a brick</button></div>}
+      <p className="workspace-footnote">Saved locally in this browser · Host data is never stored in the layout · Cursor {snapshot?.context.cursor ?? '—'}</p>
+    </main> : <main className="characters-page"><div className="page-intro"><div><p className="eyebrow">APPLICATION / CHARACTERS</p><h1>Characters</h1><p>The full view and dashboard brick share the same host action contract.</p></div></div><div className="character-layout"><nav aria-label="Characters" className="character-list">{snapshot?.actors.map(actor => <button className={selectedActor?.entityId === actor.entityId ? 'active' : ''} key={actor.entityId} onClick={() => setSelectedActorId(actor.entityId)}><span className="avatar">{actor.name.slice(0, 1)}</span><span><strong>{actor.name}</strong><small>{actor.module.manifest.name}</small></span></button>)}</nav><section className="full-character brick">{selectedActor ? <Character actor={selectedActor} busy={busy || connection === 'disconnected'} onAction={act} gm={role === 'gm'} /> : <p className="brick-message">No authorized characters available.</p>}</section><aside className="brick app-activity"><header className="brick-head"><strong>Activity Log</strong></header><ActivityLog snapshot={snapshot} /></aside></div></main>}</div>
+  </div>
 }
