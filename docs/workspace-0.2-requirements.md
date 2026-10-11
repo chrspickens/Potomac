@@ -107,7 +107,7 @@ All acceptance criteria below are intended to be demonstrable in a test or repea
 | ID | Priority | Requirement | Acceptance criteria |
 | --- | --- | --- | --- |
 | WS-015 | P0 | Represent shared encounter by stable ID | Fixture encounters A and B use stable IDs rather than a mutable display-name string; a GM can activate either ID. |
-| WS-016 | P0 | Support `follow` and `pinned` binding modes | Follow resolves a named, typed context key; pinned resolves a specific authorized stable entity ID. |
+| WS-016 | P0 | Support `follow` and `pinned` binding modes | Follow resolves a named, typed context key; pinned resolves a specific authorized stable entity ID. Context-free session bricks, such as Activity Log, may use `none`. |
 | WS-017 | P0 | Propagate host context changes | Switching A→B updates subscribed authorized bricks in both clients without manual refresh; placement, dimensions and configuration remain unchanged. |
 | WS-018 | P0 | Isolate personal selection from session context | Choosing a different character or dashboard locally does not alter `session.activeEncounter` or the other client's selected layout. |
 | WS-019 | P0 | Resolve missing, denied, or unsupported context safely | Null/stale reference, wrong entity type or denied access displays a clear empty/unavailable/unauthorized state without revealing forbidden details. |
