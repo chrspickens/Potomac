@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://potomac.example/modules/system-b/character.schema.json",
+  "title": "System B Character",
+  "description": "A science-fantasy wanderer using agility, instinct, stress, and hope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["moduleId", "moduleVersion", "schemaVersion", "entityId", "revision", "name", "traits", "resources"],
+  "properties": {
+    "moduleId": { "const": "example.system-b" },
+    "moduleVersion": { "const": "0.1.0" },
+    "schemaVersion": { "const": 1 },
+    "entityId": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 0 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "epithet": { "type": "string", "maxLength": 120 },
+    "secretNote": { "type": "string", "maxLength": 2000 },
+    "traits": {
+      "type": "object", "additionalProperties": false, "required": ["agility", "instinct"],
+      "properties": {
+        "agility": { "type": "integer", "minimum": -2, "maximum": 5 },
+        "instinct": { "type": "integer", "minimum": -2, "maximum": 5 }
+      }
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false, "required": ["stress", "hope"],
+      "properties": {
+        "stress": { "$ref": "#/$defs/currentMaximum" },
+        "hope": { "$ref": "#/$defs/currentMaximum" }
+      }
+    },
+    "derived": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "composure": { "type": "integer", "minimum": 0, "maximum": 10 } }
+    }
+  },
+  "$defs": {
+    "currentMaximum": {
+      "type": "object", "additionalProperties": false, "required": ["current", "maximum"],
+      "properties": {
+        "current": { "type": "integer", "minimum": 0 },
+        "maximum": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

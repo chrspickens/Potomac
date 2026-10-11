@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "moduleId": "example.system-a",
+  "rulesVersion": 1,
+  "derivedValues": [
+    { "id": "meleeBonus", "value": { "op": "subtract", "left": { "ref": "attributes.strength" }, "right": { "literal": 10 } } }
+  ],
+  "actions": [
+    {
+      "id": "spend-mana",
+      "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+      "requires": { "op": "gt", "left": { "ref": "resources.mana.current" }, "right": { "literal": 0 } },
+      "effects": [{ "op": "changeResource", "target": "self", "resource": "mana.current", "amount": { "literal": -1 } }]
+    },
+    {
+      "id": "strength-check",
+      "input": { "type": "object", "properties": { "difficulty": { "type": "integer", "minimum": 1, "maximum": 30 } }, "required": ["difficulty"], "additionalProperties": false },
+      "resolution": { "kind": "check", "dice": [{ "count": 1, "sides": 20 }], "modifier": { "ref": "attributes.strength" }, "targetInput": "difficulty", "comparison": "gte" },
+      "requires": { "op": "gte", "left": { "ref": "attributes.strength" }, "right": { "literal": 1 } },
+      "effects": []
+    }
+  ]
+}
