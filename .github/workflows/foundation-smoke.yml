@@ -1,0 +1,23 @@
+name: Foundation smoke test
+
+on:
+  push:
+    branches: ["main", "docs/foundation-v0.1", "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check CLI syntax
+        run: node --check scripts/potomac-debug.mjs
+      - name: Run isolated host smoke test
+        run: node scripts/potomac-debug.mjs smoke
