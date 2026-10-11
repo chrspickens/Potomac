@@ -29,6 +29,12 @@ const same = (a, b) => {
   return x.length === y.length && timingSafeEqual(x, y);
 };
 
+const encounters = [
+  { id: 'encounter-a', name: 'The Glass Bridge', summary: 'A narrow crossing over a deep ravine.' },
+  { id: 'encounter-b', name: 'The Sunken Archive', summary: 'A flooded chamber of forgotten records.' }
+];
+const encounterById = new Map(encounters.map(encounter => [encounter.id, encounter]));
+
 function pathValue(root, path) {
   return path.split('.').reduce((value, key) => value?.[key], root);
 }
@@ -171,8 +177,30 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     }
     return actor;
   };
-  const visibleEvent = (event, role) => role === 'gm' || event.visibility === 'public';
-  const eventJson = (event) => ({ cursor: event.cursor, id: event.id, actorId: event.actor_id, kind: event.kind, visibility: event.visibility, payload: JSON.parse(event.payload), createdAt: event.created_at });
+  const canReadActor = (row, role) => role === 'gm' || row.owner_role !== 'gm';
+  const visibleEvent = (event, role) => {
+    if (role === 'gm') return true;
+    if (event.visibility !== 'public') return false;
+    if (event.actor_id) {
+      const actor = actorRow.get(event.actor_id);
+      if (actor && !canReadActor(actor, role)) return false;
+    }
+    return true;
+  };
+  const eventJson = (event, role) => {
+    const payload = JSON.parse(event.payload);
+    // Action parameters are client supplied and may contain values copied from GM-only fields.
+    if (role === 'player') delete payload.parameters;
+    return { cursor: event.cursor, id: event.id, actorId: event.actor_id, kind: event.kind, visibility: event.visibility, payload, createdAt: event.created_at };
+  };
+  const currentContext = () => {
+    const stored = JSON.parse(db.prepare('SELECT context FROM campaign WHERE id=?').get(campaignId).context);
+    const active = stored?.activeEncounter;
+    const encounterId = encounterById.has(active) ? active
+      : encounters.find(encounter => encounter.name === active)?.id || null;
+    return { activeEncounter: encounterId };
+  };
+  const publicEncounters = () => encounters.map(({ id, name, summary }) => ({ id, name, summary }));
   const transaction = (work) => {
     db.exec('BEGIN IMMEDIATE');
     try { const result = work(); db.exec('COMMIT'); return result; }
@@ -183,7 +211,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       const rows = db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(client.cursor);
       for (const row of rows) {
         client.cursor = Number(row.cursor);
-        if (visibleEvent(row, client.role)) client.res.write(`id: ${row.cursor}\nevent: update\ndata: ${JSON.stringify(eventJson(row))}\n\n`);
+        if (visibleEvent(row, client.role)) client.res.write(`id: ${row.cursor}\nevent: update\ndata: ${JSON.stringify(eventJson(row, client.role))}\n\n`);
       }
     }
   };
@@ -203,12 +231,24 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     if (!role) return json(res, 401, { error: 'Bearer token required' });
     try {
       if (req.method === 'GET' && url.pathname === '/api/state') {
-        const actors = db.prepare('SELECT * FROM actors ORDER BY id').all().map(row => projectActor(row, role));
+        const actors = db.prepare('SELECT * FROM actors ORDER BY id').all().filter(row => canReadActor(row, role)).map(row => projectActor(row, role));
         const modules = db.prepare('SELECT manifest FROM modules ORDER BY id,version').all().map(row => JSON.parse(row.manifest));
-        const context = JSON.parse(db.prepare('SELECT context FROM campaign WHERE id=?').get(campaignId).context);
+        const context = currentContext();
         const since = Math.max(0, Number(url.searchParams.get('since') || 0));
-        const events = db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(since).filter(e => visibleEvent(e, role)).map(eventJson);
-        return json(res, 200, { campaignId, role, revision: latest(), context, modules, actors, events });
+        const events = db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(since).filter(e => visibleEvent(e, role)).map(event => eventJson(event, role));
+        return json(res, 200, { campaignId, role, revision: latest(), context, encounters: publicEncounters(), modules, actors, events });
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/encounters/')) {
+        const id = decodeURIComponent(url.pathname.slice('/api/encounters/'.length));
+        const encounter = encounterById.get(id);
+        if (!encounter) return json(res, 404, { error: 'Encounter not found' });
+        return json(res, 200, { id: encounter.id, name: encounter.name, summary: encounter.summary });
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/actors/')) {
+        const id = decodeURIComponent(url.pathname.slice('/api/actors/'.length));
+        const actor = actorRow.get(id);
+        if (!actor || !canReadActor(actor, role)) return json(res, 404, { error: 'Actor not found' });
+        return json(res, 200, projectActor(actor, role));
       }
       if (req.method === 'GET' && url.pathname === '/api/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
@@ -245,18 +285,23 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }
       if (url.pathname === '/api/context') {
         if (role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        if (!body || Object.keys(body).length !== 1 || !body.context || typeof body.context !== 'object' || Array.isArray(body.context)
+          || Object.keys(body.context).length !== 1 || !Object.hasOwn(body.context, 'activeEncounter')
+          || !(body.context.activeEncounter === null || typeof body.context.activeEncounter === 'string' && encounterById.has(body.context.activeEncounter))) {
+          return json(res, 400, { error: 'context.activeEncounter must be a fixture encounter ID or null' });
+        }
+        const context = { activeEncounter: body.context.activeEncounter };
         transaction(() => {
-          db.prepare('UPDATE campaign SET context=? WHERE id=?').run(JSON.stringify(body.context || {}), campaignId);
-          insertEvent({ kind: 'context.changed', visibility: 'public', actorId: body.actorId || null, payload: body.context || {} });
+          db.prepare('UPDATE campaign SET context=? WHERE id=?').run(JSON.stringify(context), campaignId);
+          insertEvent({ kind: 'context.changed', visibility: 'public', payload: context });
         });
-        notify(); return json(res, 200, { context: body.context || {}, revision: latest() });
+        notify(); return json(res, 200, { context, revision: latest() });
       }
       if (url.pathname === '/api/actions') {
         const { operationId, entityId, baseRevision, actionId, parameters = {} } = body;
         if (!operationId || !entityId || !actionId || !Number.isInteger(baseRevision)) return json(res, 400, { error: 'operationId, entityId, integer baseRevision and actionId required' });
         const actor = actorRow.get(entityId);
-        if (!actor) return json(res, 404, { error: 'Actor not found' });
-        if (role === 'player' && actor.owner_role !== 'player') return json(res, 403, { error: 'Players may only act on player-owned actors' });
+        if (!actor || !canReadActor(actor, role)) return json(res, 404, { error: 'Actor not found' });
         const requestHash = createHash('sha256').update(JSON.stringify({ entityId, baseRevision, actionId, parameters })).digest('hex');
         const cached = db.prepare('SELECT response,actor_id,action_id,request_hash FROM operations WHERE id=?').get(operationId);
         if (cached) {
@@ -291,7 +336,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     const rows = db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(client.cursor);
     for (const row of rows) {
       client.cursor = Number(row.cursor);
-      if (visibleEvent(row, client.role)) client.res.write(`id: ${row.cursor}\nevent: update\ndata: ${JSON.stringify(eventJson(row))}\n\n`);
+      if (visibleEvent(row, client.role)) client.res.write(`id: ${row.cursor}\nevent: update\ndata: ${JSON.stringify(eventJson(row, client.role))}\n\n`);
     }
   }
   return { server, db, listen(port = 4177, host = '127.0.0.1') { return new Promise(resolveListen => server.listen(port, host, () => resolveListen(server.address()))); }, close() { for (const c of clients) c.res.end(); server.close(); db.close(); } };
