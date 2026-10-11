@@ -36,7 +36,8 @@ function parseArgs(argv) {
   const options = {};
   for (let i = 1; i < argv.length; i++) {
     const key = argv[i];
-    if (!key.startsWith('--') || key === '--') throw new Error('Unexpected argument: ' + key);
+    if (key === '--') continue;
+    if (!key.startsWith('--')) throw new Error('Unexpected argument: ' + key);
     if (key === '--help') return { command: 'help', options: {} };
     const value = argv[++i];
     if (!value || value.startsWith('--')) throw new Error('Missing value for ' + key);
@@ -103,6 +104,7 @@ async function smoke() {
   const player = randomUUID();
   let host;
   let checks = 0;
+  let passed = false;
   const check = async (name, work) => {
     const start = performance.now();
     try {
@@ -230,11 +232,12 @@ async function smoke() {
       }
     });
 
-    emit('summary', { command: 'smoke', status: 'pass', checks, temporaryDatabaseDeleted: true });
+    passed = true;
   } finally {
     if (host) host.close();
     await rm(dir, { recursive: true, force: true, maxRetries: 3 });
   }
+  if (passed) emit('summary', { command: 'smoke', status: 'pass', checks, temporaryDatabaseDeleted: true });
 }
 
 async function watch(options) {
