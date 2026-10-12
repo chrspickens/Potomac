@@ -386,8 +386,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       const sessionTimelineMatch = req.method === 'GET' && url.pathname.match(/^\/api\/session\/([^/]+)\/timeline$/);
       if (sessionTimelineMatch) {
         const sessionId = decodeURIComponent(sessionTimelineMatch[1]);
-        const session = db.prepare('SELECT id FROM sessions WHERE id=? AND campaign_id=?').get(sessionId, campaignId);
-        if (!session) return json(res, 404, { error: 'Session not found' });
+        const session = db.prepare('SELECT id,encounter_id FROM sessions WHERE id=? AND campaign_id=?').get(sessionId, campaignId);
+        if (!session || !visibleEncounter(session.encounter_id, auth)) return json(res, 404, { error: 'Session not found' });
         const after = url.searchParams.has('after') ? Number(url.searchParams.get('after')) : 0;
         const requestedLimit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 100;
         if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(requestedLimit) || requestedLimit < 1)
