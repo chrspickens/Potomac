@@ -3,10 +3,11 @@ import { loadRememberedIdentity, rememberIdentity } from './identity'
 import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 
 export type Role = 'gm' | 'player'
-export type Encounter = { id: string; name: string; summary: string }
+export type Encounter = { id: string; name: string; summary: string; status?: 'prepared' | 'active' | 'completed'; revision?: number; participants?: Array<{ actorId: string; initiative?: number | null; status?: string; activationOrder?: number | null }> }
+export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
-export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[] }
+export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[]; modules?: GameModule[] }
 export type ActionRequest = { operationId: string; entityId: string; baseRevision: number; actionId: string; parameters: Record<string, unknown> }
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 export type HostAdapter = {
@@ -14,6 +15,7 @@ export type HostAdapter = {
   load(role: Role): Promise<Snapshot>
   command(role: Role, body: ActionRequest): Promise<void>
   setEncounter(role: Role, id: string | null): Promise<void>
+  createActor(role: Role, input: { id: string; moduleId: string; moduleVersion: string; data: Record<string, unknown>; visibility?: Record<string, unknown> }): Promise<void>
   subscribe(role: Role, onSnapshot: (snapshot: Snapshot) => void, onStatus: (status: ConnectionStatus) => void): () => void
 }
 
@@ -67,6 +69,37 @@ export async function grantActorToMember(actorId: string, memberId: string): Pro
   await http(`/api/actors/${encodeURIComponent(actorId)}/grants`, 'gm', { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) })
 }
 
+export async function createCampaignActor(input: { id: string; moduleId: string; moduleVersion: string; data: Record<string, unknown>; visibility?: Record<string, unknown> }): Promise<void> {
+  if (!baseUrl) throw new Error('A local host is required to create a character')
+  await http('/api/actors', 'gm', { method: 'POST', body: JSON.stringify(input) })
+}
+
+
+export async function getCampaignConfig(): Promise<CampaignConfig> {
+  return http<CampaignConfig>('/api/campaign', 'gm')
+}
+export async function saveCampaignConfig(config: Omit<CampaignConfig, 'id'>): Promise<CampaignConfig> {
+  return http<CampaignConfig>('/api/campaign', 'gm', { method: 'PUT', body: JSON.stringify({
+    name: config.name, systemModuleId: config.systemModuleId, systemModuleVersion: config.systemModuleVersion,
+    baseRevision: config.revision
+  }) })
+}
+export async function editCharacterFields(entityId: string, baseRevision: number, changes: Record<string, unknown>, operationId: string): Promise<void> {
+  await http('/api/actors/' + encodeURIComponent(entityId), 'gm', { method: 'PUT', body: JSON.stringify({ operationId, baseRevision, changes }) })
+}
+export async function createCampaignEncounter(name: string, summary: string): Promise<Encounter> {
+  return http('/api/encounters', 'gm', { method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), name, summary }) })
+}
+export async function loadCampaignEncounter(id: string): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id), 'gm')
+}
+export async function editCampaignEncounter(id: string, baseRevision: number, fields: { name: string; summary: string; status: 'prepared' | 'active' | 'completed' }): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id), 'gm', { method: 'PUT', body: JSON.stringify({ ...fields, baseRevision }) })
+}
+export async function saveEncounterParticipants(id: string, baseRevision: number, participants: NonNullable<Encounter['participants']>): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id) + '/participants', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, participants }) })
+}
+
 export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; campaignId?: string | null; baseRevision?: number | null; ruleVersion?: number | null; status: string; createdAt: string; request?: OfflineOperation }
 
 export async function listReviewProposals(): Promise<ReviewProposal[]> {
@@ -87,18 +120,25 @@ export async function listMyOfflineReceipts(): Promise<OfflineReceipt[]> {
 
 type HostState = {
   campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
-  modules?: Array<Record<string, unknown>>
+  modules?: Array<Record<string, unknown> & { id?: string; version?: string; schema?: Record<string, unknown> }>
   actors?: Array<{ id: string; moduleId: string; moduleVersion: string; revision: number; data: Record<string, any> }>
   events?: Array<{ id: string; actorId: string | null; kind: string; payload: Record<string, any>; createdAt: string; visibility: string; cursor: number }>
 }
 function fromHost(body: HostState, role: Role): Snapshot {
   const modules = new Map((body.modules || []).map(entry => [`${entry.id}@${entry.version}`, entry]))
+  const installedModules: GameModule[] = [...modules.values()].map(definition => ({
+    manifest: { id: String(definition.id), version: String(definition.version), name: String(definition.name || definition.id), tagline: String(definition.tagline || definition.type || 'Game system') },
+    view: (definition.view || { title: 'Character', layout: [], brick: [] }) as GameModule['view'],
+    actions: (definition.actions || []) as GameModule['actions'],
+    schema: definition.schema as Record<string, unknown> | undefined,
+  }))
   const actors: Actor[] = (body.actors || []).flatMap(row => {
     const definition = modules.get(`${row.moduleId}@${row.moduleVersion}`)
     if (!definition) return []
     const module: GameModule = {
       manifest: { id: String(definition.id), version: String(definition.version), name: String(definition.name || definition.id), tagline: String(definition.tagline || definition.type || 'Game system') },
       view: definition.view as GameModule['view'], actions: (definition.actions || []) as GameModule['actions'],
+      schema: definition.schema as Record<string, unknown> | undefined,
     }
     return [{ entityId: row.id, revision: row.revision, module, data: row.data, name: String(row.data.name || row.id), epithet: String(row.data.epithet || ''), secretNote: row.data.secretNote }]
   })
@@ -111,7 +151,7 @@ function fromHost(body: HostState, role: Role): Snapshot {
       : Array.isArray(event.payload.rolls) && event.payload.rolls.length ? `Verified roll: ${event.payload.rolls.join(' + ')}` : String(event.payload.actionId || ''),
     time: event.createdAt, visibility: event.visibility === 'gm' ? 'gm' : 'all', cursor: event.cursor,
   }))
-  return { role, memberId: body.memberId ?? null, actors, encounters, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
+  return { role, memberId: body.memberId ?? null, actors, encounters, modules: installedModules, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
 }
 async function loadHost(role: Role) {
   const body = await http<HostState>('/api/state', role)
@@ -139,6 +179,7 @@ export const host: HostAdapter = hostConfigured ? {
   mode: 'host', load: loadHost,
   async command(role, body) { await http('/api/actions', role, { method: 'POST', body: JSON.stringify(body) }) },
   async setEncounter(role, id) { await http('/api/context', role, { method: 'POST', body: JSON.stringify({ context: { activeEncounter: id } }) }) },
+  async createActor(_role, input) { await createCampaignActor(input) },
   subscribe(role, onSnapshot, onStatus) {
     let stopped = false
     let controller: AbortController | undefined
@@ -214,6 +255,7 @@ export const host: HostAdapter = hostConfigured ? {
     demo = { ...demo, context: { ...demo.context, activeEncounter: encounter || null, cursor: demo.context.cursor + 1 } }
     events.dispatchEvent(new Event('change'))
   },
+  async createActor() { throw new Error('Character creation requires a configured host') },
   subscribe(role, onSnapshot, onStatus) {
     onStatus('connected')
     const listener = () => void host.load(role).then(onSnapshot)

@@ -38,13 +38,13 @@ export function CharacterView({ actor, busy, offline = false, onAction, compact,
   </div>;
 }
 
-function CharacterBrick({ data, busy, offline, onAction }: BrickRenderProps<Actor>) {
-  return data ? <CharacterView actor={data} compact busy={busy} offline={offline} onAction={onAction} gm={Boolean(data.secretNote)} /> : <p className="brick-message">Character unavailable for this binding.</p>;
+function CharacterBrick({ data, busy, offline, onAction, onOpenApp }: BrickRenderProps<Actor>) {
+  return data ? <><button type="button" onClick={() => onOpenApp?.('characters', data.entityId)}>Open character app</button><CharacterView actor={data} compact busy={busy} offline={offline} onAction={onAction} gm={Boolean(data.secretNote)} /></> : <p className="brick-message">Character unavailable for this binding.</p>;
 }
 
-function EncounterBrick({ data }: BrickRenderProps<{ encounter: Encounter; following: boolean }>) {
+function EncounterBrick({ data, onOpenApp }: BrickRenderProps<{ encounter: Encounter; following: boolean }>) {
   if (!data) return <p className="brick-message">No accessible encounter for this binding.</p>;
-  return <div className="encounter-summary"><p className="eyebrow">{data.following ? 'FOLLOWING SESSION' : 'PINNED ENCOUNTER'}</p><h3>{data.encounter.name}</h3><p>{data.encounter.summary}</p><small>Stable ID · {data.encounter.id}</small></div>;
+  return <div className="encounter-summary"><p className="eyebrow">{data.following ? 'FOLLOWING SESSION' : 'PINNED ENCOUNTER'}</p><h3>{data.encounter.name}</h3><p>{data.encounter.summary}</p><small>Stable ID · {data.encounter.id}</small><div><button type="button" onClick={() => onOpenApp?.('encounters', data.encounter.id)}>Open encounter app</button></div></div>;
 }
 
 function ActivityBrick({ data }: BrickRenderProps<Activity[]>) {

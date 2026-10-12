@@ -11,6 +11,7 @@ pnpm debug:doctor -- --role gm     # inspect as GM
 pnpm debug:watch -- --role gm --since now
 pnpm check                         # build, tests, isolated host smoke and two-client browser acceptance
 pnpm debug:smoke                   # isolated host, separate temporary database
+pnpm acceptance:campaign           # isolated browser acceptance with a GM and two enrolled players
 ```
 
 Direct commands work without installation:
@@ -21,6 +22,12 @@ node scripts/diagnostics/potomac-debug.mjs smoke
 node scripts/diagnostics/potomac-debug.mjs doctor --role player
 node scripts/diagnostics/potomac-debug.mjs watch --role player --since 0 --limit 5
 ```
+
+## Campaign browser acceptance (current 0.4 slice)
+
+`pnpm acceptance:campaign` runs the isolated browser scenario with one GM and two separately enrolled player identities. It creates a temporary SQLite database, starts a loopback host and isolated Vite/browser sessions, and removes temporary state when the run ends. The second player's snapshot and event replay are checked for member-scope isolation while the existing workspace scenario verifies grants, host-filtered fields, actions, context-following bricks, and browser layout persistence.
+
+This is an incremental 0.4 harness, not the complete Ashen Road campaign journey: the host still supplies fixed fixture content and does not yet support the full create/edit/archive, encounter lifecycle, offline review, restart, System B browser scenario, or backup restore acceptance sequence. Run `pnpm acceptance:workspace` for the same current browser scenario under its 0.2 name. Both commands require Node dependencies and Chrome or Edge; set `POTOMAC_CHROME` to the browser executable when automatic discovery does not find it.
 
 ## Commands
 

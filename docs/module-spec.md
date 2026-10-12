@@ -1,5 +1,7 @@
 # Potomac module and rules contract — draft v0.1
 
+For the 0.4 campaign's exact module pin, schema-driven character create/edit, and incompatible-version behavior, see [Workspace 0.4 requirements](workspace-0.4-requirements.md) and [issue #26](https://github.com/chrspickens/Potomac/issues/26). The examples in this draft remain provisional until implemented and validated.
+
 **Provisional**: examples below are design targets for the foundation spike, not an implemented wire format.
 
 ## Module categories

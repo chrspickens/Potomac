@@ -18,6 +18,10 @@ The current localhost 0.3 experiment uses SSE rather than the proposed WebSocket
 | Module SDK | Versioned manifests + JSON Schema + declarative UI + rules IR | Proposed |
 | Rules language | Tiny typed JSON rules IR first; possibly readable PRL later | Proposed |
 | Deployment | Monorepo, modular monolith initially; Electron later | Proposed |
+| Workspace 0.4 campaign scope | One configured campaign per local host; exact default module ID/version pinned | Accepted for 0.4 requirements; see [ADR-0004](adr/0004-single-campaign-and-system-pin.md) |
+| Entity permissions | Host-side member grants plus field-level projections; bindings never grant access | Accepted for 0.4 requirements; see [ADR-0005](adr/0005-host-authorization-and-entity-visibility.md) |
+| Encounter lifecycle | Persistent planned/active/completed/archive lifecycle and one GM-controlled active encounter | Accepted for 0.4 requirements; see [ADR-0006](adr/0006-encounter-lifecycle.md) |
+| Migration and backup | Preserve legacy data; versioned snapshot backup restores only into an empty host | Accepted for 0.4 requirements; see [ADR-0007](adr/0007-migration-and-backup-restore.md) |
 
 ## Questions to answer through experiments
 
@@ -39,3 +43,10 @@ When implementation begins, add small ADRs under `docs/adr/` with context, consi
 - [ADR 0001 — Local Workspace layouts](adr/0001-workspace-local-layout.md)
 - [ADR 0002 — Workspace hardening integration route](adr/0002-workspace-hardening-integration.md)
 - [ADR 0003 — Local enrollment and offline authority](adr/0003-local-enrollment-and-offline-authority.md)
+- [ADR 0008 — Versioned local campaign backup and restore](adr/0008-campaign-backup-and-restore.md)
+- [ADR 0004 — One campaign per host and exact system pin](adr/0004-single-campaign-and-system-pin.md)
+- [ADR 0005 — Host authorization and entity visibility](adr/0005-host-authorization-and-entity-visibility.md)
+- [ADR 0006 — Encounter lifecycle and session activation](adr/0006-encounter-lifecycle.md)
+- [ADR 0007 — Legacy migration and backup/restore safety](adr/0007-migration-and-backup-restore.md)
+
+The 0.4 decisions are accepted as requirements for review and implementation planning; they do not describe behavior already implemented by the 0.3 host. See [Workspace 0.4 requirements](workspace-0.4-requirements.md) and [tracker issue #26](https://github.com/chrspickens/Potomac/issues/26).

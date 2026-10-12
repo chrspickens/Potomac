@@ -1,5 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { configuredHost, connectPlayerCredential, decideReviewProposal, enrollLocalPlayer, grantActorToMember, host, listMyOfflineReceipts, listReviewProposals, loadReviewProposal, submitOfflineOperation, type ConnectionStatus, type ReviewProposal, type Role, type Snapshot } from './api'
+import { configuredHost, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, getCampaignConfig, grantActorToMember, host, listMyOfflineReceipts, listReviewProposals, loadCampaignEncounter, loadReviewProposal, saveCampaignConfig, saveEncounterParticipants, submitOfflineOperation, type CampaignConfig, type Encounter, type ConnectionStatus, type ReviewProposal, type Role, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import { openOfflineStorage, type OfflineOperation, type PrivateDraft, type QueuedOperation } from './offline/storage'
@@ -10,11 +10,37 @@ import { createDefaultWorkspace, getBrickDefinition, getBrickDefinitions, isSupp
 import { CharacterView, createAuthorizedBrickAdapter, resolveDefaultBinding } from './workspace/contributions.tsx'
 import { resolveBrickLayout } from './workspace/layout.ts'
 import { useBrickDrag } from './workspace/use-brick-drag.ts'
+import { createSchemaDefaults } from './schema-form.ts'
 import './workspace/brick-canvas.css'
 
 const profileKey = 'potomac.workspace.demo-profile'
 const newId = () => crypto.randomUUID()
 const displayError = (cause: unknown) => cause instanceof Error ? cause.message : 'Request failed'
+
+function SchemaFields({ schema, value, onChange }: { schema?: Record<string, unknown>; value: Record<string, unknown>; onChange: (value: Record<string, unknown>) => void }) {
+  const definitions = schema && typeof schema.$defs === 'object' && schema.$defs !== null ? schema.$defs as Record<string, Record<string, unknown>> : {}
+  const resolve = (definition: Record<string, unknown>): Record<string, unknown> => typeof definition.$ref === 'string' && definition.$ref.startsWith('#/$defs/') ? resolve(definitions[definition.$ref.slice('#/$defs/'.length)] || {}) : definition
+  const rawProperties = schema && typeof schema.properties === 'object' && schema.properties !== null ? schema.properties as Record<string, Record<string, unknown>> : {}
+  const properties = Object.fromEntries(Object.entries(rawProperties).map(([key, definition]) => [key, resolve(definition)])) as Record<string, Record<string, unknown>>
+  const required = Array.isArray(schema?.required) ? schema.required.filter((item): item is string => typeof item === 'string') : []
+  return <div className="schema-fields">{Object.entries(properties).filter(([key, definition]) => !['moduleId', 'moduleVersion', 'schemaVersion', 'entityId', 'revision', 'derived', 'secretNote'].includes(key) && (definition.type === 'string' || definition.type === 'integer' || definition.type === 'number')).map(([key, definition]) => {
+    const current = value[key]
+    const numeric = definition.type === 'integer' || definition.type === 'number'
+    return <label key={key}>{key === 'name' ? 'Name' : key === 'epithet' ? 'Description / epithet' : key}{required.includes(key) ? ' *' : ''}<input type={numeric ? 'number' : 'text'} required={required.includes(key)} min={typeof definition.minimum === 'number' ? definition.minimum : undefined} max={typeof definition.maximum === 'number' ? definition.maximum : undefined} maxLength={typeof definition.maxLength === 'number' ? definition.maxLength : undefined} value={current === undefined ? '' : String(current)} onChange={event => onChange({ ...value, [key]: numeric ? Number(event.target.value) : event.target.value })} /></label>
+  })}{Object.entries(properties).filter(([key, definition]) => !['moduleId', 'moduleVersion', 'schemaVersion', 'entityId', 'revision', 'derived', 'secretNote'].includes(key) && definition.type === 'object').map(([group, definition]) => {
+    const children = definition.properties && typeof definition.properties === 'object' ? Object.fromEntries(Object.entries(definition.properties as Record<string, Record<string, unknown>>).map(([key, child]) => [key, resolve(child)])) as Record<string, Record<string, unknown>> : {}
+    const existing = value[group] && typeof value[group] === 'object' ? value[group] as Record<string, unknown> : {}
+    return <fieldset key={group}><legend>{group}</legend>{Object.entries(children).map(([key, child]) => {
+      if (child.type === 'object') {
+        const nested = child.properties && typeof child.properties === 'object' ? child.properties as Record<string, Record<string, unknown>> : {}
+        const nestedValue = existing[key] && typeof existing[key] === 'object' ? existing[key] as Record<string, unknown> : {}
+        return <fieldset key={key}><legend>{key}</legend>{Object.entries(nested).map(([leaf, leafSchema]) => <label key={leaf}>{leaf}<input type="number" required={Array.isArray(child.required) && child.required.includes(leaf)} min={typeof leafSchema.minimum === 'number' ? leafSchema.minimum : undefined} max={typeof leafSchema.maximum === 'number' ? leafSchema.maximum : undefined} value={nestedValue[leaf] === undefined ? '' : String(nestedValue[leaf])} onChange={event => onChange({ ...value, [group]: { ...existing, [key]: { ...nestedValue, [leaf]: Number(event.target.value) } } })} /></label>)}</fieldset>
+      }
+      const current = existing[key]
+      return <label key={key}>{key}<input type={child.type === 'integer' || child.type === 'number' ? 'number' : 'text'} required={Array.isArray(definition.required) && definition.required.includes(key)} min={typeof child.minimum === 'number' ? child.minimum : undefined} max={typeof child.maximum === 'number' ? child.maximum : undefined} value={current === undefined ? '' : String(current)} onChange={event => onChange({ ...value, [group]: { ...existing, [key]: child.type === 'integer' || child.type === 'number' ? Number(event.target.value) : event.target.value } })} /></label>
+    })}</fieldset>
+  })}</div>
+}
 
 class BrickBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
@@ -32,13 +58,13 @@ function defaultBinding(typeId: string, snapshot: Snapshot | null): BrickInstanc
   return resolveDefaultBinding(definition, createAuthorizedBrickAdapter(snapshot?.actors ?? [], snapshot?.encounters ?? [], snapshot?.context.activeEncounter ?? null, snapshot?.activity ?? []))
 }
 
-function BrickContent({ brick, snapshot, busy, offline, onAction }: { brick: BrickInstance; snapshot: Snapshot | null; busy: boolean; offline: boolean; onAction: (actor: Actor, actionId: string) => void }) {
+function BrickContent({ brick, snapshot, busy, offline, onAction, onOpenApp }: { brick: BrickInstance; snapshot: Snapshot | null; busy: boolean; offline: boolean; onAction: (actor: Actor, actionId: string) => void; onOpenApp: (appId: 'characters' | 'encounters', entityId?: string) => void }) {
   const definition = getBrickDefinition(brick.typeId)
   if (!definition) return <p className="brick-message">Brick “{brick.typeId}” is unavailable. Its saved settings are preserved.</p>
   if (!isSupportedBinding(brick.typeId, brick.binding)) return <p className="brick-message">This saved binding is unsupported. Choose a supported binding to repair it; saved settings are preserved.</p>
   if (!snapshot) return <p className="brick-message">Waiting for the host…</p>
   const adapter = createAuthorizedBrickAdapter(snapshot.actors, snapshot.encounters, snapshot.context.activeEncounter, snapshot.activity)
-  return <definition.render brick={brick} data={definition.resolve(brick.binding, adapter)} adapter={adapter} busy={busy} offline={offline} onAction={onAction} />
+  return <definition.render brick={brick} data={definition.resolve(brick.binding, adapter)} adapter={adapter} busy={busy} offline={offline} onAction={onAction} onOpenApp={onOpenApp} />
 }
 
 export default function App() {
@@ -60,7 +86,7 @@ export default function App() {
   const decisionIds = useRef(new Map<string, string>())
   const syncInFlight = useRef(false)
   const syncRequested = useRef(false)
-  const [section, setSection] = useState<'dashboard' | 'characters'>('dashboard')
+  const [section, setSection] = useState<'dashboard' | 'characters' | 'encounters'>('dashboard')
   const [selectedActorId, setSelectedActorId] = useState('')
   const [editing, setEditing] = useState(false)
   const [picker, setPicker] = useState(false)
@@ -70,6 +96,20 @@ export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(() => createDefaultWorkspace('foundation-demo', profileId))
   const [loadedWorkspace, setLoadedWorkspace] = useState(false)
   const [encounterDraft, setEncounterDraft] = useState('')
+  const [creatingCharacter, setCreatingCharacter] = useState(false)
+  const [characterModuleId, setCharacterModuleId] = useState('')
+  const [newCharacterData, setNewCharacterData] = useState<Record<string, unknown>>({})
+  const [campaign, setCampaign] = useState<CampaignConfig | null>(null)
+  const [campaignNameDraft, setCampaignNameDraft] = useState('')
+  const [campaignSystemChoice, setCampaignSystemChoice] = useState('')
+  const [editingCharacter, setEditingCharacter] = useState(false)
+  const [editedCharacterData, setEditedCharacterData] = useState<Record<string, unknown>>({})
+  const [encounterDetails, setEncounterDetails] = useState<Encounter | null>(null)
+  const [encounterNameInput, setEncounterNameInput] = useState('')
+  const [encounterSummaryInput, setEncounterSummaryInput] = useState('')
+  const [encounterStatusInput, setEncounterStatusInput] = useState<'prepared' | 'active' | 'completed'>('prepared')
+  const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
+  const [creatingEncounter, setCreatingEncounter] = useState(false)
 
   useEffect(() => {
     let stopped = false
@@ -106,6 +146,18 @@ export default function App() {
     try { saveWorkspace(workspace) } catch { setError('Layout could not be saved in this browser.') }
   }, [workspace, loadedWorkspace])
   useEffect(() => { setEncounterDraft(snapshot?.context.activeEncounter?.id || '') }, [snapshot?.context.activeEncounter?.id])
+  useEffect(() => {
+    if (!configuredHost || !snapshot || role !== 'gm') { setCampaign(null); return }
+    let active = true
+    void getCampaignConfig().then(next => { if (active) setCampaign(next) }).catch(cause => { if (active) setError(displayError(cause)) })
+    return () => { active = false }
+  }, [role, snapshot?.context.campaignId, snapshot?.context.cursor])
+  useEffect(() => {
+    if (!campaign) return
+    setCampaignNameDraft(campaign.name)
+    setCampaignSystemChoice(campaign.systemModuleId && campaign.systemModuleVersion ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : '')
+  }, [campaign?.id, campaign?.revision])
+  useEffect(() => { setEditingCharacter(false); setEditedCharacterData({}) }, [selectedActorId])
 
   const dashboard = workspace.dashboards.find(item => item.id === workspace.activeDashboardId) || workspace.dashboards[0]
   const drag = useBrickDrag({
@@ -273,6 +325,97 @@ export default function App() {
     catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
   }
+  const availableModules = useMemo(() => {
+    const unique = new Map((snapshot?.modules || snapshot?.actors.map(actor => actor.module) || []).map(module => [`${module.manifest.id}@${module.manifest.version}`, module]))
+    const modules = [...unique.values()]
+    return campaign?.systemModuleId && campaign.systemModuleVersion
+      ? modules.filter(module => module.manifest.id === campaign.systemModuleId && module.manifest.version === campaign.systemModuleVersion)
+      : modules
+  }, [snapshot?.modules, snapshot?.actors, campaign?.systemModuleId, campaign?.systemModuleVersion])
+  const selectedModule = availableModules.find(module => module.manifest.id === characterModuleId) || availableModules[0]
+  useEffect(() => {
+    if (creatingCharacter && selectedModule && Object.keys(newCharacterData).length === 0) setNewCharacterData(createSchemaDefaults(selectedModule.schema || {}))
+  }, [creatingCharacter, selectedModule?.manifest.id])
+  const createCharacter = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedModule || role !== 'gm') return
+    setBusy(true); setError('')
+    try {
+      const data: Record<string, unknown> = { ...createSchemaDefaults(selectedModule.schema || {}), ...newCharacterData, name: String(newCharacterData.name || '').trim(), epithet: String(newCharacterData.epithet || '').trim() }
+      const id = newId()
+      await host.createActor(role, { id, moduleId: selectedModule.manifest.id, moduleVersion: selectedModule.manifest.version, data, visibility: data.secretNote ? { gmOnly: ['secretNote'] } : {} })
+      setSnapshot(await host.load(role)); setSelectedActorId(id); setCreatingCharacter(false); setNewCharacterData({})
+      setActionState('Character created and accepted by host.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+
+  const saveCampaignSetup = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!campaign || !campaignSystemChoice || !campaignNameDraft.trim()) return
+    const selected = snapshot?.modules?.find(module => `${module.manifest.id}@${module.manifest.version}` === campaignSystemChoice)
+    if (!selected) { setError('Select an installed game system'); return }
+    setBusy(true); setError('')
+    try {
+      const updated = await saveCampaignConfig({
+        name: campaignNameDraft.trim(), systemModuleId: selected.manifest.id,
+        systemModuleVersion: selected.manifest.version, revision: campaign.revision
+      })
+      setCampaign(updated); setActionState(`Campaign ${updated.name} saved on host.`)
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const saveCharacterEdit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedActor || !selectedActor.module.schema) return
+    const properties = selectedActor.module.schema.properties as Record<string, unknown> | undefined
+    const reserved = new Set(['moduleId', 'moduleVersion', 'schemaVersion', 'entityId', 'revision', 'derived'])
+    const changes = Object.fromEntries(Object.entries(editedCharacterData).filter(([key]) => !!properties && Object.hasOwn(properties, key) && !reserved.has(key)))
+    setBusy(true); setError('')
+    try {
+      await editCharacterFields(selectedActor.entityId, selectedActor.revision, changes, newId())
+      setSnapshot(await host.load('gm')); setEditingCharacter(false)
+      setActionState('Character fields updated on host.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const chooseEncounter = async (id: string) => {
+    setBusy(true); setError('')
+    try {
+      const detail = await loadCampaignEncounter(id)
+      setEncounterDetails(detail); setEncounterNameInput(detail.name); setEncounterSummaryInput(detail.summary)
+      setEncounterStatusInput(detail.status || 'prepared')
+      setEncounterParticipantIds((detail.participants || []).map(item => item.actorId))
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const createEncounter = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true); setError('')
+    try {
+      const created = await createCampaignEncounter(encounterNameInput.trim(), encounterSummaryInput)
+      setCreatingEncounter(false)
+      setSnapshot(await host.load('gm'))
+      await chooseEncounter(created.id)
+      setActionState('Encounter created on host.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const saveEncounterEdits = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!encounterDetails?.revision) return
+    setBusy(true); setError('')
+    try {
+      const updated = await editCampaignEncounter(encounterDetails.id, encounterDetails.revision,
+        { name: encounterNameInput.trim(), summary: encounterSummaryInput, status: encounterStatusInput })
+      if (updated.revision === undefined) throw new Error('Encounter revision missing from host response')
+      const latest = await saveEncounterParticipants(updated.id, updated.revision,
+        encounterParticipantIds.map((actorId, index) => ({ actorId, status: 'active', activationOrder: index })))
+      setEncounterDetails(latest); setSnapshot(await host.load('gm'))
+      setActionState('Encounter and participants saved on host.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
   const changeProfile = () => {
     const id = window.prompt('Local layout profile (not an account or permission)', profileId)?.trim()
     if (!id) return
@@ -383,10 +526,23 @@ export default function App() {
   } as Record<string, string>)[code] || 'The host could not apply this edit; review it against current authorized state.'
 
   return <div className="app-shell">
-    <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{snapshot?.context.campaignId || 'Connecting…'}</strong></div><nav aria-label="Applications"><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▦ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><div className="rail-future">Encounters <small>Coming later</small></div><div className="rail-future">Maps <small>Coming later</small></div><div className="rail-future">Lore <small>Coming later</small></div></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
-    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : 'Characters'}</strong></div><div className="topbar-right"><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId('') }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
+    <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{campaign?.name || snapshot?.context.campaignId || 'Connecting…'}</strong><small>{campaign?.systemModuleId ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : 'Configure campaign in GM setup'}</small></div><nav aria-label="Applications"><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▦ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><button className={section === 'encounters' ? 'active' : ''} onClick={() => setSection('encounters')}>⚑ <span>Encounters</span></button><div className="rail-future">Maps <small>Coming later</small></div><div className="rail-future">Lore <small>Coming later</small></div></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
+    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'characters' ? 'Characters' : 'Encounters'}</strong></div><div className="topbar-right"><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId('') }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
+    {role === 'gm' && configuredHost && campaign && <section className="campaign-setup" aria-label="Campaign setup">
+      <form onSubmit={event => void saveCampaignSetup(event)}>
+        <strong>Campaign setup</strong>
+        <label>Campaign name <input required maxLength={160} value={campaignNameDraft} onChange={event => setCampaignNameDraft(event.target.value)} /></label>
+        <label>Game system <select required value={campaignSystemChoice} disabled={!!campaign.systemModuleId}
+          onChange={event => setCampaignSystemChoice(event.target.value)}>
+          <option value="">Select installed system</option>
+          {(snapshot?.modules || []).map(module => <option key={module.manifest.id + '@' + module.manifest.version} value={module.manifest.id + '@' + module.manifest.version}>{module.manifest.name} · {module.manifest.version}</option>)}
+        </select></label>
+        <button disabled={busy || connection !== 'connected' || !campaignNameDraft.trim() || !campaignSystemChoice}>Save campaign</button>
+        {campaign.systemModuleId && <small>System pin is locked; changing rules versions needs an explicit migration.</small>}
+      </form>
+    </section>}
     {role === 'gm' && configuredHost && <details className="gm-admin"><summary>GM administration · {proposals.length} pending</summary><div><button onClick={() => void enrollPlayer()}>Enroll player</button><button disabled={!selectedActor} onClick={() => void grantSelectedActor()}>Grant selected character</button>{issuedCredential && <p>Member ID: <code>{issuedCredential.memberId}</code> · One-time credential: <code>{issuedCredential.credential}</code> <button onClick={() => setIssuedCredential(null)}>Hide credential</button></p>}<section aria-label="GM proposal review"><strong>Review queue</strong>{proposals.map(proposal => <p key={proposal.id}>{proposal.actionId} · {proposal.entityId} · member {proposal.memberId.slice(0, 8)} <button onClick={() => void reviewProposal(proposal.id)}>Review</button></p>)}{activeProposal && <div><h2>Review {activeProposal.actionId}</h2><p>Member {activeProposal.memberId} · actor {activeProposal.entityId}</p><pre>{JSON.stringify(activeProposal.request, null, 2)}</pre><button disabled={busy} onClick={() => void decideProposal('accept')}>Accept after revalidation</button><button disabled={busy} onClick={() => void decideProposal('reject')}>Reject</button><button onClick={() => setActiveProposal(null)}>Close</button></div>}</section></div></details>}
     {role === 'player' && queued.length > 0 && <section className="action-status" aria-label="Your local operation status"><strong>Local edits</strong>{queued.slice(-8).map(row => <p key={row.operation.operationId}>{row.operation.actionId} · {row.state}{row.receipt?.reasonCode ? ` · ${row.receipt.reasonCode}` : ''}{row.lastError === 'transport' ? ' · host acknowledgement unavailable; retrying' : ''} · {row.operation.operationId.slice(0, 8)}{row.state === 'queued' && row.firstSubmittedAt === undefined && <button onClick={() => void cancelUnsentEdit(row.operation.operationId)}>Cancel unsent edit</button>}</p>)}</section>}
     {role === 'player' && snapshot?.memberId && <section className="action-status" aria-label="Private local drafts"><label><input type="checkbox" checked={draftNextEdit} onChange={event => setDraftNextEdit(event.target.checked)} /> Save next permitted action as a private draft (do not submit)</label><label>Require this authorized character to stay unchanged <select aria-label="Dependency guard" value={dependencyEntityId} onChange={event => setDependencyEntityId(event.target.value)}><option value="">No dependency guard</option>{snapshot.actors.filter(actor => actor.entityId !== selectedActor?.entityId).map(actor => <option key={actor.entityId} value={actor.entityId}>{actor.name} · revision {actor.revision}</option>)}</select></label>{drafts.length > 0 && <div><strong>Private drafts · {drafts.length}</strong>{drafts.map(draft => { const payload = draft.payload as { kind?: string; operation?: OfflineOperation; reason?: { code?: string; message?: string } } | null; return <div key={draft.draftId}><p>{payload?.operation?.actionId || 'Saved edit'} · local only {payload?.kind === 'offline-intent' && <button onClick={() => void submitPrivateDraft(draft)}>Queue for host</button>}{payload?.kind === 'offline-conflict' && <button onClick={() => void editPrivateDraft(draft)}>Edit private draft parameters</button>}<button onClick={() => void discardPrivateDraft(draft)}>Discard draft</button></p>{payload?.kind === 'offline-conflict' && <details><summary>Review saved intent · {payload.reason?.code || 'conflict'}</summary><p>{payload.reason?.message || 'Original offline intent retained locally.'}</p><p>Original operation <code>{payload.operation?.operationId}</code></p><pre>{JSON.stringify(payload.operation?.parameters, null, 2)}</pre></details>}</div> })}</div>}</section>}
@@ -400,9 +556,71 @@ export default function App() {
       {dashboard?.bricks.length ? <div ref={drag.gridRef} className={`brick-grid ${editing ? 'is-editing' : ''}`}>{drag.visual && <div className="brick-drop-target" aria-hidden="true" style={{ gridColumn: `${drag.visual.dropLayout.x + 1} / span ${drag.visual.dropLayout.w}`, gridRow: `${drag.visual.dropLayout.y + 1} / span ${drag.visual.dropLayout.h}` }} />}{visibleBricks.map(brick => {
         const definition = getBrickDefinition(brick.typeId)
         const pinnedEntityId = brick.binding.mode === 'pinned' ? brick.binding.entityId : ''
-        return <section className={`brick ${drag.visual?.id === brick.id ? drag.visual.mode === 'move' ? 'is-dragging' : 'is-resizing' : ''}`} key={brick.id} style={{ gridColumn: `${brick.layout.x + 1} / span ${brick.layout.w}`, gridRow: `${brick.layout.y + 1} / span ${brick.layout.h}`, ...(drag.visual?.id === brick.id ? drag.visual.mode === 'move' ? { transform: `translate3d(${drag.visual.dx}px, ${drag.visual.dy}px, 0)` } : { width: `${drag.visual.width}px`, height: `${drag.visual.height}px` } : {}) }}><header className="brick-head"><div>{editing && <button type="button" className="brick-drag-handle" aria-label={`Drag ${definition?.title || brick.typeId}`} aria-pressed={drag.visual?.id === brick.id && drag.visual.mode === 'move'} onPointerDown={event => drag.start(event, brick.id, 'move')} onPointerMove={drag.move} onPointerUp={drag.finish} onPointerCancel={drag.cancel} />}<span className="brick-icon">◇</span><strong>{definition?.title || brick.typeId}</strong></div><small>{brick.binding.mode === 'follow' ? '↻ Following' : brick.binding.mode === 'pinned' ? '◆ Pinned' : 'Session'}</small></header><BrickBoundary><BrickContent brick={brick} snapshot={snapshot} busy={busy || (connection === 'disconnected' && !(role === 'player' && snapshot?.memberId))} offline={connection === 'disconnected'} onAction={act} /></BrickBoundary>{editing && <div className="brick-edit"><label>Binding <select value={brick.binding.mode} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: event.target.value === 'follow' ? { mode: 'follow', contextKey: 'session.activeEncounter' } : event.target.value === 'none' ? { mode: 'none' } : defaultBinding(brick.typeId, snapshot) }))}>{definition?.supportedBindings.map(mode => <option value={mode} key={mode}>{mode}</option>)}</select></label>{brick.binding.mode === 'pinned' && <label>Entity <select value={pinnedEntityId} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: { mode: 'pinned', entityId: event.target.value } }))}><option value={pinnedEntityId}>{pinnedEntityId}</option>{(brick.typeId === 'characters.sheet' ? snapshot?.actors.map(item => ({ id: item.entityId, name: item.name })) : snapshot?.encounters)?.filter(item => item.id !== pinnedEntityId).map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="brick-edit-buttons"><button aria-label="Move brick left" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, x: Math.max(0, layout.x - 1) }))}>←</button><button aria-label="Move brick right" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, x: Math.min(11, layout.x + 1) }))}>→</button><button aria-label="Move brick up" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, y: Math.max(0, layout.y - 1) }))}>↑</button><button aria-label="Move brick down" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, y: layout.y + 1 }))}>↓</button><button aria-label="Make brick narrower" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, w: Math.max(2, layout.w - 1) }))}>− width</button><button aria-label="Make brick wider" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, w: Math.min(12 - layout.x, layout.w + 1) }))}>+ width</button><button aria-label="Make brick shorter" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, h: Math.max(2, layout.h - 1) }))}>− height</button><button aria-label="Make brick taller" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, h: layout.h + 1 }))}>+ height</button><button className="danger" onClick={() => updateDashboard(dashboard.id, item => ({ ...item, bricks: item.bricks.filter(value => value.id !== brick.id) }))}>Remove</button></div></div>}{editing && <button type="button" className="brick-resize-handle" aria-label={`Resize ${definition?.title || brick.typeId}`} onPointerDown={event => drag.start(event, brick.id, 'resize')} onPointerMove={drag.move} onPointerUp={drag.finish} onPointerCancel={drag.cancel} />}</section>
+        return <section className={`brick ${drag.visual?.id === brick.id ? drag.visual.mode === 'move' ? 'is-dragging' : 'is-resizing' : ''}`} key={brick.id} style={{ gridColumn: `${brick.layout.x + 1} / span ${brick.layout.w}`, gridRow: `${brick.layout.y + 1} / span ${brick.layout.h}`, ...(drag.visual?.id === brick.id ? drag.visual.mode === 'move' ? { transform: `translate3d(${drag.visual.dx}px, ${drag.visual.dy}px, 0)` } : { width: `${drag.visual.width}px`, height: `${drag.visual.height}px` } : {}) }}><header className="brick-head"><div>{editing && <button type="button" className="brick-drag-handle" aria-label={`Drag ${definition?.title || brick.typeId}`} aria-pressed={drag.visual?.id === brick.id && drag.visual.mode === 'move'} onPointerDown={event => drag.start(event, brick.id, 'move')} onPointerMove={drag.move} onPointerUp={drag.finish} onPointerCancel={drag.cancel} />}<span className="brick-icon">◇</span><strong>{definition?.title || brick.typeId}</strong></div><small>{brick.binding.mode === 'follow' ? '↻ Following' : brick.binding.mode === 'pinned' ? '◆ Pinned' : 'Session'}</small></header><BrickBoundary><BrickContent brick={brick} snapshot={snapshot} busy={busy || (connection === 'disconnected' && !(role === 'player' && snapshot?.memberId))} offline={connection === 'disconnected'} onAction={act} onOpenApp={(appId, entityId) => { setSection(appId); if (entityId && appId === 'characters') setSelectedActorId(entityId) }} /></BrickBoundary>{editing && <div className="brick-edit"><label>Binding <select value={brick.binding.mode} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: event.target.value === 'follow' ? { mode: 'follow', contextKey: 'session.activeEncounter' } : event.target.value === 'none' ? { mode: 'none' } : defaultBinding(brick.typeId, snapshot) }))}>{definition?.supportedBindings.map(mode => <option value={mode} key={mode}>{mode}</option>)}</select></label>{brick.binding.mode === 'pinned' && <label>Entity <select value={pinnedEntityId} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: { mode: 'pinned', entityId: event.target.value } }))}><option value={pinnedEntityId}>{pinnedEntityId}</option>{(brick.typeId === 'characters.sheet' ? snapshot?.actors.map(item => ({ id: item.entityId, name: item.name })) : snapshot?.encounters)?.filter(item => item.id !== pinnedEntityId).map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="brick-edit-buttons"><button aria-label="Move brick left" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, x: Math.max(0, layout.x - 1) }))}>←</button><button aria-label="Move brick right" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, x: Math.min(11, layout.x + 1) }))}>→</button><button aria-label="Move brick up" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, y: Math.max(0, layout.y - 1) }))}>↑</button><button aria-label="Move brick down" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, y: layout.y + 1 }))}>↓</button><button aria-label="Make brick narrower" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, w: Math.max(2, layout.w - 1) }))}>− width</button><button aria-label="Make brick wider" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, w: Math.min(12 - layout.x, layout.w + 1) }))}>+ width</button><button aria-label="Make brick shorter" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, h: Math.max(2, layout.h - 1) }))}>− height</button><button aria-label="Make brick taller" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, h: layout.h + 1 }))}>+ height</button><button className="danger" onClick={() => updateDashboard(dashboard.id, item => ({ ...item, bricks: item.bricks.filter(value => value.id !== brick.id) }))}>Remove</button></div></div>}{editing && <button type="button" className="brick-resize-handle" aria-label={`Resize ${definition?.title || brick.typeId}`} onPointerDown={event => drag.start(event, brick.id, 'resize')} onPointerMove={drag.move} onPointerUp={drag.finish} onPointerCancel={drag.cancel} />}</section>
       })}</div> : <div className="empty-dashboard"><h2>No bricks here yet</h2><p>{editing ? 'Open the brick library to add a character, encounter, or activity panel.' : 'Turn on Edit layout to build this dashboard.'}</p><button onClick={() => { setEditing(true); setPicker(true) }}>Add a brick</button></div>}
       <p className="workspace-footnote">Saved locally in this browser · Host data is never stored in the layout · Cursor {snapshot?.context.cursor ?? '—'}</p>
-    </main> : <main className="characters-page"><div className="page-intro"><div><p className="eyebrow">APPLICATION / CHARACTERS</p><h1>Characters</h1><p>The full view and dashboard brick share the same host action contract.</p></div></div><div className="character-layout"><nav aria-label="Characters" className="character-list">{snapshot?.actors.map(actor => <button className={selectedActor?.entityId === actor.entityId ? 'active' : ''} key={actor.entityId} onClick={() => setSelectedActorId(actor.entityId)}><span className="avatar">{actor.name.slice(0, 1)}</span><span><strong>{actor.name}</strong><small>{actor.module.manifest.name}</small></span></button>)}</nav><section className="full-character brick">{selectedActor ? <CharacterView actor={selectedActor} busy={busy || (connection === 'disconnected' && !(role === 'player' && snapshot?.memberId))} offline={connection === 'disconnected'} onAction={act} gm={role === 'gm'} /> : <p className="brick-message">No authorized characters available.</p>}</section><aside className="brick app-activity"><header className="brick-head"><strong>Activity Log</strong></header><ActivityLog snapshot={snapshot} /></aside></div></main>}</div>
+    </main> : section === 'characters' ? <main className="characters-page"><div className="page-intro"><div><p className="eyebrow">APPLICATION / CHARACTERS</p><h1>Characters</h1><p>Module actions are sent through the shared host contract. Character records are host-authoritative.</p></div>{role === 'gm' && <button className="primary" disabled={!availableModules.length || host.mode !== 'host'} onClick={() => { const first = availableModules[0]; setCharacterModuleId(first?.manifest.id || ''); setNewCharacterData({}); setCreatingCharacter(true) }}>Create character</button>}</div>{host.mode === 'demo' && <p className="capability-note">Creation is disabled in local preview because it has no persistent actor API.</p>}<div className="character-layout"><nav aria-label="Characters" className="character-list">{snapshot?.actors.map(actor => <button className={selectedActor?.entityId === actor.entityId ? 'active' : ''} key={actor.entityId} onClick={() => setSelectedActorId(actor.entityId)}><span className="avatar">{actor.name.slice(0, 1)}</span><span><strong>{actor.name}</strong><small>{actor.module.manifest.name}</small></span></button>)}</nav><section className="full-character brick">{selectedActor ? <><CharacterView actor={selectedActor} busy={busy || (connection === 'disconnected' && !(role === 'player' && snapshot?.memberId))} offline={connection === 'disconnected'} onAction={act} gm={role === 'gm'} />{role === 'gm' && !editingCharacter && <button disabled={busy || connection !== 'connected'} onClick={() => { setEditedCharacterData(structuredClone(selectedActor.data)); setEditingCharacter(true) }}>Edit character fields</button>}
+        {role === 'gm' && editingCharacter && <form className="schema-form" onSubmit={event => void saveCharacterEdit(event)}>
+          <h2>Edit character</h2>
+          <SchemaFields schema={selectedActor.module.schema} value={editedCharacterData} onChange={setEditedCharacterData} />
+          <button disabled={busy || connection !== 'connected'}>Save changes</button>
+          <button type="button" onClick={() => setEditingCharacter(false)}>Cancel</button>
+        </form>}</> : <p className="brick-message">No authorized characters available.</p>}{creatingCharacter && <form className="schema-form" onSubmit={event => void createCharacter(event)}><h2>New character</h2><label>System<select value={selectedModule?.manifest.id || ''} onChange={event => { setCharacterModuleId(event.target.value); setNewCharacterData({}) }}>{availableModules.map(module => <option key={module.manifest.id} value={module.manifest.id}>{module.manifest.name} · {module.manifest.version}</option>)}</select></label>{selectedModule && <SchemaFields schema={selectedModule.schema} value={newCharacterData} onChange={setNewCharacterData} />}{selectedModule?.schema && <><label>Secret note (GM only)<textarea value={String(newCharacterData.secretNote || '')} onChange={event => setNewCharacterData(current => ({ ...current, secretNote: event.target.value }))} /></label><div><button className="primary" disabled={busy || connection !== 'connected'}>Create on host</button><button type="button" onClick={() => setCreatingCharacter(false)}>Cancel</button></div></>}</form>}</section><aside className="brick app-activity"><header className="brick-head"><strong>Activity Log</strong></header><ActivityLog snapshot={snapshot} /></aside></div></main> : <main className="encounters-page">
+      <div className="page-intro">
+        <div><p className="eyebrow">APPLICATION / ENCOUNTERS</p><h1>Encounters</h1>
+          <p>Prepare encounter records, choose participants, and control the shared session.</p></div>
+        {role === 'gm' && <button disabled={busy || connection !== 'connected'} onClick={() => {
+          setCreatingEncounter(true); setEncounterDetails(null); setEncounterNameInput(''); setEncounterSummaryInput('');
+          setEncounterStatusInput('prepared'); setEncounterParticipantIds([])
+        }}>Create encounter</button>}
+      </div>
+      {snapshot?.context.activeEncounter && <section className="active-encounter">
+        <p className="eyebrow">ACTIVE ENCOUNTER</p>
+        <h2>{snapshot.context.activeEncounter.name}</h2><p>{snapshot.context.activeEncounter.summary}</p>
+        <small>Following bricks update automatically. Pinned bricks remain pinned.</small>
+      </section>}
+      {role === 'gm' && creatingEncounter && <form className="schema-form" onSubmit={event => void createEncounter(event)}>
+        <h2>New encounter</h2>
+        <label>Name <input required maxLength={160} value={encounterNameInput} onChange={event => setEncounterNameInput(event.target.value)} /></label>
+        <label>Summary <textarea maxLength={4000} value={encounterSummaryInput} onChange={event => setEncounterSummaryInput(event.target.value)} /></label>
+        <button disabled={busy || connection !== 'connected'}>Create on host</button>
+        <button type="button" onClick={() => setCreatingEncounter(false)}>Cancel</button>
+      </form>}
+      <div className="encounter-list">
+        {snapshot?.encounters.map(encounter => <article className="encounter-card" key={encounter.id}>
+          <div><p className="eyebrow">ENCOUNTER · {encounter.id}</p><h2>{encounter.name}</h2><p>{encounter.summary}</p></div>
+          <div>{role === 'gm' && <button disabled={busy || connection !== 'connected'}
+            onClick={() => { setCreatingEncounter(false); void chooseEncounter(encounter.id) }}>Prepare / edit</button>}
+            {role === 'gm' && <button disabled={busy || connection !== 'connected' || snapshot.context.activeEncounter?.id === encounter.id}
+              onClick={async () => {
+                setBusy(true); setError('')
+                try { await host.setEncounter(role, encounter.id); setSnapshot(await host.load(role)); setActionState('Active encounter updated.') }
+                catch (cause) { setError(displayError(cause)) } finally { setBusy(false) }
+              }}>Set active</button>}
+            {snapshot?.context.activeEncounter?.id === encounter.id && <span className="active-label">Active for campaign</span>}
+          </div>
+        </article>)}
+      </div>
+      {role === 'gm' && encounterDetails && !creatingEncounter && <form className="schema-form" onSubmit={event => void saveEncounterEdits(event)}>
+        <h2>Prepare {encounterDetails.name}</h2>
+        <label>Encounter name <input required maxLength={160} value={encounterNameInput} onChange={event => setEncounterNameInput(event.target.value)} /></label>
+        <label>Player-visible summary <textarea maxLength={4000} value={encounterSummaryInput} onChange={event => setEncounterSummaryInput(event.target.value)} /></label>
+        <label>Lifecycle <select value={encounterStatusInput} onChange={event => setEncounterStatusInput(event.target.value as 'prepared' | 'active' | 'completed')}>
+          <option value="prepared">Prepared</option><option value="active">Active</option><option value="completed">Completed</option>
+        </select></label>
+        <fieldset><legend>Participants</legend>{snapshot?.actors.map(actor => <label key={actor.entityId}>
+          <input type="checkbox" checked={encounterParticipantIds.includes(actor.entityId)} onChange={event => setEncounterParticipantIds(current => event.target.checked ? [...current, actor.entityId] : current.filter(id => id !== actor.entityId))} />
+          {actor.name}
+        </label>)}{!snapshot?.actors.length && <p>No characters available yet.</p>}</fieldset>
+        <button disabled={busy || connection !== 'connected'}>Save encounter and participants</button>
+        <button type="button" onClick={() => setEncounterDetails(null)}>Close</button>
+      </form>}
+      {role === 'gm' && snapshot?.context.activeEncounter && <button disabled={busy || connection !== 'connected'}
+        onClick={async () => {
+          setBusy(true); setError('')
+          try { await host.setEncounter(role, null); setSnapshot(await host.load(role)); setActionState('Active encounter cleared.') }
+          catch (cause) { setError(displayError(cause)) } finally { setBusy(false) }
+        }}>Clear active encounter</button>}
+    </main>}</div>
   </div>
 }
