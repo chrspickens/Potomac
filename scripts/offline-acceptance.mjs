@@ -415,7 +415,9 @@ try {
   cache = await readBrowserQueue(memberAClient);
   assert.equal(cache.operations.length, 3, 'three immutable offline operations persist in IndexedDB');
   assert.ok(cache.operations.every(row => row.state === 'queued'), 'all offline operations remain visibly pending before host acknowledgement');
-  const dependencyOperation = cache.operations.find(row => row.operation.actionId === 'spend-hope');
+  // Mira also has a pending spend-hope action; only Tarin's action was
+  // authored with a dependency guard on Mira.
+  const dependencyOperation = cache.operations.find(row => row.operation.entityId === actorDependency && row.operation.actionId === 'spend-hope');
   assert.deepEqual(dependencyOperation?.operation.dependencies, [{ entityId: actorA, revision: 1 }], 'dependency is captured from the cached authorized snapshot');
 
   await stop(host);
