@@ -223,6 +223,11 @@ export default function App() {
     if (role === 'player' && snapshot?.memberId) void syncPending(snapshot)
   }, [role, snapshot?.memberId, snapshot?.context.campaignId, connection])
   useEffect(() => {
+    if (role !== 'player' || connection !== 'connected' || !snapshot?.memberId) return
+    const timer = setInterval(() => void syncPending(snapshot), 3000)
+    return () => clearInterval(timer)
+  }, [role, connection, snapshot?.memberId, snapshot?.context.campaignId])
+  useEffect(() => {
     if (role !== 'gm' || connection !== 'connected' || !configuredHost) return
     void listReviewProposals().then(setProposals).catch(cause => setError(displayError(cause)))
   }, [role, connection, snapshot?.context.cursor])

@@ -345,6 +345,8 @@ try {
   });
   await waitFor(`${baseUrl}/health`, 'restarted host');
   await cdp('Network.setBlockedURLs', { urls: [] }, memberAClient);
+  await cdp('Page.reload', { ignoreCache: true }, memberAClient);
+  await waitForExpression(memberAClient, "document.querySelector('.status-connected') && document.querySelector('.campaign-select strong')?.textContent === 'foundation-demo'", 'member A reconnect after host restart', 30000);
 
   const receiptsDeadline = Date.now() + 20000;
   let memberReceipts;
@@ -354,7 +356,7 @@ try {
     if (memberReceipts.length === 3 && memberReceipts.some(receipt => receipt.status === 'awaitingReview') && memberReceipts.some(receipt => receipt.status === 'conflicted')) break;
     await delay(150);
   }
-  assert.equal(memberReceipts.length, 3, 'host durably records all three queued operation receipts');
+  assert.equal(memberReceipts.length, 3, `host durably records all three queued operation receipts: ${JSON.stringify({ browser: await evaluate(memberAClient, "({status:document.querySelector('.status')?.textContent,error:document.querySelector('.error-banner')?.textContent,queue:document.querySelector('[aria-label=\"Your local operation status\"]')?.textContent})"), queue: await readBrowserQueue(memberAClient) })}`);
   const selfReceipt = memberReceipts.find(receipt => receipt.entityId === actorA && receipt.status === 'applied');
   const proposalReceipt = memberReceipts.find(receipt => receipt.entityId === actorDependency && receipt.status === 'awaitingReview');
   const conflictReceipt = memberReceipts.find(receipt => receipt.status === 'conflicted');
