@@ -7,9 +7,14 @@ export async function flushOfflineQueue(
   onUpdate?: (rows: QueuedOperation[]) => void,
 ): Promise<{ processed: number; transportFailed: boolean }> {
   let processed = 0
-  const rows = await storage.listOperations()
-  for (const row of rows) {
-    if (row.state !== 'queued' && row.state !== 'submitting') continue
+  // Re-read after each receipt: a player can enqueue another intent while the
+  // previous submission is in flight. A single snapshot would strand that edit.
+  const attempted = new Set<string>()
+  while (true) {
+    const rows = await storage.listOperations()
+    const row = rows.find(item => (item.state === 'queued' || item.state === 'submitting') && !attempted.has(item.operation.operationId))
+    if (!row) break
+    attempted.add(row.operation.operationId)
     if (row.state === 'submitting') await storage.retryOperation(row.operation.operationId)
     await storage.markSubmitting(row.operation.operationId)
     onUpdate?.(await storage.listOperations())
