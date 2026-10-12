@@ -335,6 +335,42 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!receipt) return json(res, 404, { error: 'Offline receipt not found' });
         return json(res, 200, receiptJson(receipt));
       }
+      if (req.method === 'PUT' && /^\/api\/actors\/[^/]+$/.test(url.pathname)) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        const body = await readBody(req);
+        const id = decodeURIComponent(url.pathname.slice('/api/actors/'.length));
+        const actor = actorRow.get(id);
+        if (!actor) return json(res, 404, { error: 'Actor not found' });
+        if (!body || typeof body.operationId !== 'string' || !body.operationId || !Number.isInteger(body.baseRevision)
+          || !body.changes || typeof body.changes !== 'object' || Array.isArray(body.changes)
+          || Object.keys(body).some(key => !['operationId', 'baseRevision', 'changes'].includes(key)))
+          return json(res, 400, { error: 'Operation ID, base revision, and editable field changes are required' });
+        const hash = createHash('sha256').update(canonicalJson({ kind: 'actor.edit', id, baseRevision: body.baseRevision, changes: body.changes })).digest('hex');
+        const cached = db.prepare('SELECT * FROM operations WHERE id=?').get(body.operationId);
+        if (cached) {
+          if (cached.actor_id !== id || cached.action_id !== 'actor.edit' || cached.principal_id !== auth.principalId || cached.request_hash !== hash)
+            return json(res, 409, { error: 'Operation ID was already used for a different command' });
+          return json(res, 200, JSON.parse(cached.response));
+        }
+        if (actor.revision !== body.baseRevision) return json(res, 409, { error: 'Character revision conflict', reasonCode: 'revision_conflict', currentRevision: actor.revision });
+        const manifest = JSON.parse(moduleRow.get(actor.module_id, actor.module_version).manifest);
+        const allowed = manifest.schema?.properties || {};
+        const forbidden = new Set(['moduleId','moduleVersion','schemaVersion','entityId','revision','derived']);
+        const keys = Object.keys(body.changes);
+        if (!keys.length || keys.some(key => !Object.hasOwn(allowed, key) || forbidden.has(key)))
+          return json(res, 400, { error: 'Only declared editable character fields may be changed' });
+        const next = { ...JSON.parse(actor.data), ...body.changes, revision: actor.revision + 1 };
+        validateSchema(next, manifest.schema);
+        const result = { operationId: body.operationId, entityId: id, status: 'applied', revision: next.revision };
+        transaction(() => {
+          db.prepare('UPDATE actors SET data=?,revision=? WHERE id=?').run(JSON.stringify(next), next.revision, id);
+          insertEvent({ operationId: body.operationId, actorId: id, kind: 'actor.edited', visibility: 'public', payload: { operationId: body.operationId, revision: next.revision, changedFields: keys } });
+          db.prepare('INSERT INTO operations(id,response,actor_id,action_id,request_hash,principal_id) VALUES(?,?,?,?,?,?)')
+            .run(body.operationId, JSON.stringify(result), id, 'actor.edit', hash, auth.principalId);
+        });
+        notify();
+        return json(res, 200, result);
+      }
       if (req.method === 'GET' && /^\/api\/encounters\/[^/]+$/.test(url.pathname)) {
         const id = decodeURIComponent(url.pathname.slice('/api/encounters/'.length));
         const encounter = db.prepare('SELECT * FROM encounters WHERE id=?').get(id);
@@ -385,6 +421,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!body || Object.keys(body).some(key => !['name', 'systemModuleId', 'systemModuleVersion', 'baseRevision'].includes(key)) || typeof body.name !== 'string' || !body.name.trim() || body.name.length > 160 || !Number.isInteger(body.baseRevision) || body.baseRevision < 1 || (body.systemModuleId === null) !== (body.systemModuleVersion === null) || body.systemModuleId !== null && (typeof body.systemModuleId !== 'string' || typeof body.systemModuleVersion !== 'string' || !moduleRow.get(body.systemModuleId, body.systemModuleVersion))) return json(res, 400, { error: 'Campaign name, registered module pin, and positive baseRevision are required' });
         const current = campaignJson();
         if (body.baseRevision !== current.revision) return json(res, 409, { error: 'Campaign revision conflict', reasonCode: 'revision_conflict', currentRevision: current.revision });
+        if (current.systemModuleId && (body.systemModuleId !== current.systemModuleId || body.systemModuleVersion !== current.systemModuleVersion))
+          return json(res, 409, { error: 'Pinned campaign module requires an explicit migration' });
         transaction(() => {
           db.prepare('UPDATE campaign SET name=?,system_module_id=?,system_module_version=?,revision=revision+1 WHERE id=? AND revision=?').run(body.name.trim(), body.systemModuleId, body.systemModuleVersion, campaignId, body.baseRevision);
           insertEvent({ kind: 'campaign.updated', visibility: 'gm', payload: { campaignId, revision: current.revision + 1 } });
