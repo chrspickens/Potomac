@@ -1,5 +1,6 @@
 import { initialActors, type Actor, type GameModule } from './modules'
 import { loadRememberedIdentity, rememberIdentity } from './identity'
+import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 
 export type Role = 'gm' | 'player'
 export type Encounter = { id: string; name: string; summary: string }
@@ -48,6 +49,11 @@ async function http<T>(path: string, role: Role, init?: RequestInit): Promise<T>
   const body = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(body.error || `Host request failed (${response.status})`)
   return body as T
+}
+
+export async function submitOfflineOperation(operation: OfflineOperation): Promise<OfflineReceipt> {
+  if (!baseUrl) throw new Error('An authoritative host is required to reconcile offline work')
+  return http<OfflineReceipt>('/api/offline/operations', 'player', { method: 'POST', body: JSON.stringify(operation) })
 }
 
 type HostState = {
