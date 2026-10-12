@@ -462,7 +462,10 @@ try {
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · applied')", 'rebased operation applies from current actor and dependency revisions');
   let recoveredQueue = await readBrowserQueue(memberAClient);
   const originalHopeOperation = recoveredQueue.operations.find(row => row.operation.operationId === conflictReceipt.operationId);
-  const rebasedHopeOperation = recoveredQueue.operations.find(row => row.operation.actionId === 'spend-hope' && row.operation.operationId !== originalHopeOperation?.operation.operationId);
+  // Both Mira and Tarin can have spend-hope operations. The rebased request
+  // must target the *conflicted Tarin actor*, not Mira's previously applied edit.
+  const rebasedHopeOperation = recoveredQueue.operations.find(row => row.operation.entityId === actorDependency
+    && row.operation.actionId === 'spend-hope' && row.operation.operationId !== originalHopeOperation?.operation.operationId);
   assert.ok(originalHopeOperation && rebasedHopeOperation, 'recovery UI retains the old operation and creates a separate replacement');
   assert.notEqual(rebasedHopeOperation.operation.operationId, originalHopeOperation.operation.operationId, 'rebase uses a new operation ID');
   assert.equal(rebasedHopeOperation.operation.baseRevision, 2, 'rebase uses the authorized current actor revision');
