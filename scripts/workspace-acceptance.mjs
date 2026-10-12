@@ -3,7 +3,9 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { exportCampaignBackup, restoreCampaignBackup } from '../server/host/backup.mjs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -542,8 +544,46 @@ try {
   await waitForExpression(player.sessionId, "document.querySelector('.campaign-select strong')?.textContent !== 'Connecting…'", 'player reload');
   assert.equal(await evaluate(player.sessionId, "localStorage.getItem('potomac.workspace.demo-profile')"), `workspace-acceptance-player-${process.pid}`);
   assert.equal(await evaluate(player.sessionId, `localStorage.getItem(${JSON.stringify(initialPlayerKey)})`), savedPlayerWorkspace, 'player layout remains unchanged across reload');
+
+  // The campaign acceptance gate must preserve every host-owned collection, not
+  // merely exercise the backup API's existence. Export from the live WAL-backed
+  // host and restore to an entirely separate database.
+  const backupPath = join(scratch, 'campaign-backup.json');
+  const restoredPath = join(scratch, 'campaign-restored.sqlite');
+  const exportManifest = exportCampaignBackup(dbPath, backupPath);
+  assert.equal(exportManifest.potomacDataVersion, 2, '0.4 export format includes persistent encounters');
+  assert.ok(exportManifest.includedCollections.includes('encounters'));
+  assert.ok(exportManifest.includedCollections.includes('encounter_participants'));
+  const restoredManifest = restoreCampaignBackup(backupPath, restoredPath);
+  assert.equal(restoredManifest.campaignId, 'foundation-demo');
+  const sourceDb = new DatabaseSync(dbPath, { readOnly: true });
+  const restoredDb = new DatabaseSync(restoredPath, { readOnly: true });
+  try {
+    for (const table of ['campaign', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions']) {
+      assert.equal(restoredDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,
+        sourceDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, `restored ${table} row count matches source`);
+    }
+    const originalCampaign = sourceDb.prepare('SELECT name,system_module_id,system_module_version,revision,context FROM campaign WHERE id=?').get('foundation-demo');
+    const recoveredCampaign = restoredDb.prepare('SELECT name,system_module_id,system_module_version,revision,context FROM campaign WHERE id=?').get('foundation-demo');
+    assert.deepEqual({ ...recoveredCampaign }, { ...originalCampaign }, 'campaign configuration and selected active encounter round-trip');
+    assert.equal(restoredDb.prepare('SELECT name FROM encounters WHERE id=?').get(createdEncounter.id).name, 'Edited Acceptance Encounter');
+    assert.equal(restoredDb.prepare('SELECT COUNT(*) AS n FROM encounter_participants WHERE encounter_id=?').get(createdEncounter.id).n, 2);
+    assert.equal(restoredDb.prepare('SELECT COUNT(*) AS n FROM actor_grants WHERE member_id=?').get(playerMemberId).n > 0, true);
+  } finally { restoredDb.close(); sourceDb.close(); }
+  const tamperedPath = join(scratch, 'campaign-tampered.json');
+  const tamperedDestination = join(scratch, 'tampered-destination.sqlite');
+  const tampered = JSON.parse(readFileSync(backupPath, 'utf8'));
+  tampered.data.encounters[0].name = 'Corrupted without digest update';
+  writeFileSync(tamperedPath, JSON.stringify(tampered));
+  assert.throws(() => restoreCampaignBackup(tamperedPath, tamperedDestination), /integrity check failed/, 'tampered backup must fail integrity verification');
+  assert.equal(existsSync(tamperedDestination), false, 'unsafe restore does not create target database');
+
+  // Do not mark acceptance as successful while a requirement has only been
+  // logged as a gap. Every gap is now a hard failure in pnpm check / CI.
+  assert.deepEqual(knownAcceptanceGaps, [], 'all required campaign acceptance steps must pass');
+
   console.log('PASS: fresh campaign setup/configuration; schema-valid character creation by API and UI; action-based character edits; participant enrollment and character grants by API and UI; encounter create/edit, participant assignment and encounter-app activation; player permission denials; two-player/member visibility isolation; host restart persistence for campaign, encounter context, characters and grants; dashboard layout, browser reload, action activity and secret redaction.');
-  for (const gap of knownAcceptanceGaps) console.log(`GAP: ${gap}`);
+  console.log('PASS: versioned backup/restore, campaign pin, encounter participants and corruption rejection.');
   console.log(`Isolated host database: ${dbPath}`);
   console.log('Note: browser profile layout is verified across reload; the runner cleans its temporary profile and database on exit.');
 } catch (error) {
