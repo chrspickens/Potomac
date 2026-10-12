@@ -66,7 +66,7 @@ export type OfflineOperation = {
   moduleVersion: string;
   schemaVersion: number;
   actionId: string;
-  parameters: Record<string, JsonValue>;
+  parameters: Record<string, unknown>;
   dependencies?: Array<{ entityId: string; revision: number }>;
 };
 

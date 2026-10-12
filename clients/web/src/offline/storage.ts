@@ -1,30 +1,10 @@
+import type { OfflineOperation, OfflineReceipt } from '@potomac/contracts';
+export type { OfflineOperation, OfflineReceipt } from '@potomac/contracts';
+
 export type OfflineScope = {
   host: string;
   campaignId: string;
   memberId: string;
-};
-
-export type OfflineOperation = {
-  operationId: string;
-  campaignId: string;
-  memberId: string;
-  entityId: string;
-  baseRevision: number;
-  moduleId: string;
-  moduleVersion: string;
-  schemaVersion: number;
-  actionId: string;
-  parameters: Record<string, unknown>;
-  dependencies?: Array<{ entityId: string; revision: number }>;
-};
-
-export type OfflineReceipt = {
-  operationId: string;
-  status: 'applied' | 'awaitingReview' | 'rejected' | 'conflicted';
-  entityId: string;
-  revision?: number;
-  proposalId?: string;
-  reasonCode?: string;
 };
 
 export type AuthorizedSnapshot<TData = unknown> = {
