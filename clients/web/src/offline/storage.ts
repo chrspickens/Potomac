@@ -96,6 +96,7 @@ export type OfflineStorage = {
   putSessionMetadata(metadata: OfflineSessionMetadata): Promise<void>;
   getSessionMetadata(): Promise<OfflineSessionMetadata | undefined>;
   putAuthorizedSnapshot(snapshot: AuthorizedSnapshot): Promise<void>;
+  replaceAuthorizedSnapshots(snapshots: AuthorizedSnapshot[]): Promise<void>;
   getAuthorizedSnapshot(entityId: string): Promise<AuthorizedSnapshot | undefined>;
   listAuthorizedSnapshots(): Promise<AuthorizedSnapshot[]>;
   enqueueOperation(operation: OfflineOperation): Promise<QueuedOperation>;
@@ -185,6 +186,20 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
           return;
         }
         store.put(scoped({ snapshot }, snapshot.entityId));
+      };
+      await transactionResult(tx);
+    },
+
+    async replaceAuthorizedSnapshots(snapshots) {
+      for (const snapshot of snapshots) validateSnapshot(snapshot);
+      const ids = new Set(snapshots.map(snapshot => snapshot.entityId));
+      if (ids.size !== snapshots.length) throw new Error('Duplicate authorized snapshot ID');
+      const tx = db.transaction(SNAPSHOTS, 'readwrite');
+      const store = tx.objectStore(SNAPSHOTS);
+      const keys = store.index('scopeKey').getAllKeys(scopedKey);
+      keys.onsuccess = () => {
+        for (const key of keys.result) store.delete(key);
+        for (const snapshot of snapshots) store.put(scoped({ snapshot: structuredClone(snapshot) }, snapshot.entityId));
       };
       await transactionResult(tx);
     },
