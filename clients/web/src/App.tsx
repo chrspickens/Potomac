@@ -1,5 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { configuredHost, connectPlayerCredential, decideReviewProposal, enrollLocalPlayer, grantActorToMember, host, listMyOfflineReceipts, listReviewProposals, loadReviewProposal, submitOfflineOperation, type ConnectionStatus, type ReviewProposal, type Role, type Snapshot } from './api'
+import { configuredHost, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, getCampaignConfig, grantActorToMember, host, listMyOfflineReceipts, listReviewProposals, loadCampaignEncounter, loadReviewProposal, saveCampaignConfig, saveEncounterParticipants, submitOfflineOperation, type CampaignConfig, type Encounter, type ConnectionStatus, type ReviewProposal, type Role, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import { openOfflineStorage, type OfflineOperation, type PrivateDraft, type QueuedOperation } from './offline/storage'
@@ -99,6 +99,17 @@ export default function App() {
   const [creatingCharacter, setCreatingCharacter] = useState(false)
   const [characterModuleId, setCharacterModuleId] = useState('')
   const [newCharacterData, setNewCharacterData] = useState<Record<string, unknown>>({})
+  const [campaign, setCampaign] = useState<CampaignConfig | null>(null)
+  const [campaignNameDraft, setCampaignNameDraft] = useState('')
+  const [campaignSystemChoice, setCampaignSystemChoice] = useState('')
+  const [editingCharacter, setEditingCharacter] = useState(false)
+  const [editedCharacterData, setEditedCharacterData] = useState<Record<string, unknown>>({})
+  const [encounterDetails, setEncounterDetails] = useState<Encounter | null>(null)
+  const [encounterNameInput, setEncounterNameInput] = useState('')
+  const [encounterSummaryInput, setEncounterSummaryInput] = useState('')
+  const [encounterStatusInput, setEncounterStatusInput] = useState<'prepared' | 'active' | 'completed'>('prepared')
+  const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
+  const [creatingEncounter, setCreatingEncounter] = useState(false)
 
   useEffect(() => {
     let stopped = false
@@ -135,6 +146,18 @@ export default function App() {
     try { saveWorkspace(workspace) } catch { setError('Layout could not be saved in this browser.') }
   }, [workspace, loadedWorkspace])
   useEffect(() => { setEncounterDraft(snapshot?.context.activeEncounter?.id || '') }, [snapshot?.context.activeEncounter?.id])
+  useEffect(() => {
+    if (!configuredHost || !snapshot || role !== 'gm') { setCampaign(null); return }
+    let active = true
+    void getCampaignConfig().then(next => { if (active) setCampaign(next) }).catch(cause => { if (active) setError(displayError(cause)) })
+    return () => { active = false }
+  }, [role, snapshot?.context.campaignId, snapshot?.context.cursor])
+  useEffect(() => {
+    if (!campaign) return
+    setCampaignNameDraft(campaign.name)
+    setCampaignSystemChoice(campaign.systemModuleId && campaign.systemModuleVersion ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : '')
+  }, [campaign?.id, campaign?.revision])
+  useEffect(() => { setEditingCharacter(false); setEditedCharacterData({}) }, [selectedActorId])
 
   const dashboard = workspace.dashboards.find(item => item.id === workspace.activeDashboardId) || workspace.dashboards[0]
   const drag = useBrickDrag({
@@ -303,9 +326,12 @@ export default function App() {
     finally { setBusy(false) }
   }
   const availableModules = useMemo(() => {
-    const unique = new Map((snapshot?.actors || []).map(actor => [`${actor.module.manifest.id}@${actor.module.manifest.version}`, actor.module]))
-    return [...unique.values()]
-  }, [snapshot?.actors])
+    const unique = new Map((snapshot?.modules || snapshot?.actors.map(actor => actor.module) || []).map(module => [`${module.manifest.id}@${module.manifest.version}`, module]))
+    const modules = [...unique.values()]
+    return campaign?.systemModuleId && campaign.systemModuleVersion
+      ? modules.filter(module => module.manifest.id === campaign.systemModuleId && module.manifest.version === campaign.systemModuleVersion)
+      : modules
+  }, [snapshot?.modules, snapshot?.actors, campaign?.systemModuleId, campaign?.systemModuleVersion])
   const selectedModule = availableModules.find(module => module.manifest.id === characterModuleId) || availableModules[0]
   useEffect(() => {
     if (creatingCharacter && selectedModule && Object.keys(newCharacterData).length === 0) setNewCharacterData(createSchemaDefaults(selectedModule.schema || {}))
@@ -320,6 +346,72 @@ export default function App() {
       await host.createActor(role, { id, moduleId: selectedModule.manifest.id, moduleVersion: selectedModule.manifest.version, data, visibility: data.secretNote ? { gmOnly: ['secretNote'] } : {} })
       setSnapshot(await host.load(role)); setSelectedActorId(id); setCreatingCharacter(false); setNewCharacterData({})
       setActionState('Character created and accepted by host.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+
+  const saveCampaignSetup = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!campaign || !campaignSystemChoice || !campaignNameDraft.trim()) return
+    const selected = snapshot?.modules?.find(module => `${module.manifest.id}@${module.manifest.version}` === campaignSystemChoice)
+    if (!selected) { setError('Select an installed game system'); return }
+    setBusy(true); setError('')
+    try {
+      const updated = await saveCampaignConfig({
+        name: campaignNameDraft.trim(), systemModuleId: selected.manifest.id,
+        systemModuleVersion: selected.manifest.version, revision: campaign.revision
+      })
+      setCampaign(updated); setActionState(`Campaign ${updated.name} saved on host.`)
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const saveCharacterEdit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedActor || !selectedActor.module.schema) return
+    const properties = selectedActor.module.schema.properties as Record<string, unknown> | undefined
+    const reserved = new Set(['moduleId', 'moduleVersion', 'schemaVersion', 'entityId', 'revision', 'derived'])
+    const changes = Object.fromEntries(Object.entries(editedCharacterData).filter(([key]) => !!properties && Object.hasOwn(properties, key) && !reserved.has(key)))
+    setBusy(true); setError('')
+    try {
+      await editCharacterFields(selectedActor.entityId, selectedActor.revision, changes, newId())
+      setSnapshot(await host.load('gm')); setEditingCharacter(false)
+      setActionState('Character fields updated on host.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const chooseEncounter = async (id: string) => {
+    setBusy(true); setError('')
+    try {
+      const detail = await loadCampaignEncounter(id)
+      setEncounterDetails(detail); setEncounterNameInput(detail.name); setEncounterSummaryInput(detail.summary)
+      setEncounterStatusInput(detail.status || 'prepared')
+      setEncounterParticipantIds((detail.participants || []).map(item => item.actorId))
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const createEncounter = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true); setError('')
+    try {
+      const created = await createCampaignEncounter(encounterNameInput.trim(), encounterSummaryInput)
+      setCreatingEncounter(false)
+      setSnapshot(await host.load('gm'))
+      await chooseEncounter(created.id)
+      setActionState('Encounter created on host.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const saveEncounterEdits = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!encounterDetails?.revision) return
+    setBusy(true); setError('')
+    try {
+      const updated = await editCampaignEncounter(encounterDetails.id, encounterDetails.revision,
+        { name: encounterNameInput.trim(), summary: encounterSummaryInput, status: encounterStatusInput })
+      const latest = await saveEncounterParticipants(updated.id, updated.revision,
+        encounterParticipantIds.map((actorId, index) => ({ actorId, status: 'active', activationOrder: index })))
+      setEncounterDetails(latest); setSnapshot(await host.load('gm'))
+      setActionState('Encounter and participants saved on host.')
     } catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
   }
