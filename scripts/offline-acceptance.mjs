@@ -150,6 +150,11 @@ async function selectValue(sessionId, selector, value) {
     return true;
   })()`);
   assert.equal(changed, true, `Expected a select matching ${selector}`);
+  // CDP-synthesized change is not a real mouse/keyboard interaction. Wait for
+  // React to commit the controlled state before invoking the next action.
+  await evaluate(sessionId, 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const committed = await evaluate(sessionId, `document.querySelector(${JSON.stringify(selector)})?.value === ${JSON.stringify(value)}`);
+  assert.equal(committed, true, `Expected controlled select ${selector} to commit ${value}`);
 }
 
 async function clickRecoveryAction(sessionId, actionId, buttonText) {
