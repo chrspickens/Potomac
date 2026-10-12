@@ -255,7 +255,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     catch (error) { return { status: 400, error: error.message, reasonCode: 'invalid_action' }; }
     try { validateSchema(tested.state, manifest.schema); }
     catch { return { status: 409, error: 'Action result does not match its module schema', reasonCode: 'action_schema_conflict' }; }
-    return { actor, data: currentData, manifest, action, policy };
+    return { actor, data: currentData, manifest, action, policy, tested };
   };
 
   const server = createServer(async (req, res) => {
@@ -393,25 +393,21 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const operation = JSON.parse(proposal.request);
         const validation = validateOfflineCommand(operation, { role: 'player', memberId: proposal.member_id, principalId: proposal.member_id }, 'gmReview');
         if (validation.error) {
-          const result = { proposalId, operationId: proposal.operation_id, status: 'conflict', decisionId: body.decisionId, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision };
+          const result = { proposalId, operationId: proposal.operation_id, entityId: proposal.actor_id, status: 'conflicted', decisionId: body.decisionId, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision };
           transaction(() => {
             db.prepare('UPDATE offline_proposals SET status=?,decided_at=?,decision_id=?,decision=?,decision_response=? WHERE id=? AND status=?')
               .run('conflict', now, body.decisionId, 'accept', JSON.stringify(result), proposalId, 'pending');
             db.prepare('UPDATE offline_receipts SET status=?,response=?,updated_at=? WHERE member_id=? AND operation_id=?')
-              .run('conflict', JSON.stringify(result), now, proposal.member_id, proposal.operation_id);
+              .run('conflicted', JSON.stringify(result), now, proposal.member_id, proposal.operation_id);
             db.prepare('INSERT INTO offline_decisions(decision_id,proposal_id,request_hash,response,created_at) VALUES(?,?,?,?,?)')
               .run(body.decisionId, proposalId, decisionHash, JSON.stringify(result), now);
             insertEvent({ kind: 'offline.proposal.conflicted', visibility: 'gm', payload: { proposalId, operationId: proposal.operation_id, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision } });
           });
           notify();
           const receipt = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(proposal.member_id, proposal.operation_id);
-          return json(res, 409, receiptJson(receipt));
+          return json(res, 200, receiptJson(receipt));
         }
-        let executed;
-        try { executed = applyRuleAction(validation.action, validation.data, operation.parameters); }
-        catch (error) { return json(res, 409, { error: error.message, reasonCode: 'action_revalidation_failed' }); }
-        try { validateSchema(executed.state, validation.manifest.schema); }
-        catch { return json(res, 409, { error: 'Action result does not match its module schema', reasonCode: 'action_schema_conflict' }); }
+        const executed = validation.tested;
         const revision = validation.actor.revision + 1;
         executed.state.revision = revision;
         const result = { proposalId, operationId: proposal.operation_id, entityId: proposal.actor_id, status: 'applied', decisionId: body.decisionId, revision };
@@ -449,30 +445,26 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const validation = validateOfflineCommand(operation, auth);
         const now = new Date().toISOString();
         if (validation.error) {
-          const status = validation.status === 409 || validation.status === 404 ? 'conflict' : 'rejected';
+          const status = validation.status === 409 || validation.status === 404 ? 'conflicted' : 'rejected';
           const receipt = { operationId: operation.operationId, entityId: operation.entityId, status, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision };
           transaction(() => db.prepare('INSERT INTO offline_receipts(member_id,operation_id,campaign_id,request_hash,status,proposal_id,response,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
             .run(auth.memberId, operation.operationId, campaignId, requestHash, status, null, JSON.stringify(receipt), now, now));
-          return json(res, validation.status, { error: validation.error, ...receipt, memberId: auth.memberId, campaignId, requestHash, createdAt: now, updatedAt: now });
+          return json(res, 200, receiptJson(db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(auth.memberId, operation.operationId)));
         }
         if (validation.policy === 'gmReview') {
           const proposalId = randomUUID();
-          const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'pending', proposalId };
+          const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'awaitingReview', proposalId };
           transaction(() => {
             db.prepare('INSERT INTO offline_proposals(id,operation_id,member_id,actor_id,action_id,request_hash,request,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
               .run(proposalId, operation.operationId, auth.memberId, operation.entityId, operation.actionId, requestHash, canonicalJson(operation), 'pending', now);
             db.prepare('INSERT INTO offline_receipts(member_id,operation_id,campaign_id,request_hash,status,proposal_id,response,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
-              .run(auth.memberId, operation.operationId, campaignId, requestHash, 'pending', proposalId, JSON.stringify(receipt), now, now);
+              .run(auth.memberId, operation.operationId, campaignId, requestHash, 'awaitingReview', proposalId, JSON.stringify(receipt), now, now);
             insertEvent({ actorId: operation.entityId, kind: 'offline.proposal.submitted', visibility: 'gm', payload: { proposalId, operationId: operation.operationId, memberId: auth.memberId, actionId: operation.actionId } });
           });
           notify();
           return json(res, 202, receiptJson(db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(auth.memberId, operation.operationId)));
         }
-        let executed;
-        try { executed = applyRuleAction(validation.action, validation.data, operation.parameters); }
-        catch (error) { return json(res, 400, { error: error.message, reasonCode: 'invalid_action' }); }
-        try { validateSchema(executed.state, validation.manifest.schema); }
-        catch { return json(res, 400, { error: 'Action result does not match its module schema', reasonCode: 'action_schema_invalid' }); }
+        const executed = validation.tested;
         const revision = validation.actor.revision + 1;
         executed.state.revision = revision;
         const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'applied', revision };

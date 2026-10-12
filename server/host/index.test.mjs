@@ -368,7 +368,7 @@ test('GM review proposal persists without changing actor state and can be accept
     const submitted = await postJson(request, '/api/offline/operations', command, member.credential);
     assert.equal(submitted.status, 202);
     const receipt = await submitted.json();
-    assert.equal(receipt.status, 'pending');
+    assert.equal(receipt.status, 'awaitingReview');
     assert.equal(typeof receipt.proposalId, 'string');
     assert.equal((await (await request('/api/actors/offline-protocol-actor', member.credential)).json()).data.resources.focus, 3);
     assert.equal((await request('/api/proposals', member.credential)).status, 403);
@@ -380,7 +380,7 @@ test('GM review proposal persists without changing actor state and can be accept
     assert.equal(detail.requestHash, receipt.requestHash);
     assert.deepEqual(detail.request, command);
     const mine = await (await request('/api/proposals/mine', member.credential)).json();
-    assert.equal(mine.receipts.find(item => item.operationId === command.operationId).status, 'pending');
+    assert.equal(mine.receipts.find(item => item.operationId === command.operationId).status, 'awaitingReview');
     const decision = { decisionId: 'gm-decision-accept-1', decision: 'accept', reason: 'Reviewed' };
     const acceptedResponse = await postJson(request, `/api/proposals/${receipt.proposalId}/decisions`, decision);
     assert.equal(acceptedResponse.status, 200);
@@ -410,9 +410,9 @@ test('offline review rejection and stale acceptance persist decisions without ap
     const staleReceipt = await (await postJson(request, '/api/offline/operations', staleCommand, member.credential)).json();
     host.db.prepare('UPDATE actors SET revision=revision+1 WHERE id=?').run(staleCommand.entityId);
     const staleDecision = await postJson(request, `/api/proposals/${staleReceipt.proposalId}/decisions`, { decisionId: 'decision-stale-1', decision: 'accept' });
-    assert.equal(staleDecision.status, 409);
+    assert.equal(staleDecision.status, 200);
     const conflict = await staleDecision.json();
-    assert.equal(conflict.status, 'conflict');
+    assert.equal(conflict.status, 'conflicted');
     assert.equal(conflict.reasonCode, 'revision_conflict');
     const repeated = await postJson(request, '/api/offline/operations', staleCommand, member.credential);
     assert.equal(repeated.status, 200);
@@ -434,9 +434,9 @@ test('offline operation validates current module, schema and dependency revision
       ['offline-stale-dependency', { dependencies: [{ entityId: 'offline-validation-actor', revision: 0 }] }, 'dependency_revision_conflict']
     ]) {
       const response = await postJson(request, '/api/offline/operations', { ...base, ...changes, operationId }, member.credential);
-      assert.equal(response.status, 409);
+      assert.equal(response.status, 200);
       const receipt = await response.json();
-      assert.equal(receipt.status, 'conflict');
+      assert.equal(receipt.status, 'conflicted');
       assert.equal(receipt.reasonCode, reasonCode);
       const replay = await request(`/api/offline/operations/${operationId}`, member.credential);
       assert.equal(replay.status, 200);
@@ -453,9 +453,9 @@ test('proposal acceptance rechecks the submitter current permission', async () =
     const submitted = await (await postJson(request, '/api/offline/operations', command, member.credential)).json();
     assert.equal((await request(`/api/members/${member.memberId}`, 'gm', { method: 'DELETE' })).status, 200);
     const decision = await postJson(request, `/api/proposals/${submitted.proposalId}/decisions`, { decisionId: 'decision-revoked-member', decision: 'accept' });
-    assert.equal(decision.status, 409);
+    assert.equal(decision.status, 200);
     const receipt = await decision.json();
-    assert.equal(receipt.status, 'conflict');
+    assert.equal(receipt.status, 'conflicted');
     assert.equal(receipt.reasonCode, 'actor_unavailable');
     assert.equal((await (await request('/api/actors/offline-revoked-member-actor')).json()).revision, 1);
   });
