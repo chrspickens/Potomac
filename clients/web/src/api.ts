@@ -4,7 +4,7 @@ export type Role = 'gm' | 'player'
 export type Encounter = { id: string; name: string; summary: string }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
-export type Snapshot = { role: Role; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[] }
+export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[] }
 export type ActionRequest = { operationId: string; entityId: string; baseRevision: number; actionId: string; parameters: Record<string, unknown> }
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 export type HostAdapter = {
@@ -23,7 +23,7 @@ const demoEncounters: Encounter[] = [
   { id: 'encounter-b', name: 'The Ashen Gate', summary: 'A sealed gate waits beyond the ridge; distant lights mark the approach.' },
 ]
 let demo: Snapshot = {
-  role: 'gm', actors: structuredClone(initialActors), encounters: demoEncounters,
+  role: 'gm', memberId: null, actors: structuredClone(initialActors), encounters: demoEncounters,
   context: { campaignId: 'foundation-demo', activeEncounter: demoEncounters[0], cursor: 1 }, activity: [],
 }
 
@@ -38,7 +38,7 @@ async function http<T>(path: string, role: Role, init?: RequestInit): Promise<T>
 }
 
 type HostState = {
-  campaignId: string; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
+  campaignId: string; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
   modules?: Array<Record<string, unknown>>
   actors?: Array<{ id: string; moduleId: string; moduleVersion: string; revision: number; data: Record<string, any> }>
   events?: Array<{ id: string; actorId: string | null; kind: string; payload: Record<string, any>; createdAt: string; visibility: string; cursor: number }>
@@ -63,7 +63,7 @@ function fromHost(body: HostState, role: Role): Snapshot {
       : Array.isArray(event.payload.rolls) && event.payload.rolls.length ? `Verified roll: ${event.payload.rolls.join(' + ')}` : String(event.payload.actionId || ''),
     time: event.createdAt, visibility: event.visibility === 'gm' ? 'gm' : 'all', cursor: event.cursor,
   }))
-  return { role, actors, encounters, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
+  return { role, memberId: body.memberId ?? null, actors, encounters, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
 }
 async function loadHost(role: Role) {
   const body = await http<HostState>('/api/state', role)
