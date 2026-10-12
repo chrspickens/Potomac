@@ -7,15 +7,22 @@ import { createHost } from './index.mjs';
 
 async function withHost(run) {
   const directory = mkdtempSync(join(tmpdir(), 'potomac-host-'));
-  const host = createHost({ databasePath: join(directory, 'host.sqlite') });
-  const address = await host.listen(0);
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const databasePath = join(directory, 'host.sqlite');
+  let host = createHost({ databasePath });
+  let address = await host.listen(0);
+  let baseUrl = `http://127.0.0.1:${address.port}`;
   const request = (path, role = 'gm', options = {}) => fetch(`${baseUrl}${path}`, {
     ...options,
-    headers: { authorization: `Bearer local-${role}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers }
+    headers: { authorization: `Bearer ${role === 'gm' || role === 'player' ? `local-${role}` : role}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers }
   });
-  try { await run({ host, request }); }
-  finally { host.close(); rmSync(directory, { recursive: true, force: true }); }
+  try {
+    await run({ get host() { return host; }, request, restart: async () => {
+      host.close();
+      host = createHost({ databasePath });
+      address = await host.listen(0);
+      baseUrl = `http://127.0.0.1:${address.port}`;
+    } });
+  } finally { host.close(); rmSync(directory, { recursive: true, force: true }); }
 }
 
 const postJson = (request, path, body, role = 'gm') => request(path, role, { method: 'POST', body: JSON.stringify(body) });
@@ -91,6 +98,127 @@ test('player projections and replay streams omit GM-owned actors and their event
   });
 });
 
+test('GM enrollment creates distinct member identities and private actors require ownership or grants', async () => {
+  await withHost(async ({ host, request }) => {
+    const deniedEnrollment = await postJson(request, '/api/members/enroll', { displayName: 'Unauthorized' }, 'player');
+    assert.equal(deniedEnrollment.status, 403);
+    const enroll = async displayName => {
+      const response = await postJson(request, '/api/members/enroll', { displayName });
+      assert.equal(response.status, 201);
+      return response.json();
+    };
+    const alice = await enroll('Alice');
+    const bob = await enroll('Bob');
+    assert.notEqual(alice.memberId, bob.memberId);
+    assert.notEqual(alice.credential, bob.credential);
+    assert.equal(host.db.prepare('SELECT credential_hash FROM members WHERE id=?').get(alice.memberId).credential_hash.includes(alice.credential), false);
+
+    const manifest = {
+      id: 'members.module', version: '3', schema: { type: 'object', properties: {}, additionalProperties: true },
+      actions: [{ id: 'wait', policy: 'selfService', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [] }]
+    };
+    assert.equal((await postJson(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest })).status, 201);
+    assert.equal((await postJson(request, '/api/actors', { id: 'alice-actor', moduleId: manifest.id, moduleVersion: manifest.version, ownerMemberId: alice.memberId, data: {} })).status, 201);
+
+    const aliceState = await (await request('/api/state', alice.credential)).json();
+    const bobState = await (await request('/api/state', bob.credential)).json();
+    assert.equal(aliceState.memberId, alice.memberId);
+    assert.equal(bobState.memberId, bob.memberId);
+    assert.deepEqual(aliceState.actors.map(actor => actor.id), ['alice-actor']);
+    assert.equal(bobState.actors.some(actor => actor.id === 'alice-actor'), false);
+    assert.equal((await request('/api/actors/alice-actor', 'player')).status, 404);
+    assert.equal((await request('/api/actors/alice-actor', bob.credential)).status, 404);
+
+    const operation = {
+      operationId: 'alice-wait', campaignId: 'foundation-demo', memberId: alice.memberId,
+      entityId: 'alice-actor', baseRevision: 1, moduleId: manifest.id, moduleVersion: manifest.version,
+      schemaVersion: 1, actionId: 'wait', parameters: {}, dependencies: []
+    };
+    assert.equal((await postJson(request, '/api/actions', { ...operation, memberId: bob.memberId }, bob.credential)).status, 404);
+    const applied = await postJson(request, '/api/actions', operation, alice.credential);
+    assert.equal(applied.status, 200);
+    assert.deepEqual(await applied.json(), { operationId: 'alice-wait', entityId: 'alice-actor', status: 'applied', revision: 2 });
+    const bobReplayBeforeGrant = await (await request('/api/state?since=0', bob.credential)).json();
+    assert.equal(bobReplayBeforeGrant.events.some(event => event.actorId === 'alice-actor'), false);
+    const deniedController = new AbortController();
+    const deniedStream = await request('/api/stream?since=0', bob.credential, { signal: deniedController.signal });
+    const deniedReader = deniedStream.body.getReader();
+    let deniedText = '';
+    const deniedRead = (async () => {
+      while (!deniedText.includes('context.changed')) {
+        const { done, value } = await deniedReader.read();
+        if (done) break;
+        deniedText += new TextDecoder().decode(value);
+      }
+    })();
+    await postJson(request, '/api/context', { context: { activeEncounter: 'encounter-b' } });
+    await deniedRead;
+    deniedController.abort();
+    assert.equal(deniedText.includes('alice-wait'), false);
+    assert.equal(deniedText.includes('alice-actor'), false);
+    assert.equal((await postJson(request, '/api/actors/alice-actor/grants', { memberId: bob.memberId, permissions: ['read'] }, bob.credential)).status, 403);
+    assert.equal((await request(`/api/members/${bob.memberId}`, bob.credential, { method: 'DELETE' })).status, 403);
+
+    const granted = await postJson(request, '/api/actors/alice-actor/grants', { memberId: bob.memberId, permissions: ['read'] });
+    assert.equal(granted.status, 201);
+    assert.equal((await request('/api/actors/alice-actor', bob.credential)).status, 200);
+    const bobReplayAfterGrant = await (await request('/api/state?since=0', bob.credential)).json();
+    assert.equal(bobReplayAfterGrant.events.some(event => event.actorId === 'alice-actor'), true);
+    assert.equal((await postJson(request, '/api/actions', { ...operation, operationId: 'bob-wait', memberId: bob.memberId }, bob.credential)).status, 404);
+    const actGrant = await postJson(request, '/api/actors/alice-actor/grants', { memberId: bob.memberId, permissions: ['act'] });
+    assert.equal(actGrant.status, 201);
+    const bobAction = { ...operation, operationId: 'bob-wait-with-grant', memberId: bob.memberId, baseRevision: 2 };
+    assert.equal((await postJson(request, '/api/actions', bobAction, bob.credential)).status, 200);
+
+    const controller = new AbortController();
+    const cursor = (await (await request('/api/state', bob.credential)).json()).revision;
+    const stream = await request(`/api/stream?since=${cursor}`, bob.credential, { signal: controller.signal });
+    const readStream = (async () => {
+      const reader = stream.body.getReader();
+      let text = '';
+      while (!text.includes('context.changed')) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += new TextDecoder().decode(value);
+      }
+      return text;
+    })();
+    const aliceAction = { ...operation, operationId: 'alice-wait-while-bob-streams', baseRevision: 3 };
+    assert.equal((await postJson(request, '/api/actions', aliceAction, alice.credential)).status, 200);
+    await postJson(request, '/api/context', { context: { activeEncounter: 'encounter-a' } });
+    const streamed = await readStream;
+    controller.abort();
+    assert.equal(streamed.includes('alice-wait-while-bob-streams'), true);
+    assert.equal(streamed.includes('alice-actor'), true);
+    const revoked = await request(`/api/actors/alice-actor/grants/${bob.memberId}`, 'gm', { method: 'DELETE' });
+    assert.equal(revoked.status, 200);
+    assert.equal((await request('/api/actors/alice-actor', bob.credential)).status, 404);
+    const bobReplayAfterRevoke = await (await request('/api/state?since=0', bob.credential)).json();
+    assert.equal(bobReplayAfterRevoke.events.some(event => event.actorId === 'alice-actor'), false);
+  });
+});
+
+test('member action identity, campaign, module, and schema versions are checked by the host', async () => {
+  await withHost(async ({ request }) => {
+    const enrolled = await (await postJson(request, '/api/members/enroll', { displayName: 'Member' })).json();
+    const manifest = {
+      id: 'offline.module', version: '1', schema: { type: 'object', properties: {}, additionalProperties: true },
+      actions: [{ id: 'wait', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [] }]
+    };
+    await postJson(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest });
+    await postJson(request, '/api/actors', { id: 'offline-actor', moduleId: manifest.id, moduleVersion: manifest.version, ownerMemberId: enrolled.memberId, data: {} });
+    const command = {
+      operationId: 'offline-op', campaignId: 'foundation-demo', memberId: enrolled.memberId,
+      entityId: 'offline-actor', baseRevision: 1, moduleId: manifest.id, moduleVersion: manifest.version,
+      schemaVersion: 1, actionId: 'wait', parameters: {}, dependencies: []
+    };
+    assert.equal((await postJson(request, '/api/actions', { ...command, memberId: 'somebody-else' }, enrolled.credential)).status, 403);
+    assert.equal((await postJson(request, '/api/actions', { ...command, campaignId: 'other-campaign' }, enrolled.credential)).status, 409);
+    assert.equal((await postJson(request, '/api/actions', { ...command, moduleVersion: '2' }, enrolled.credential)).status, 409);
+    assert.equal((await postJson(request, '/api/actions', command, enrolled.credential)).status, 200);
+  });
+});
+
 test('reconnect replays missed context changes after the supplied event cursor', async () => {
   await withHost(async ({ request }) => {
     const cursor = (await (await request('/api/state', 'player')).json()).revision;
@@ -120,6 +248,7 @@ test('action retry with the same operation ID returns the committed result once'
     };
     assert.equal((await postJson(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest })).status, 201);
     assert.equal((await postJson(request, '/api/actors', { id: 'retry-actor', moduleId: manifest.id, moduleVersion: manifest.version, data: {} })).status, 201);
+    host.db.prepare('UPDATE actors SET legacy_shared=1 WHERE id=?').run('retry-actor');
     const command = { operationId: 'operation-once', entityId: 'retry-actor', baseRevision: 1, actionId: 'wait' };
     const first = await postJson(request, '/api/actions', command, 'player');
     const second = await postJson(request, '/api/actions', command, 'player');
@@ -131,7 +260,7 @@ test('action retry with the same operation ID returns the committed result once'
 });
 
 test('player action event projections redact arbitrary parameters while GM audit retains them', async () => {
-  await withHost(async ({ request }) => {
+  await withHost(async ({ host, request }) => {
     const manifest = {
       id: 'privacy.module', version: '1',
       schema: { type: 'object', properties: {}, additionalProperties: true },
@@ -142,6 +271,7 @@ test('player action event projections redact arbitrary parameters while GM audit
       id: 'privacy-actor', moduleId: manifest.id, moduleVersion: manifest.version,
       data: { notes: { secret: 'gm-only-marker' } }, visibility: { gmOnly: ['notes.secret'] }
     })).status, 201);
+    host.db.prepare('UPDATE actors SET legacy_shared=1 WHERE id=?').run('privacy-actor');
     const cursor = (await (await request('/api/state', 'player')).json()).revision;
     const command = {
       operationId: 'privacy-operation', entityId: 'privacy-actor', baseRevision: 1,
