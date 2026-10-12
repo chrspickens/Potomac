@@ -1,5 +1,7 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { host, type ConnectionStatus, type Role, type Snapshot } from './api'
+import { configuredHost, connectPlayerCredential, host, type ConnectionStatus, type Role, type Snapshot } from './api'
+import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
+import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import type { Actor } from './modules'
 import { createDefaultWorkspace, getBrickDefinition, getBrickDefinitions, isSupportedBinding, loadWorkspaceWithRecovery, saveWorkspace, type BrickInstance, type WorkspaceState } from './workspace'
 import { CharacterView, createAuthorizedBrickAdapter, resolveDefaultBinding } from './workspace/contributions.tsx'
@@ -37,12 +39,14 @@ function BrickContent({ brick, snapshot, role: _role, busy, onAction }: { brick:
 }
 
 export default function App() {
-  const [role, setRole] = useState<Role>('gm')
+  const [role, setRole] = useState<Role>(() => configuredHost && loadRememberedIdentity(configuredHost) ? 'player' : 'gm')
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [actionState, setActionState] = useState('')
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
+  const [identityRevision, setIdentityRevision] = useState(0)
   const [section, setSection] = useState<'dashboard' | 'characters'>('dashboard')
   const [selectedActorId, setSelectedActorId] = useState('')
   const [editing, setEditing] = useState(false)
@@ -55,12 +59,26 @@ export default function App() {
   const [encounterDraft, setEncounterDraft] = useState('')
 
   useEffect(() => {
+    let stopped = false
+    let live = false
     setSnapshot(null)
+    setLastSyncedAt(null)
     setConnection('connecting')
-    const stop = host.subscribe(role, value => { setSnapshot(value); setError('') }, setConnection)
+    if (role === 'player' && configuredHost) {
+      const identity = loadRememberedIdentity(configuredHost)
+      if (identity) void loadCachedPlayerSnapshot(identity).then(cached => {
+        if (!stopped && !live && cached) { setSnapshot(cached.snapshot); setLastSyncedAt(cached.lastSyncedAt) }
+      }).catch(cause => { if (!stopped) setError(displayError(cause)) })
+    }
+    const stop = host.subscribe(role, value => {
+      if (stopped) return
+      live = true
+      setSnapshot(value); setError(''); setLastSyncedAt(Date.now())
+      if (role === 'player' && configuredHost && value.memberId) void cachePlayerSnapshot(configuredHost, value).catch(cause => setError(`Offline cache: ${displayError(cause)}`))
+    }, setConnection)
     if (host.mode === 'demo') void host.load(role).then(value => { setSnapshot(value); setError('') }).catch(cause => setError(displayError(cause)))
-    return stop
-  }, [role])
+    return () => { stopped = true; stop() }
+  }, [role, identityRevision])
 
   useEffect(() => {
     if (!snapshot) return
@@ -165,9 +183,28 @@ export default function App() {
     setProfileId(id)
   }
 
+  const usePlayerCredential = async () => {
+    const credential = window.prompt('Enter the credential issued by your GM for this local host')?.trim()
+    if (!credential) return
+    try {
+      const verified = await connectPlayerCredential(credential)
+      setSnapshot(verified); setRole('player'); setIdentityRevision(value => value + 1); setError('')
+    } catch (cause) { setError(displayError(cause)) }
+  }
+  const forgetDevice = async () => {
+    if (!configuredHost) return
+    const identity = loadRememberedIdentity(configuredHost)
+    if (!identity || !window.confirm('Forget this player credential, cached characters, pending operations, and private drafts on this device?')) return
+    try {
+      await clearRememberedPlayerData(identity)
+      forgetRememberedIdentity(configuredHost)
+      setSnapshot(null); setLastSyncedAt(null); setIdentityRevision(value => value + 1)
+    } catch (cause) { setError(`Could not clear local data: ${displayError(cause)}`) }
+  }
+
   return <div className="app-shell">
     <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{snapshot?.context.campaignId || 'Connecting…'}</strong></div><nav aria-label="Applications"><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▦ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><div className="rail-future">Encounters <small>Coming later</small></div><div className="rail-future">Maps <small>Coming later</small></div><div className="rail-future">Lore <small>Coming later</small></div></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
-    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : 'Characters'}</strong></div><div className="topbar-right"><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection.toUpperCase()}</span><label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId('') }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
+    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : 'Characters'}</strong></div><div className="topbar-right"><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId('') }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
     {section === 'dashboard' ? <main className="dashboard-page">
