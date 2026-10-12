@@ -316,3 +316,165 @@ test('player action on a GM-owned actor returns the same not-found response as a
     assert.deepEqual(await hidden.json(), await missing.json());
   });
 });
+
+async function offlineFixture(request, actorId = 'offline-protocol-actor') {
+  const enrolled = await (await postJson(request, '/api/members/enroll', { displayName: 'Offline member' })).json();
+  const manifest = {
+    id: 'offline.protocol.module', version: '1',
+    schema: { type: 'object', properties: { resources: { type: 'object', properties: { focus: { type: 'integer', minimum: 0 } }, required: ['focus'] } }, required: ['resources'], additionalProperties: true },
+    actions: [
+      { id: 'spend', policy: 'selfService', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [{ op: 'changeResource', resource: 'focus', amount: { literal: -1 } }] },
+      { id: 'recover', policy: 'gmReview', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [{ op: 'changeResource', resource: 'focus', amount: { literal: 1 } }] }
+    ]
+  };
+  assert.equal((await postJson(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest })).status, 201);
+  assert.equal((await postJson(request, '/api/actors', { id: actorId, moduleId: manifest.id, moduleVersion: manifest.version, ownerMemberId: enrolled.memberId, data: { resources: { focus: 3 } } })).status, 201);
+  const operation = (operationId, actionId) => ({
+    operationId, campaignId: 'foundation-demo', memberId: enrolled.memberId, entityId: actorId,
+    baseRevision: 1, moduleId: manifest.id, moduleVersion: manifest.version, schemaVersion: 1,
+    actionId, parameters: {}, dependencies: []
+  });
+  return { ...enrolled, manifest, operation };
+}
+
+test('offline self-service receipt is canonical, member-scoped, idempotent and durable across restart', async () => {
+  await withHost(async ({ request, restart }) => {
+    const member = await offlineFixture(request);
+    const command = member.operation('offline-spend-once', 'spend');
+    command.dependencies = [{ entityId: command.entityId, revision: 1 }];
+    const first = await postJson(request, '/api/offline/operations', command, member.credential);
+    assert.equal(first.status, 200);
+    const receipt = await first.json();
+    assert.equal(receipt.status, 'applied');
+    assert.equal(receipt.revision, 2);
+    assert.match(receipt.requestHash, /^[0-9a-f]{64}$/);
+    assert.equal((await (await request('/api/actors/offline-protocol-actor', member.credential)).json()).data.resources.focus, 2);
+    const reordered = { ...command, dependencies: [{ revision: 1, entityId: command.entityId }] };
+    assert.deepEqual(await (await postJson(request, '/api/offline/operations', reordered, member.credential)).json(), receipt);
+    const collision = await postJson(request, '/api/offline/operations', { ...command, actionId: 'recover' }, member.credential);
+    assert.equal(collision.status, 409);
+    assert.equal((await collision.json()).reasonCode, 'operation_id_collision');
+    await restart();
+    assert.deepEqual(await (await request('/api/offline/operations/offline-spend-once', member.credential)).json(), receipt);
+    const mine = await (await request('/api/proposals/mine', member.credential)).json();
+    assert.equal(mine.receipts.some(item => item.operationId === command.operationId && item.status === 'applied'), true);
+  });
+});
+
+test('GM review proposal persists without changing actor state and can be accepted idempotently', async () => {
+  await withHost(async ({ request, restart }) => {
+    const member = await offlineFixture(request);
+    const command = member.operation('offline-recover-proposal', 'recover');
+    const submitted = await postJson(request, '/api/offline/operations', command, member.credential);
+    assert.equal(submitted.status, 202);
+    const receipt = await submitted.json();
+    assert.equal(receipt.status, 'pending');
+    assert.equal(typeof receipt.proposalId, 'string');
+    assert.equal((await (await request('/api/actors/offline-protocol-actor', member.credential)).json()).data.resources.focus, 3);
+    assert.equal((await request('/api/proposals', member.credential)).status, 403);
+    assert.equal((await request(`/api/proposals/${receipt.proposalId}`, member.credential)).status, 403);
+    await restart();
+    const list = await (await request('/api/proposals?status=pending')).json();
+    assert.equal(list.proposals.some(proposal => proposal.id === receipt.proposalId), true);
+    const detail = await (await request(`/api/proposals/${receipt.proposalId}`)).json();
+    assert.equal(detail.requestHash, receipt.requestHash);
+    assert.deepEqual(detail.request, command);
+    const mine = await (await request('/api/proposals/mine', member.credential)).json();
+    assert.equal(mine.receipts.find(item => item.operationId === command.operationId).status, 'pending');
+    const decision = { decisionId: 'gm-decision-accept-1', decision: 'accept', reason: 'Reviewed' };
+    const acceptedResponse = await postJson(request, `/api/proposals/${receipt.proposalId}/decisions`, decision);
+    assert.equal(acceptedResponse.status, 200);
+    const accepted = await acceptedResponse.json();
+    assert.equal(accepted.status, 'applied');
+    assert.equal(accepted.revision, 2);
+    await restart();
+    assert.deepEqual(await (await postJson(request, `/api/proposals/${receipt.proposalId}/decisions`, decision)).json(), accepted);
+    assert.equal((await (await request('/api/actors/offline-protocol-actor')).json()).data.resources.focus, 4);
+    const mineAfter = await (await request('/api/proposals/mine', member.credential)).json();
+    assert.equal(mineAfter.receipts.find(item => item.operationId === command.operationId).status, 'applied');
+  });
+});
+
+test('offline review rejection and stale acceptance persist decisions without applying stale state', async () => {
+  await withHost(async ({ host, request }) => {
+    const member = await offlineFixture(request, 'offline-reject-actor');
+    const rejectCommand = member.operation('offline-reject-op', 'recover');
+    const rejectedReceipt = await (await postJson(request, '/api/offline/operations', rejectCommand, member.credential)).json();
+    const reject = await postJson(request, `/api/proposals/${rejectedReceipt.proposalId}/decisions`, { decisionId: 'decision-reject-1', decision: 'reject', reason: 'Not approved' });
+    assert.equal(reject.status, 200);
+    assert.equal((await reject.json()).status, 'rejected');
+    assert.equal((await postJson(request, `/api/proposals/${rejectedReceipt.proposalId}/decisions`, { decisionId: 'decision-reject-1', decision: 'reject', reason: 'Not approved' })).status, 200);
+    assert.equal((await postJson(request, `/api/proposals/${rejectedReceipt.proposalId}/decisions`, { decisionId: 'decision-reject-1', decision: 'accept' })).status, 409);
+
+    const staleCommand = member.operation('offline-stale-op', 'recover');
+    const staleReceipt = await (await postJson(request, '/api/offline/operations', staleCommand, member.credential)).json();
+    host.db.prepare('UPDATE actors SET revision=revision+1 WHERE id=?').run(staleCommand.entityId);
+    const staleDecision = await postJson(request, `/api/proposals/${staleReceipt.proposalId}/decisions`, { decisionId: 'decision-stale-1', decision: 'accept' });
+    assert.equal(staleDecision.status, 409);
+    const conflict = await staleDecision.json();
+    assert.equal(conflict.status, 'conflict');
+    assert.equal(conflict.reasonCode, 'revision_conflict');
+    const repeated = await postJson(request, '/api/offline/operations', staleCommand, member.credential);
+    assert.equal(repeated.status, 200);
+    assert.equal((await repeated.json()).requestHash, staleReceipt.requestHash);
+    const actor = await (await request(`/api/actors/${staleCommand.entityId}`)).json();
+    assert.equal(actor.revision, 2);
+    const gmList = await (await request('/api/proposals?status=conflict')).json();
+    assert.equal(gmList.proposals.some(proposal => proposal.id === staleReceipt.proposalId), true);
+  });
+});
+
+test('offline operation validates current module, schema and dependency revisions and keeps conflict receipts', async () => {
+  await withHost(async ({ request }) => {
+    const member = await offlineFixture(request, 'offline-validation-actor');
+    const base = member.operation('offline-validation-base', 'spend');
+    for (const [operationId, changes, reasonCode] of [
+      ['offline-wrong-module', { moduleVersion: '99' }, 'module_schema_conflict'],
+      ['offline-wrong-schema', { schemaVersion: 99 }, 'module_schema_conflict'],
+      ['offline-stale-dependency', { dependencies: [{ entityId: 'offline-validation-actor', revision: 0 }] }, 'dependency_revision_conflict']
+    ]) {
+      const response = await postJson(request, '/api/offline/operations', { ...base, ...changes, operationId }, member.credential);
+      assert.equal(response.status, 409);
+      const receipt = await response.json();
+      assert.equal(receipt.status, 'conflict');
+      assert.equal(receipt.reasonCode, reasonCode);
+      const replay = await request(`/api/offline/operations/${operationId}`, member.credential);
+      assert.equal(replay.status, 200);
+      assert.equal((await replay.json()).requestHash, receipt.requestHash);
+    }
+    assert.equal((await (await request('/api/actors/offline-validation-actor', member.credential)).json()).data.resources.focus, 3);
+  });
+});
+
+test('proposal acceptance rechecks the submitter current permission', async () => {
+  await withHost(async ({ request }) => {
+    const member = await offlineFixture(request, 'offline-revoked-member-actor');
+    const command = member.operation('offline-revoked-permission', 'recover');
+    const submitted = await (await postJson(request, '/api/offline/operations', command, member.credential)).json();
+    assert.equal((await request(`/api/members/${member.memberId}`, 'gm', { method: 'DELETE' })).status, 200);
+    const decision = await postJson(request, `/api/proposals/${submitted.proposalId}/decisions`, { decisionId: 'decision-revoked-member', decision: 'accept' });
+    assert.equal(decision.status, 409);
+    const receipt = await decision.json();
+    assert.equal(receipt.status, 'conflict');
+    assert.equal(receipt.reasonCode, 'actor_unavailable');
+    assert.equal((await (await request('/api/actors/offline-revoked-member-actor')).json()).revision, 1);
+  });
+});
+
+test('offline submission enforces authenticated member scope, current permission and filtered proposal events', async () => {
+  await withHost(async ({ request }) => {
+    const member = await offlineFixture(request, 'offline-private-actor');
+    const command = member.operation('offline-private-op', 'recover');
+    assert.equal((await postJson(request, '/api/offline/operations', command, 'player')).status, 403);
+    assert.equal((await postJson(request, '/api/offline/operations', { ...command, memberId: 'spoofed-member' }, member.credential)).status, 403);
+    const cursor = (await (await request('/api/state', member.credential)).json()).revision;
+    const response = await postJson(request, '/api/offline/operations', command, member.credential);
+    const receipt = await response.json();
+    const playerReplay = await (await request(`/api/state?since=${cursor}`, 'player')).json();
+    assert.equal(playerReplay.events.some(event => event.kind === 'offline.proposal.submitted'), false);
+    const gmReplay = await (await request(`/api/state?since=${cursor}`)).json();
+    assert.equal(gmReplay.events.some(event => event.kind === 'offline.proposal.submitted' && event.payload.proposalId === receipt.proposalId), true);
+    const unauthorized = await request('/api/proposals/mine', 'player');
+    assert.equal(unauthorized.status, 403);
+  });
+});

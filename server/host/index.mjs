@@ -4,7 +4,7 @@ import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { evaluate, executeAction, getRequiredRollCount } from '../../packages/rules-engine/src/index.ts';
+import { evaluate, executeAction, getActionPolicy, getRequiredRollCount } from '../../packages/rules-engine/src/index.ts';
 
 const schema = `
 PRAGMA journal_mode = WAL;
@@ -12,6 +12,11 @@ CREATE TABLE IF NOT EXISTS modules (id TEXT NOT NULL, version TEXT NOT NULL, man
 CREATE TABLE IF NOT EXISTS actors (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, module_version TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT '{}', owner_role TEXT NOT NULL DEFAULT 'player', owner_member_id TEXT, legacy_shared INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS events (cursor INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, operation_id TEXT UNIQUE, actor_id TEXT, kind TEXT NOT NULL, visibility TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, response TEXT NOT NULL, actor_id TEXT, action_id TEXT, request_hash TEXT, principal_id TEXT);
+CREATE TABLE IF NOT EXISTS offline_receipts (member_id TEXT NOT NULL, operation_id TEXT NOT NULL, campaign_id TEXT NOT NULL, request_hash TEXT NOT NULL, status TEXT NOT NULL, proposal_id TEXT, response TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(member_id, operation_id));
+CREATE TABLE IF NOT EXISTS offline_proposals (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, member_id TEXT NOT NULL, actor_id TEXT NOT NULL, action_id TEXT NOT NULL, request_hash TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT, decision_id TEXT UNIQUE, decision TEXT, decision_response TEXT);
+CREATE TABLE IF NOT EXISTS offline_decisions (decision_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS offline_proposals_status_created ON offline_proposals(status, created_at);
+CREATE INDEX IF NOT EXISTS offline_proposals_member_created ON offline_proposals(member_id, created_at);
 CREATE TABLE IF NOT EXISTS campaign (id TEXT PRIMARY KEY, context TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, credential_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);
 CREATE TABLE IF NOT EXISTS actor_grants (actor_id TEXT NOT NULL, member_id TEXT NOT NULL, can_read INTEGER NOT NULL, can_act INTEGER NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY(actor_id, member_id));
@@ -31,6 +36,11 @@ const same = (a, b) => {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 };
+const canonicalize = value => Array.isArray(value) ? value.map(canonicalize)
+  : value !== null && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])]))
+    : value;
+const canonicalJson = value => JSON.stringify(canonicalize(value));
 
 const encounters = [
   { id: 'encounter-a', name: 'The Glass Bridge', summary: 'A narrow crossing over a deep ravine.' },
@@ -210,6 +220,43 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   };
   const insertEvent = (event) => db.prepare('INSERT INTO events(id,operation_id,actor_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?)').run(
     event.id || randomUUID(), event.operationId || null, event.actorId || null, event.kind, event.visibility || 'public', JSON.stringify(event.payload), new Date().toISOString());
+  const receiptJson = row => ({
+    ...JSON.parse(row.response), operationId: row.operation_id, memberId: row.member_id, campaignId: row.campaign_id,
+    requestHash: row.request_hash, status: row.status, proposalId: row.proposal_id,
+    createdAt: row.created_at, updatedAt: row.updated_at
+  });
+  const validateOfflineCommand = (operation, auth, expectedPolicy = null) => {
+    const actor = actorRow.get(operation.entityId);
+    if (!actor || !canActOnActor(actor, auth)) return { status: 404, error: 'Actor not found', reasonCode: 'actor_unavailable' };
+    const currentData = JSON.parse(actor.data);
+    if (operation.moduleId !== actor.module_id || operation.moduleVersion !== actor.module_version || operation.schemaVersion !== currentData.schemaVersion) {
+      return { status: 409, error: 'Module or schema version mismatch', reasonCode: 'module_schema_conflict', currentRevision: actor.revision };
+    }
+    if (operation.baseRevision !== actor.revision) return { status: 409, error: 'Revision conflict', reasonCode: 'revision_conflict', currentRevision: actor.revision };
+    for (const dependency of operation.dependencies) {
+      if (!dependency || typeof dependency.entityId !== 'string' || !Number.isInteger(dependency.revision)) return { status: 400, error: 'Invalid operation dependency', reasonCode: 'invalid_dependency' };
+      const dependentActor = actorRow.get(dependency.entityId);
+      if (!dependentActor || !canReadActor(dependentActor, auth)) return { status: 404, error: 'Dependency not found', reasonCode: 'dependency_unavailable' };
+      if (dependentActor.revision !== dependency.revision) return { status: 409, error: 'Dependency revision conflict', reasonCode: 'dependency_revision_conflict', entityId: dependency.entityId, currentRevision: dependentActor.revision };
+    }
+    const module = moduleRow.get(actor.module_id, actor.module_version);
+    if (!module) return { status: 409, error: 'Actor module is unavailable', reasonCode: 'module_unavailable' };
+    const manifest = JSON.parse(module.manifest);
+    try { validateSchema(currentData, manifest.schema); }
+    catch (error) { return { status: 409, error: 'Current actor data does not match its module schema', reasonCode: 'actor_schema_conflict' }; }
+    const action = (manifest.actions || []).find(candidate => candidate.id === operation.actionId);
+    if (!action) return { status: 400, error: 'Action is not declared by the actor module', reasonCode: 'unknown_action' };
+    let policy;
+    try { policy = getActionPolicy(action); }
+    catch (error) { return { status: 400, error: error.message, reasonCode: 'unsupported_action_policy' }; }
+    if (expectedPolicy && policy !== expectedPolicy) return { status: 409, error: 'Action approval policy changed after proposal submission', reasonCode: 'action_policy_conflict' };
+    let tested;
+    try { tested = applyRuleAction(action, currentData, operation.parameters); }
+    catch (error) { return { status: 400, error: error.message, reasonCode: 'invalid_action' }; }
+    try { validateSchema(tested.state, manifest.schema); }
+    catch { return { status: 409, error: 'Action result does not match its module schema', reasonCode: 'action_schema_conflict' }; }
+    return { actor, data: currentData, manifest, action, policy };
+  };
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -230,6 +277,34 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const since = Math.max(0, Number(url.searchParams.get('since') || 0));
         const events = db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(since).filter(e => visibleEvent(e, auth)).map(event => eventJson(event, auth));
         return json(res, 200, { campaignId, role: auth.role, memberId: auth.memberId, revision: latest(), context, encounters: publicEncounters(), modules, actors, events });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/proposals/mine') {
+        if (auth.memberId === null) return json(res, 403, { error: 'Enrolled member identity required' });
+        const rows = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? ORDER BY created_at DESC LIMIT 200').all(auth.memberId);
+        return json(res, 200, { receipts: rows.map(receiptJson) });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/proposals') {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        const status = url.searchParams.get('status');
+        if (status && !['pending', 'accepted', 'rejected', 'conflict'].includes(status)) return json(res, 400, { error: 'Invalid proposal status' });
+        const rows = status
+          ? db.prepare('SELECT * FROM offline_proposals WHERE status=? ORDER BY created_at,id LIMIT 200').all(status)
+          : db.prepare('SELECT * FROM offline_proposals ORDER BY created_at,id LIMIT 200').all();
+        return json(res, 200, { proposals: rows.map(row => ({ id: row.id, operationId: row.operation_id, memberId: row.member_id, entityId: row.actor_id, actionId: row.action_id, requestHash: row.request_hash, status: row.status, createdAt: row.created_at, decidedAt: row.decided_at, decisionId: row.decision_id, decision: row.decision })) });
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/proposals/')) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        const proposalId = decodeURIComponent(url.pathname.slice('/api/proposals/'.length));
+        const row = db.prepare('SELECT * FROM offline_proposals WHERE id=?').get(proposalId);
+        if (!row) return json(res, 404, { error: 'Proposal not found' });
+        return json(res, 200, { id: row.id, operationId: row.operation_id, memberId: row.member_id, entityId: row.actor_id, actionId: row.action_id, requestHash: row.request_hash, request: JSON.parse(row.request), status: row.status, createdAt: row.created_at, decidedAt: row.decided_at, decisionId: row.decision_id, decision: row.decision, decisionResponse: row.decision_response ? JSON.parse(row.decision_response) : null });
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/offline/operations/')) {
+        if (auth.memberId === null) return json(res, 403, { error: 'Enrolled member identity required' });
+        const operationId = decodeURIComponent(url.pathname.slice('/api/offline/operations/'.length));
+        const receipt = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(auth.memberId, operationId);
+        if (!receipt) return json(res, 404, { error: 'Offline receipt not found' });
+        return json(res, 200, receiptJson(receipt));
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/encounters/')) {
         const id = decodeURIComponent(url.pathname.slice('/api/encounters/'.length));
@@ -282,6 +357,134 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }
       if (req.method !== 'POST') return json(res, 404, { error: 'Not found' });
       const body = await readBody(req);
+      const decisionMatch = url.pathname.match(/^\/api\/proposals\/([^/]+)\/decisions$/);
+      if (decisionMatch) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        if (typeof body.decisionId !== 'string' || !body.decisionId || !['accept', 'reject'].includes(body.decision)) return json(res, 400, { error: 'decisionId and accept/reject decision required' });
+        if (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500)) return json(res, 400, { error: 'reason must be a string of at most 500 characters' });
+        const proposalId = decodeURIComponent(decisionMatch[1]);
+        const decisionHash = createHash('sha256').update(canonicalJson({ proposalId, decisionId: body.decisionId, decision: body.decision, reason: body.reason || null })).digest('hex');
+        const existingDecision = db.prepare('SELECT proposal_id,request_hash,response FROM offline_decisions WHERE decision_id=?').get(body.decisionId);
+        if (existingDecision) {
+          if (existingDecision.proposal_id !== proposalId || existingDecision.request_hash !== decisionHash) return json(res, 409, { error: 'Decision ID was already used for a different decision' });
+          const decidedProposal = db.prepare('SELECT member_id,operation_id FROM offline_proposals WHERE id=?').get(proposalId);
+          const decidedReceipt = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(decidedProposal.member_id, decidedProposal.operation_id);
+          return json(res, 200, receiptJson(decidedReceipt));
+        }
+        const proposal = db.prepare('SELECT * FROM offline_proposals WHERE id=?').get(proposalId);
+        if (!proposal) return json(res, 404, { error: 'Proposal not found' });
+        if (proposal.status !== 'pending') return json(res, 409, { error: 'Proposal has already been decided', status: proposal.status });
+        const now = new Date().toISOString();
+        if (body.decision === 'reject') {
+          const result = { proposalId, operationId: proposal.operation_id, status: 'rejected', decisionId: body.decisionId };
+          transaction(() => {
+            db.prepare('UPDATE offline_proposals SET status=?,decided_at=?,decision_id=?,decision=?,decision_response=? WHERE id=? AND status=?')
+              .run('rejected', now, body.decisionId, 'reject', JSON.stringify(result), proposalId, 'pending');
+            db.prepare('UPDATE offline_receipts SET status=?,response=?,updated_at=? WHERE member_id=? AND operation_id=?')
+              .run('rejected', JSON.stringify(result), now, proposal.member_id, proposal.operation_id);
+            db.prepare('INSERT INTO offline_decisions(decision_id,proposal_id,request_hash,response,created_at) VALUES(?,?,?,?,?)')
+              .run(body.decisionId, proposalId, decisionHash, JSON.stringify(result), now);
+            insertEvent({ kind: 'offline.proposal.decided', visibility: 'gm', payload: { proposalId, operationId: proposal.operation_id, status: 'rejected', decisionId: body.decisionId, reason: body.reason || null } });
+          });
+          notify();
+          const receipt = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(proposal.member_id, proposal.operation_id);
+          return json(res, 200, receiptJson(receipt));
+        }
+        const operation = JSON.parse(proposal.request);
+        const validation = validateOfflineCommand(operation, { role: 'player', memberId: proposal.member_id, principalId: proposal.member_id }, 'gmReview');
+        if (validation.error) {
+          const result = { proposalId, operationId: proposal.operation_id, status: 'conflict', decisionId: body.decisionId, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision };
+          transaction(() => {
+            db.prepare('UPDATE offline_proposals SET status=?,decided_at=?,decision_id=?,decision=?,decision_response=? WHERE id=? AND status=?')
+              .run('conflict', now, body.decisionId, 'accept', JSON.stringify(result), proposalId, 'pending');
+            db.prepare('UPDATE offline_receipts SET status=?,response=?,updated_at=? WHERE member_id=? AND operation_id=?')
+              .run('conflict', JSON.stringify(result), now, proposal.member_id, proposal.operation_id);
+            db.prepare('INSERT INTO offline_decisions(decision_id,proposal_id,request_hash,response,created_at) VALUES(?,?,?,?,?)')
+              .run(body.decisionId, proposalId, decisionHash, JSON.stringify(result), now);
+            insertEvent({ kind: 'offline.proposal.conflicted', visibility: 'gm', payload: { proposalId, operationId: proposal.operation_id, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision } });
+          });
+          notify();
+          const receipt = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(proposal.member_id, proposal.operation_id);
+          return json(res, 409, receiptJson(receipt));
+        }
+        let executed;
+        try { executed = applyRuleAction(validation.action, validation.data, operation.parameters); }
+        catch (error) { return json(res, 409, { error: error.message, reasonCode: 'action_revalidation_failed' }); }
+        try { validateSchema(executed.state, validation.manifest.schema); }
+        catch { return json(res, 409, { error: 'Action result does not match its module schema', reasonCode: 'action_schema_conflict' }); }
+        const revision = validation.actor.revision + 1;
+        executed.state.revision = revision;
+        const result = { proposalId, operationId: proposal.operation_id, entityId: proposal.actor_id, status: 'applied', decisionId: body.decisionId, revision };
+        transaction(() => {
+          db.prepare('UPDATE actors SET data=?,revision=? WHERE id=?').run(JSON.stringify(executed.state), revision, proposal.actor_id);
+          db.prepare('UPDATE offline_proposals SET status=?,decided_at=?,decision_id=?,decision=?,decision_response=? WHERE id=? AND status=?')
+            .run('accepted', now, body.decisionId, 'accept', JSON.stringify(result), proposalId, 'pending');
+          db.prepare('UPDATE offline_receipts SET status=?,response=?,updated_at=? WHERE member_id=? AND operation_id=?')
+            .run('applied', JSON.stringify(result), now, proposal.member_id, proposal.operation_id);
+          db.prepare('INSERT INTO offline_decisions(decision_id,proposal_id,request_hash,response,created_at) VALUES(?,?,?,?,?)')
+            .run(body.decisionId, proposalId, decisionHash, JSON.stringify(result), now);
+          insertEvent({ actorId: proposal.actor_id, kind: 'action.applied', visibility: 'public', payload: { ...result, actionId: proposal.action_id, moduleId: validation.actor.module_id, moduleVersion: validation.actor.module_version, schemaVersion: operation.schemaVersion, ruleVersion: validation.manifest.rulesVersion, verified: true } });
+          insertEvent({ kind: 'offline.proposal.decided', visibility: 'gm', payload: { proposalId, operationId: proposal.operation_id, status: 'accepted', decisionId: body.decisionId, reason: body.reason || null } });
+        });
+        notify();
+        const receipt = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(proposal.member_id, proposal.operation_id);
+        return json(res, 200, receiptJson(receipt));
+      }
+      if (url.pathname === '/api/offline/operations') {
+        if (auth.memberId === null || auth.role !== 'player') return json(res, 403, { error: 'Enrolled member identity required' });
+        const required = ['operationId', 'campaignId', 'memberId', 'entityId', 'baseRevision', 'moduleId', 'moduleVersion', 'schemaVersion', 'actionId', 'parameters', 'dependencies'];
+        if (required.some(key => !Object.hasOwn(body, key)) || Object.keys(body).some(key => !required.includes(key))) return json(res, 400, { error: 'Full OfflineOperation fields are required; unknown fields are not accepted' });
+        if (required.filter(key => !['baseRevision', 'schemaVersion', 'parameters', 'dependencies'].includes(key)).some(key => typeof body[key] !== 'string' || !body[key])) return json(res, 400, { error: 'OfflineOperation identifiers must be non-empty strings' });
+        if (!Number.isInteger(body.baseRevision) || body.baseRevision < 1 || !Number.isInteger(body.schemaVersion) || body.schemaVersion < 1
+          || !body.parameters || typeof body.parameters !== 'object' || Array.isArray(body.parameters) || !Array.isArray(body.dependencies)) return json(res, 400, { error: 'Invalid OfflineOperation revision, parameters, or dependencies' });
+        if (body.memberId !== auth.memberId) return json(res, 403, { error: 'Authenticated member does not match operation memberId' });
+        if (body.campaignId !== campaignId) return json(res, 409, { error: 'Campaign mismatch', reasonCode: 'campaign_conflict' });
+        const operation = Object.fromEntries(required.map(key => [key, body[key]]));
+        const requestHash = createHash('sha256').update(canonicalJson({ scope: { campaignId, memberId: auth.memberId }, operation })).digest('hex');
+        const cached = db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(auth.memberId, operation.operationId);
+        if (cached) {
+          if (cached.request_hash !== requestHash || cached.campaign_id !== campaignId) return json(res, 409, { error: 'Operation ID was already used for a different request', reasonCode: 'operation_id_collision' });
+          return json(res, 200, receiptJson(cached));
+        }
+        const validation = validateOfflineCommand(operation, auth);
+        const now = new Date().toISOString();
+        if (validation.error) {
+          const status = validation.status === 409 || validation.status === 404 ? 'conflict' : 'rejected';
+          const receipt = { operationId: operation.operationId, entityId: operation.entityId, status, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision };
+          transaction(() => db.prepare('INSERT INTO offline_receipts(member_id,operation_id,campaign_id,request_hash,status,proposal_id,response,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+            .run(auth.memberId, operation.operationId, campaignId, requestHash, status, null, JSON.stringify(receipt), now, now));
+          return json(res, validation.status, { error: validation.error, ...receipt, memberId: auth.memberId, campaignId, requestHash, createdAt: now, updatedAt: now });
+        }
+        if (validation.policy === 'gmReview') {
+          const proposalId = randomUUID();
+          const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'pending', proposalId };
+          transaction(() => {
+            db.prepare('INSERT INTO offline_proposals(id,operation_id,member_id,actor_id,action_id,request_hash,request,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+              .run(proposalId, operation.operationId, auth.memberId, operation.entityId, operation.actionId, requestHash, canonicalJson(operation), 'pending', now);
+            db.prepare('INSERT INTO offline_receipts(member_id,operation_id,campaign_id,request_hash,status,proposal_id,response,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+              .run(auth.memberId, operation.operationId, campaignId, requestHash, 'pending', proposalId, JSON.stringify(receipt), now, now);
+            insertEvent({ actorId: operation.entityId, kind: 'offline.proposal.submitted', visibility: 'gm', payload: { proposalId, operationId: operation.operationId, memberId: auth.memberId, actionId: operation.actionId } });
+          });
+          notify();
+          return json(res, 202, receiptJson(db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(auth.memberId, operation.operationId)));
+        }
+        let executed;
+        try { executed = applyRuleAction(validation.action, validation.data, operation.parameters); }
+        catch (error) { return json(res, 400, { error: error.message, reasonCode: 'invalid_action' }); }
+        try { validateSchema(executed.state, validation.manifest.schema); }
+        catch { return json(res, 400, { error: 'Action result does not match its module schema', reasonCode: 'action_schema_invalid' }); }
+        const revision = validation.actor.revision + 1;
+        executed.state.revision = revision;
+        const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'applied', revision };
+        transaction(() => {
+          db.prepare('UPDATE actors SET data=?,revision=? WHERE id=?').run(JSON.stringify(executed.state), revision, operation.entityId);
+          insertEvent({ actorId: operation.entityId, kind: 'action.applied', visibility: 'public', payload: { ...receipt, actionId: operation.actionId, moduleId: operation.moduleId, moduleVersion: operation.moduleVersion, schemaVersion: operation.schemaVersion, ruleVersion: validation.manifest.rulesVersion, verified: true } });
+          db.prepare('INSERT INTO offline_receipts(member_id,operation_id,campaign_id,request_hash,status,proposal_id,response,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+            .run(auth.memberId, operation.operationId, campaignId, requestHash, 'applied', null, JSON.stringify(receipt), now, now);
+        });
+        notify();
+        return json(res, 200, receiptJson(db.prepare('SELECT * FROM offline_receipts WHERE member_id=? AND operation_id=?').get(auth.memberId, operation.operationId)));
+      }
       if (url.pathname === '/api/members/enroll') {
         if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
         if (typeof body.displayName !== 'string' || !body.displayName.trim() || body.displayName.length > 80) return json(res, 400, { error: 'displayName must contain 1 to 80 characters' });
