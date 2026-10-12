@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 
 import { configuredHost, connectPlayerCredential, decideReviewProposal, enrollLocalPlayer, grantActorToMember, host, listMyOfflineReceipts, listReviewProposals, loadReviewProposal, submitOfflineOperation, type ConnectionStatus, type ReviewProposal, type Role, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
-import { openOfflineStorage, type OfflineOperation, type QueuedOperation } from './offline/storage'
+import { openOfflineStorage, type OfflineOperation, type PrivateDraft, type QueuedOperation } from './offline/storage'
 import { flushOfflineQueue } from './offline/reconcile'
 import { ConflictRecovery } from './offline/conflict-recovery.tsx'
 import type { Actor } from './modules'
@@ -51,6 +51,8 @@ export default function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
   const [identityRevision, setIdentityRevision] = useState(0)
   const [queued, setQueued] = useState<QueuedOperation[]>([])
+  const [drafts, setDrafts] = useState<PrivateDraft[]>([])
+  const [draftNextEdit, setDraftNextEdit] = useState(false)
   const [issuedCredential, setIssuedCredential] = useState<{ memberId: string; credential: string } | null>(null)
   const [proposals, setProposals] = useState<ReviewProposal[]>([])
   const [activeProposal, setActiveProposal] = useState<ReviewProposal | null>(null)
@@ -184,10 +186,15 @@ export default function App() {
           actionId, parameters, dependencies: [],
         }
         const storage = await openOfflineStorage({ host: configuredHost, campaignId: operation.campaignId, memberId: operation.memberId })
-        try { await storage.enqueueOperation(operation); setQueued(await storage.listOperations()) }
+        try {
+          if (draftNextEdit) {
+            await storage.savePrivateDraft({ draftId: newId(), entityId: actor.entityId, payload: { kind: 'offline-intent', operation } })
+            setDrafts(await storage.listPrivateDrafts()); setDraftNextEdit(false)
+          } else { await storage.enqueueOperation(operation); setQueued(await storage.listOperations()) }
+        }
         finally { storage.close() }
-        setActionState(`${actionId} queued locally; awaiting host acknowledgement.`)
-        if (connection === 'connected') void syncPending(snapshot)
+        setActionState(draftNextEdit ? `${actionId} saved as a private local draft; not submitted.` : `${actionId} queued locally; awaiting host acknowledgement.`)
+        if (!draftNextEdit && connection === 'connected') void syncPending(snapshot)
         return
       }
       await host.command(role, { operationId: newId(), entityId: actor.entityId, baseRevision: actor.revision, actionId, parameters })
@@ -203,6 +210,7 @@ export default function App() {
       const storage = await openOfflineStorage({ host: configuredHost, campaignId: current.context.campaignId, memberId: current.memberId })
       try {
         setQueued(await storage.listOperations())
+        setDrafts(await storage.listPrivateDrafts())
         if (connection === 'connected') {
           const result = await flushOfflineQueue(storage, submitOfflineOperation, setQueued)
           if (result.transportFailed) setActionState('Some edits remain queued; the host acknowledgement was unavailable.')
@@ -309,8 +317,24 @@ export default function App() {
   const withPlayerStorage = async (work: (storage: Awaited<ReturnType<typeof openOfflineStorage>>) => Promise<void>) => {
     if (!configuredHost || !snapshot?.memberId) throw new Error('An enrolled player scope is required')
     const storage = await openOfflineStorage({ host: configuredHost, campaignId: snapshot.context.campaignId, memberId: snapshot.memberId })
-    try { await work(storage); setQueued(await storage.listOperations()) }
+    try { await work(storage); setQueued(await storage.listOperations()); setDrafts(await storage.listPrivateDrafts()) }
     finally { storage.close() }
+  }
+  const submitPrivateDraft = async (draft: PrivateDraft) => {
+    const payload = draft.payload as { kind?: string; operation?: OfflineOperation } | null
+    if (payload?.kind !== 'offline-intent' || !payload.operation || !snapshot?.memberId || payload.operation.memberId !== snapshot.memberId || payload.operation.campaignId !== snapshot.context.campaignId) {
+      setError('This draft is not a compatible new operation; retain it until reviewed.'); return
+    }
+    try {
+      await withPlayerStorage(async storage => { await storage.enqueueOperation(payload.operation!); await storage.deletePrivateDraft(draft.draftId) })
+      setActionState(`${payload.operation.actionId} moved from private draft to pending queue.`)
+      if (connection === 'connected') void syncPending(snapshot)
+    } catch (cause) { setError(displayError(cause)) }
+  }
+  const discardPrivateDraft = async (draft: PrivateDraft) => {
+    if (!window.confirm('Discard this private local draft? This cannot be undone.')) return
+    try { await withPlayerStorage(storage => storage.deletePrivateDraft(draft.draftId)) }
+    catch (cause) { setError(displayError(cause)) }
   }
   const conflictMessage = (code: string) => ({
     dependency_revision_conflict: 'A referenced character or prerequisite changed on the host.',
@@ -326,6 +350,7 @@ export default function App() {
     {actionState && <div className="action-status" role="status">{actionState}</div>}
     {role === 'gm' && configuredHost && <details className="gm-admin"><summary>GM administration · {proposals.length} pending</summary><div><button onClick={() => void enrollPlayer()}>Enroll player</button><button disabled={!selectedActor} onClick={() => void grantSelectedActor()}>Grant selected character</button>{issuedCredential && <p>Member ID: <code>{issuedCredential.memberId}</code> · One-time credential: <code>{issuedCredential.credential}</code> <button onClick={() => setIssuedCredential(null)}>Hide credential</button></p>}<section aria-label="GM proposal review"><strong>Review queue</strong>{proposals.map(proposal => <p key={proposal.id}>{proposal.actionId} · {proposal.entityId} · member {proposal.memberId.slice(0, 8)} <button onClick={() => void reviewProposal(proposal.id)}>Review</button></p>)}{activeProposal && <div><h2>Review {activeProposal.actionId}</h2><p>Member {activeProposal.memberId} · actor {activeProposal.entityId}</p><pre>{JSON.stringify(activeProposal.request, null, 2)}</pre><button disabled={busy} onClick={() => void decideProposal('accept')}>Accept after revalidation</button><button disabled={busy} onClick={() => void decideProposal('reject')}>Reject</button><button onClick={() => setActiveProposal(null)}>Close</button></div>}</section></div></details>}
     {role === 'player' && queued.length > 0 && <section className="action-status" aria-label="Your local operation status"><strong>Local edits</strong>{queued.slice(-8).map(row => <p key={row.operation.operationId}>{row.operation.actionId} · {row.state}{row.receipt?.reasonCode ? ` · ${row.receipt.reasonCode}` : ''} · {row.operation.operationId.slice(0, 8)}</p>)}</section>}
+    {role === 'player' && snapshot?.memberId && <section className="action-status" aria-label="Private local drafts"><label><input type="checkbox" checked={draftNextEdit} onChange={event => setDraftNextEdit(event.target.checked)} /> Save next permitted action as a private draft (do not submit)</label>{drafts.length > 0 && <div><strong>Private drafts · {drafts.length}</strong>{drafts.map(draft => { const payload = draft.payload as { kind?: string; operation?: OfflineOperation } | null; return <p key={draft.draftId}>{payload?.operation?.actionId || 'Saved edit'} · local only {payload?.kind === 'offline-intent' && <button onClick={() => void submitPrivateDraft(draft)}>Queue for host</button>}<button onClick={() => void discardPrivateDraft(draft)}>Discard draft</button></p> })}</div>}</section>}
     {role === 'player' && queued.filter(row => row.state === 'conflicted').map(row => <div className="action-status" key={row.operation.operationId}><ConflictRecovery queuedOperation={row} reason={{ code: row.receipt?.reasonCode || 'conflict', message: conflictMessage(row.receipt?.reasonCode || 'conflict') }} authorizedCurrentActor={connection === 'connected' ? snapshot?.actors.find(actor => actor.entityId === row.operation.entityId) : null} canDiscardLocalOutcome onRetainAsPrivateDraft={draft => withPlayerStorage(storage => storage.savePrivateDraft(draft).then(() => {}))} onDiscardLocalOutcome={operationId => withPlayerStorage(storage => storage.deleteLocalOutcome(operationId))} onCreateOperation={operation => withPlayerStorage(async storage => { await storage.enqueueOperation(operation); if (connection === 'connected' && snapshot) void syncPending(snapshot) })} /></div>)}
     {section === 'dashboard' ? <main className="dashboard-page">
       <div className="page-intro"><div><p className="eyebrow">YOUR CAMPAIGN, YOUR LAYOUT</p><h1>{dashboard?.name || 'Start a dashboard'}</h1><p>Personal panels follow shared play, while your arrangement stays yours.</p></div><div className="intro-actions"><button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>
