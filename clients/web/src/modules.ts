@@ -1,5 +1,5 @@
 export type ViewControl = { control: 'text' | 'stat' | 'resource' | 'actionButton'; label: string; field?: string; actionId?: string; parameters?: Record<string, unknown> }
-export type ModuleAction = { id: string; policy?: 'selfService' | 'gmReview'; input?: { properties?: Record<string, { default?: unknown }> }; requires?: unknown; effects?: Array<{ op: string; resource: string; amount: { literal?: number } }>; resolution?: { dice: Array<{ count: number; sides: number; role?: string }>; modifier?: unknown; targetInput?: string; compareTotals?: boolean; comparison?: string } }
+export type ModuleAction = { id: string; policy?: 'selfService' | 'gmReview'; reconciliation?: 'commutative'; input?: { properties?: Record<string, { default?: unknown }> }; requires?: unknown; effects?: Array<{ op: string; resource: string; amount: { literal?: number } }>; resolution?: { dice: Array<{ count: number; sides: number; role?: string }>; modifier?: unknown; targetInput?: string; compareTotals?: boolean; comparison?: string } }
 export type GameModule = {
   manifest: { id: string; version: string; name: string; tagline: string }
   view: { title: string; layout: ViewControl[]; brick: ViewControl[] }

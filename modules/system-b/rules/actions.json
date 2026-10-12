@@ -9,6 +9,7 @@
     {
       "id": "spend-hope",
       "policy": "selfService",
+      "reconciliation": "commutative",
       "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
       "requires": { "op": "gt", "left": { "ref": "resources.hope.current" }, "right": { "literal": 0 } },
       "effects": [{ "op": "changeResource", "target": "self", "resource": "hope.current", "amount": { "literal": -1 } }]

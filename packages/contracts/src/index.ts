@@ -17,6 +17,7 @@ export type ActionDefinition = {
   id: string;
   label?: string;
   policy?: "selfService" | "gmReview";
+  reconciliation?: "commutative";
   input?: { properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
   requires?: Expression;
   effects: Array<{ op: "changeResource"; resource: string; amount: Expression }>;

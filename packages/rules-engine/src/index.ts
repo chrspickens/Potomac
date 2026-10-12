@@ -59,6 +59,7 @@ export type ResolvedActionPolicy = ActionPolicy | "immediate";
 export type RuleAction = Omit<ActionDefinition, "effects"> & {
   effects?: ModuleEffect[];
   policy?: ActionPolicy;
+  reconciliation?: "commutative";
   resolution?: ActionDefinition["resolution"];
 };
 

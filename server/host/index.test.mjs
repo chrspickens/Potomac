@@ -323,7 +323,7 @@ async function offlineFixture(request, actorId = 'offline-protocol-actor') {
     id: 'offline.protocol.module', version: '1',
     schema: { type: 'object', properties: { resources: { type: 'object', properties: { focus: { type: 'integer', minimum: 0 } }, required: ['focus'] } }, required: ['resources'], additionalProperties: true },
     actions: [
-      { id: 'spend', policy: 'selfService', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [{ op: 'changeResource', resource: 'focus', amount: { literal: -1 } }] },
+      { id: 'spend', policy: 'selfService', reconciliation: 'commutative', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [{ op: 'changeResource', resource: 'focus', amount: { literal: -1 } }] },
       { id: 'recover', policy: 'gmReview', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [{ op: 'changeResource', resource: 'focus', amount: { literal: 1 } }] }
     ]
   };
@@ -358,6 +358,44 @@ test('offline self-service receipt is canonical, member-scoped, idempotent and d
     assert.deepEqual(await (await request('/api/offline/operations/offline-spend-once', member.credential)).json(), receipt);
     const mine = await (await request('/api/proposals/mine', member.credential)).json();
     assert.equal(mine.receipts.some(item => item.operationId === command.operationId && item.status === 'applied'), true);
+  });
+});
+
+test('a declared commutative resource delta can apply against a newer authorized revision', async () => {
+  await withHost(async ({ request }) => {
+    const member = await offlineFixture(request, 'commutative-actor');
+    const first = await postJson(request, '/api/offline/operations', member.operation('commutative-first', 'spend'), member.credential);
+    assert.equal((await first.json()).status, 'applied');
+    const stale = await postJson(request, '/api/offline/operations', member.operation('commutative-stale', 'spend'), member.credential);
+    assert.equal(stale.status, 200);
+    assert.equal((await stale.json()).revision, 3);
+    const actor = await (await request('/api/actors/commutative-actor', member.credential)).json();
+    assert.equal(actor.data.resources.focus, 1);
+    assert.equal(actor.revision, 3);
+  });
+});
+
+test('GM changes an authorized prerequisite while player is offline without resurrecting stale intent', async () => {
+  await withHost(async ({ request }) => {
+    const member = await offlineFixture(request, 'dependent-actor');
+    const prerequisite = 'prerequisite-actor';
+    assert.equal((await postJson(request, '/api/actors', {
+      id: prerequisite, moduleId: member.manifest.id, moduleVersion: member.manifest.version,
+      ownerMemberId: member.memberId, data: { resources: { focus: 3 } },
+    })).status, 201);
+    const queued = member.operation('dependent-stale', 'spend');
+    queued.dependencies = [{ entityId: prerequisite, revision: 1 }];
+    assert.equal((await postJson(request, '/api/actions', {
+      operationId: 'gm-prerequisite-change', entityId: prerequisite, baseRevision: 1,
+      actionId: 'spend', parameters: {},
+    })).status, 200);
+    const response = await postJson(request, '/api/offline/operations', queued, member.credential);
+    assert.equal(response.status, 200);
+    const receipt = await response.json();
+    assert.equal(receipt.status, 'conflicted');
+    assert.equal(receipt.reasonCode, 'dependency_revision_conflict');
+    assert.equal((await (await request('/api/actors/dependent-actor', member.credential)).json()).data.resources.focus, 3);
+    assert.equal((await (await request('/api/actors/prerequisite-actor', member.credential)).json()).data.resources.focus, 2);
   });
 });
 

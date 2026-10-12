@@ -232,7 +232,6 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     if (operation.moduleId !== actor.module_id || operation.moduleVersion !== actor.module_version || operation.schemaVersion !== currentData.schemaVersion) {
       return { status: 409, error: 'Module or schema version mismatch', reasonCode: 'module_schema_conflict', currentRevision: actor.revision };
     }
-    if (operation.baseRevision !== actor.revision) return { status: 409, error: 'Revision conflict', reasonCode: 'revision_conflict', currentRevision: actor.revision };
     for (const dependency of operation.dependencies) {
       if (!dependency || typeof dependency.entityId !== 'string' || !Number.isInteger(dependency.revision)) return { status: 400, error: 'Invalid operation dependency', reasonCode: 'invalid_dependency' };
       const dependentActor = actorRow.get(dependency.entityId);
@@ -250,6 +249,13 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     try { policy = getActionPolicy(action); }
     catch (error) { return { status: 400, error: error.message, reasonCode: 'unsupported_action_policy' }; }
     if (expectedPolicy && policy !== expectedPolicy) return { status: 409, error: 'Action approval policy changed after proposal submission', reasonCode: 'action_policy_conflict' };
+    if (action.reconciliation !== undefined && action.reconciliation !== 'commutative') return { status: 400, error: 'Unsupported reconciliation policy', reasonCode: 'unsupported_reconciliation' };
+    if (operation.baseRevision !== actor.revision) {
+      const safeDelta = policy === 'selfService' && action.reconciliation === 'commutative'
+        && operation.dependencies.length === 0 && !action.resolution && !action.roll
+        && Array.isArray(action.effects) && action.effects.every(effect => effect.op === 'changeResource' && Number.isFinite(effect.amount?.literal));
+      if (!safeDelta) return { status: 409, error: 'Revision conflict', reasonCode: 'revision_conflict', currentRevision: actor.revision };
+    }
     let tested;
     try { tested = applyRuleAction(action, currentData, operation.parameters); }
     catch (error) { return { status: 400, error: error.message, reasonCode: 'invalid_action' }; }
