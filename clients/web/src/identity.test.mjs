@@ -28,3 +28,11 @@ test('corrupt remembered identity cannot become an authentication scope', () => 
   try { assert.equal(loadRememberedIdentity('http://127.0.0.1:4177'), null) }
   finally { globalThis.localStorage = previous }
 })
+
+test('remembered identity rejects empty campaign scope fields', () => {
+  const previous = globalThis.localStorage
+  const values = new Map([['potomac.identity.v1', JSON.stringify({ version: 1, host: 'http://127.0.0.1:4177', campaignId: '', memberId: 'member-a', credential: 'secret' })]])
+  globalThis.localStorage = { getItem: key => values.get(key) ?? null }
+  try { assert.equal(loadRememberedIdentity('http://127.0.0.1:4177'), null) }
+  finally { globalThis.localStorage = previous }
+})

@@ -17,3 +17,10 @@ test('queued operation states allow retry and host receipt transitions only', ()
   assert.equal(nextOperationState('applied', 'queued'), false);
   assert.equal(nextOperationState('rejected', 'applied'), false);
 });
+
+test('only unsent queued work is eligible for local cancellation', () => {
+  assert.equal(nextOperationState('queued', 'submitting'), true);
+  assert.equal(nextOperationState('submitting', 'applied'), true);
+  assert.equal(nextOperationState('applied', 'queued'), false);
+  assert.equal(nextOperationState('awaitingReview', 'queued'), false);
+});

@@ -18,7 +18,7 @@ export async function flushOfflineQueue(
       receipt = await submit(row.operation)
     } catch {
       // A response may have been lost after commit. Retry the original request.
-      await storage.retryOperation(row.operation.operationId)
+      await storage.markRetryableFailure(row.operation.operationId)
       onUpdate?.(await storage.listOperations())
       return { processed, transportFailed: true }
     }
