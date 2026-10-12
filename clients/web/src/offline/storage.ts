@@ -36,6 +36,13 @@ export type AuthorizedSnapshot<TData = unknown> = {
   data: TData;
 };
 
+export type OfflineSessionMetadata = {
+  cursor: number;
+  lastSyncedAt: number;
+  activeEncounter: { id: string; name: string; summary: string } | null;
+  encounters: Array<{ id: string; name: string; summary: string }>;
+};
+
 export type PrivateDraft = {
   draftId: string;
   entityId?: string;
@@ -51,10 +58,11 @@ export type QueuedOperation = {
 };
 
 const DATABASE_NAME = 'potomac-offline';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const SNAPSHOTS = 'authorizedSnapshots';
 const OPERATIONS = 'queuedOperations';
 const DRAFTS = 'privateDrafts';
+const METADATA = 'sessionMetadata';
 
 type Stored<T> = T & {
   key: string;
@@ -84,6 +92,9 @@ export function nextOperationState(
 
 export type OfflineStorage = {
   close(): void;
+  clearScope(): Promise<void>;
+  putSessionMetadata(metadata: OfflineSessionMetadata): Promise<void>;
+  getSessionMetadata(): Promise<OfflineSessionMetadata | undefined>;
   putAuthorizedSnapshot(snapshot: AuthorizedSnapshot): Promise<void>;
   getAuthorizedSnapshot(entityId: string): Promise<AuthorizedSnapshot | undefined>;
   listAuthorizedSnapshots(): Promise<AuthorizedSnapshot[]>;
@@ -109,7 +120,7 @@ export function openOfflineStorage(
     const request = factory.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS]) {
+      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA]) {
         const store = db.objectStoreNames.contains(storeName)
           ? request.transaction!.objectStore(storeName)
           : db.createObjectStore(storeName, { keyPath: 'key' });
@@ -134,6 +145,31 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
 
   return {
     close: () => db.close(),
+
+    async clearScope() {
+      const tx = db.transaction([SNAPSHOTS, OPERATIONS, DRAFTS, METADATA], 'readwrite');
+      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA]) {
+        const store = tx.objectStore(storeName);
+        const request = store.index('scopeKey').getAllKeys(scopedKey);
+        request.onsuccess = () => { for (const key of request.result) store.delete(key); };
+      }
+      await transactionResult(tx);
+    },
+
+    async putSessionMetadata(metadata) {
+      if (!isSessionMetadata(metadata)) throw new Error('Invalid offline session metadata');
+      const tx = db.transaction(METADATA, 'readwrite');
+      tx.objectStore(METADATA).put(scoped({ metadata: structuredClone(metadata) }, 'session'));
+      await transactionResult(tx);
+    },
+
+    async getSessionMetadata() {
+      const tx = db.transaction(METADATA, 'readonly');
+      const result = await requestResult(tx.objectStore(METADATA).get(JSON.stringify([scopedKey, 'session'])));
+      await transactionResult(tx);
+      const row = result as Stored<{ metadata: OfflineSessionMetadata }> | undefined;
+      return row?.scopeKey === scopedKey && isSessionMetadata(row.metadata) ? row.metadata : undefined;
+    },
 
     async putAuthorizedSnapshot(snapshot) {
       validateSnapshot(snapshot);
@@ -334,6 +370,12 @@ function validateReceipt(receipt: OfflineReceipt): void {
 
 function isSnapshot(value: unknown): value is AuthorizedSnapshot {
   return isRecord(value) && isNonEmptyString(value.entityId) && Number.isSafeInteger(value.revision) && (value.revision as number) >= 0 && isNonEmptyString(value.moduleId) && isNonEmptyString(value.moduleVersion) && Number.isSafeInteger(value.schemaVersion) && (value.schemaVersion as number) > 0 && 'data' in value;
+}
+
+function isSessionMetadata(value: unknown): value is OfflineSessionMetadata {
+  if (!isRecord(value) || !Number.isSafeInteger(value.cursor) || (value.cursor as number) < 0 || !Number.isFinite(value.lastSyncedAt) || !Array.isArray(value.encounters)) return false;
+  const encounter = (item: unknown) => isRecord(item) && isNonEmptyString(item.id) && typeof item.name === 'string' && typeof item.summary === 'string';
+  return (value.activeEncounter === null || encounter(value.activeEncounter)) && value.encounters.every(encounter);
 }
 
 function isQueuedOperation(value: unknown): value is Stored<QueuedOperation> {
