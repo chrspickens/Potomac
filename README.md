@@ -33,7 +33,7 @@ The host listens on `http://127.0.0.1:4177`; Vite serves the browser client on i
 
 The current online slice supports module/actor registration, GM-only field filtering, revision-checked and deduplicated actions, host-generated verified rolls, context updates, and replayable SSE events. Actor validation covers the JSON Schema features used by these fixtures; it is not a full JSON Schema 2020-12 implementation. The offline operation queue, review proposals, stale dependency conflict workflow, and production authentication remain follow-on work, so the full foundation acceptance checklist is not complete.
 
-## Workspace 0.2 experiment (local branch)
+## Workspace 0.2 experiment
 
 The browser client includes a customizable dashboard shell inspired by the two concept images in the repository. A local profile can arrange Character, Encounter Summary, and Activity Log bricks, manage dashboard groups, and save personal layouts in browser storage. The GM can select one of two stable fixture encounters; encounter followers update from the host stream, while pinned Character bricks keep their references. The full Characters view and compact brick use the same host command adapter.
 
@@ -41,7 +41,7 @@ Run `pnpm dev` and open the Vite URL. Use separate browser profiles for a GM and
 
 To arrange a dashboard, choose **Edit layout**. On desktop, drag a brick by its header grip and resize it from the lower-right corner. It follows the pointer smoothly; a target shows where it will land, and it snaps to the twelve-column tiled grid on release. Displaced neighbors then move down instead of overlapping. Press Escape during a gesture to cancel it. The labeled move/resize buttons provide a keyboard-accessible alternative, and completed edits are saved in the current local profile. This is the tiled part of Tableau-style layout editing, not floating layers or nested containers.
 
-Available checks: `pnpm build`, `node --test server/host/index.test.mjs`, `node --test clients/web/src/workspace/workspace.test.mjs`, and `node --test clients/web/src/workspace/layout.test.mjs`. For a local browser pointer smoke, run `pnpm dev`, open the Vite URL in an isolated Chrome instance with remote debugging port 9229, then run `node scripts/workspace-pointer-smoke.mjs`. It tests smooth drag/resize previews, snap-on-release, Escape cancellation, non-overlap, and reload persistence in a fresh local profile. The Workspace 0.2 requirements remain a target: browser-level two-client automation, production identity, full app handoffs, offline edits, complex docking, and maps are not included in this experiment.
+Run `pnpm check` for the build, rules/host/workspace tests, isolated host diagnostics, and a two-client browser acceptance scenario. The latter requires installed Chrome or Edge (`POTOMAC_CHROME` may select its executable) and can also run by itself as `pnpm acceptance:workspace`. It uses temporary loopback-only host data and separate GM/player browser contexts; the player client receives no valid GM token. `pnpm debug:doctor` and `pnpm debug:watch` inspect a running local host; see [Agent and developer diagnostics](docs/agent-debugging.md). The optional `node scripts/workspace-pointer-smoke.mjs` exercises detailed gestures against a separately running `pnpm dev` client and isolated Chrome debugging port 9229. Production identity, full app handoffs, offline edits, complex docking, and maps are not included in this experiment.
 
 ## Licensing
 

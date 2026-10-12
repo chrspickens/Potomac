@@ -171,6 +171,8 @@ export function removeBrick(state: WorkspaceState, dashboardId: string, brickId:
 export function configureBrick(state: WorkspaceState, dashboardId: string, brickId: string, configuration: { binding?: BrickBinding; options?: Record<string, unknown> }): WorkspaceState {
   return updateBrick(state, dashboardId, brickId, (brick) => {
     if (configuration.binding && !isSupportedBinding(brick.typeId, configuration.binding)) return brick;
+    const definition = getBrickDefinition(brick.typeId);
+    if (configuration.options && definition && !definition.validateOptions(configuration.options)) return brick;
     return { ...brick, ...(configuration.binding ? { binding: configuration.binding } : {}), ...(configuration.options ? { options: configuration.options } : {}) };
   });
 }
@@ -262,14 +264,16 @@ function sanitizeBrick(value: unknown): BrickInstance | undefined {
   const definition = getBrickDefinition(value.typeId);
   let binding: BrickBinding;
   if (isSupportedBinding(value.typeId, value.binding)) binding = value.binding;
-  else if (!definition && isOpaqueBinding(value.binding)) binding = value.binding;
+  else if (isOpaqueBinding(value.binding)) binding = value.binding;
   else binding = definition?.defaultBinding ?? { mode: 'none' };
+  const rawOptions = isRecord(value.options) ? value.options : {};
+  const options = definition && !definition.validateOptions(rawOptions) ? {} : rawOptions;
   return {
     id: value.id,
     typeId: value.typeId,
     definitionVersion: version,
     binding,
-    options: isRecord(value.options) ? value.options : {},
+    options,
     layout,
   };
 }

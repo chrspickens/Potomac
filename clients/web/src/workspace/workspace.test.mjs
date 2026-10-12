@@ -13,6 +13,7 @@ import {
   selectDashboard,
 } from './index.ts';
 import { loadWorkspace, loadWorkspaceWithRecovery, saveWorkspace, workspaceStorageKey } from './storage.ts';
+import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
 
 test('default workspace includes Combat and Planning with optional actor bricks', () => {
   const state = createDefaultWorkspace('campaign-a', 'profile-a', ['actor-1']);
@@ -56,6 +57,24 @@ test('binding validation rejects unsupported and malformed binding values', () =
   assert.equal(createBrick('characters.sheet', { mode: 'pinned', entityId: 'actor-9' }).binding.mode, 'pinned');
 });
 
+test('trusted fourth brick contribution registers a renderer and resolves only through the authorized adapter', () => {
+  const unregister = registerBrickDefinition({
+    typeId: 'test.trusted-activity', version: 1, ownerAppId: 'test', title: 'Trusted test brick',
+    supportedBindings: ['none'], defaultBinding: { mode: 'none' }, defaultSize: { w: 2, h: 2 },
+    resolve: (_binding, adapter) => adapter.getActivity(), render: () => null,
+    validateOptions: options => options !== null && typeof options === 'object' && !Array.isArray(options) && Object.keys(options).length === 0,
+  });
+  try {
+    assert.equal(getBrickDefinition('test.trusted-activity')?.title, 'Trusted test brick');
+    const state = createDefaultWorkspace('campaign-a', 'profile-a');
+    const updated = addBrick(state, state.dashboards[0].id, 'test.trusted-activity');
+    assert.equal(updated.dashboards[0].bricks.at(-1)?.typeId, 'test.trusted-activity');
+  } finally {
+    unregister();
+  }
+  assert.equal(getBrickDefinition('test.trusted-activity'), undefined);
+});
+
 test('recovery clamps bad layouts, preserves unknown bricks, and resets incompatible schema', () => {
   const state = createDefaultWorkspace('campaign-a', 'profile-a');
   state.dashboards[0].bricks.push({
@@ -72,6 +91,35 @@ test('recovery clamps bad layouts, preserves unknown bricks, and resets incompat
   assert.equal(incompatible.recovered, true);
   assert.equal(incompatible.state.schemaVersion, 1);
   assert.equal(incompatible.state.dashboards.length, 2);
+});
+
+test('recovery preserves unsupported saved bindings for explicit repair', () => {
+  const state = createDefaultWorkspace('campaign-a', 'profile-a', ['actor-1']);
+  const brick = state.dashboards[0].bricks[0];
+  brick.binding = { mode: 'none' };
+  const recovered = sanitizeWorkspace(state, 'campaign-a', 'profile-a');
+  assert.deepEqual(recovered.state.dashboards[0].bricks[0].binding, { mode: 'none' });
+});
+
+test('brick option validation rejects unsupported edits and recovers known options while retaining unknown configuration', () => {
+  const state = createDefaultWorkspace('campaign-a', 'profile-a', ['actor-1']);
+  const dashboard = state.dashboards[0];
+  const character = dashboard.bricks[0];
+  const allowed = configureBrick(state, dashboard.id, character.id, { options: { compact: true } });
+  assert.deepEqual(allowed.dashboards[0].bricks[0].options, { compact: true });
+  assert.deepEqual(configureBrick(allowed, dashboard.id, character.id, { options: { compact: true, unsupported: true } }), allowed);
+
+  const persisted = structuredClone(state);
+  persisted.dashboards[0].bricks[0].options = { unsupported: 'old-setting' };
+  persisted.dashboards[0].bricks.push({
+    id: 'future-with-options', typeId: 'future.widget', definitionVersion: 4,
+    binding: { mode: 'none' }, options: { futureSetting: { enabled: true } },
+    layout: { x: 0, y: 8, w: 3, h: 2 },
+  });
+  const recovered = sanitizeWorkspace(persisted, 'campaign-a', 'profile-a');
+  assert.equal(recovered.recovered, true);
+  assert.deepEqual(recovered.state.dashboards[0].bricks[0].options, {});
+  assert.deepEqual(recovered.state.dashboards[0].bricks.at(-1).options, { futureSetting: { enabled: true } });
 });
 
 test('local storage round-trips per campaign and local profile, with visible recovery status', () => {

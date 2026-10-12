@@ -4,6 +4,7 @@ import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { evaluate, executeAction, getRequiredRollCount } from '../../packages/rules-engine/src/index.ts';
 
 const schema = `
 PRAGMA journal_mode = WAL;
@@ -35,39 +36,6 @@ const encounters = [
 ];
 const encounterById = new Map(encounters.map(encounter => [encounter.id, encounter]));
 
-function pathValue(root, path) {
-  return path.split('.').reduce((value, key) => value?.[key], root);
-}
-
-function evaluateExpression(expression, state, depth = 0, budget = { left: 256 }) {
-  if (--budget.left < 0 || depth > 32) throw new Error('Rules execution budget exhausted');
-  if (Object.hasOwn(expression, 'literal')) return expression.literal;
-  if (expression.ref) {
-    const value = pathValue(state, expression.ref);
-    if (value === undefined || value === null || typeof value === 'object') throw new Error(`Unknown scalar field: ${expression.ref}`);
-    return value;
-  }
-  const left = evaluateExpression(expression.left, state, depth + 1, budget);
-  const right = evaluateExpression(expression.right, state, depth + 1, budget);
-  switch (expression.op) {
-    case 'add': case 'subtract': case 'multiply': case 'divide': {
-      if (typeof left !== 'number' || typeof right !== 'number') throw new Error(`${expression.op} expects numbers`);
-      if (expression.op === 'divide' && right === 0) throw new Error('Division by zero');
-      const result = expression.op === 'add' ? left + right : expression.op === 'subtract' ? left - right : expression.op === 'multiply' ? left * right : left / right;
-      if (!Number.isFinite(result)) throw new Error('Invalid arithmetic result');
-      return result;
-    }
-    case 'gt': case 'gte':
-      if (typeof left !== 'number' || typeof right !== 'number') throw new Error(`${expression.op} expects numbers`);
-      return expression.op === 'gt' ? left > right : left >= right;
-    case 'eq': return typeof left === typeof right && left === right;
-    case 'and': case 'or':
-      if (typeof left !== 'boolean' || typeof right !== 'boolean') throw new Error(`${expression.op} expects booleans`);
-      return expression.op === 'and' ? left && right : left || right;
-    default: throw new Error(`Unsupported rules operator: ${expression.op}`);
-  }
-}
-
 function validateSchema(value, schema, root = schema, path = '$', depth = 0) {
   if (depth > 32) throw new Error('Schema nesting limit exceeded');
   if (schema.$ref) {
@@ -98,29 +66,18 @@ function applyRuleAction(action, state, parameters) {
   for (const key of action.input?.required || []) if (!Object.hasOwn(parameters, key)) throw new Error(`Action parameter ${key} is required`);
   for (const [key, definition] of Object.entries(action.input?.properties || {})) if (parameters[key] !== undefined) validateSchema(parameters[key], definition, action.input, `parameters.${key}`);
   if (action.input?.additionalProperties === false) for (const key of Object.keys(parameters)) if (!Object.hasOwn(action.input.properties || {}, key)) throw new Error(`Unknown action parameter: ${key}`);
-  if (action.requires && evaluateExpression(action.requires, state) !== true) throw new Error('Action precondition failed');
-  const next = structuredClone(state);
-  for (const effect of action.effects || []) {
-    if (effect.op !== 'changeResource' || effect.target !== 'self') throw new Error('Unsupported action effect');
-    const amount = evaluateExpression(effect.amount, state);
-    if (typeof amount !== 'number') throw new Error('Resource change must be numeric');
-    const parts = (effect.resource.startsWith('resources.') ? effect.resource : `resources.${effect.resource}`).split('.');
-    const parent = parts.slice(0, -1).reduce((value, key) => value?.[key], next);
-    const key = parts.at(-1);
-    const current = parent?.[key];
-    if (typeof current !== 'number' || !Number.isFinite(current)) throw new Error(`Unknown numeric resource ${effect.resource}`);
-    const value = current + amount;
-    const maximum = typeof parent.maximum === 'number' ? parent.maximum : Infinity;
-    if (value < 0 || value > maximum) throw new Error(`Resource ${effect.resource} is out of bounds`);
-    parent[key] = value;
-  }
   let resolution;
+  const dice = action.resolution?.dice || (action.roll ? [{ count: action.roll.dice, sides: action.roll.sides }] : []);
+  getRequiredRollCount(action);
+  const rolls = dice.flatMap(group => Array.from({ length: group.count }, () => randomInt(1, group.sides + 1)));
+  const { state: next } = executeAction(action, state, rolls);
   if (action.resolution) {
+    let cursor = 0;
     const groups = action.resolution.dice.map(group => {
-      const dice = Array.from({ length: group.count }, () => randomInt(1, group.sides + 1));
+      const dice = rolls.slice(cursor, cursor += group.count);
       return { role: group.role || 'dice', dice, total: dice.reduce((sum, die) => sum + die, 0) };
     });
-    const modifier = action.resolution.modifier ? evaluateExpression(action.resolution.modifier, state) : 0;
+    const modifier = action.resolution.modifier ? evaluate(action.resolution.modifier, state) : 0;
     const difficulty = action.resolution.targetInput ? parameters[action.resolution.targetInput] : 0;
     const totals = groups.map(group => group.total);
     const total = action.resolution.compareTotals ? null : (totals[0] || 0) + modifier;
@@ -165,15 +122,25 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const projectActor = (row, role) => {
     const actor = { id: row.id, moduleId: row.module_id, moduleVersion: row.module_version, revision: row.revision, data: JSON.parse(row.data) };
     const module = JSON.parse(moduleRow.get(row.module_id, row.module_version).manifest);
-    actor.data.derived ||= {};
-    for (const item of module.derivedValues || []) actor.data.derived[item.id] = evaluateExpression(item.value, actor.data);
     const visibility = JSON.parse(row.visibility);
-    if (role === 'player' && visibility.gmOnly) {
-      for (const path of visibility.gmOnly) {
+    const hiddenPaths = role === 'player' ? visibility.gmOnly || [] : [];
+    if (hiddenPaths.length) {
+      for (const path of hiddenPaths) {
         const parts = path.split('.'); let parent = actor.data;
         for (const p of parts.slice(0, -1)) parent = parent?.[p];
         if (parent && typeof parent === 'object') delete parent[parts.at(-1)];
       }
+    }
+    actor.data.derived = {};
+    const references = (expression, result = []) => {
+      if (!expression || typeof expression !== 'object') return result;
+      if (typeof expression.ref === 'string') result.push(expression.ref);
+      for (const value of Object.values(expression)) if (value && typeof value === 'object') references(value, result);
+      return result;
+    };
+    for (const item of module.derivedValues || []) {
+      const dependsOnHidden = hiddenPaths.some(hidden => references(item.value).some(ref => ref === hidden || ref.startsWith(`${hidden}.`) || hidden.startsWith(`${ref}.`)));
+      if (!dependsOnHidden) actor.data.derived[item.id] = evaluate(item.value, actor.data);
     }
     return actor;
   };
@@ -183,7 +150,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     if (event.visibility !== 'public') return false;
     if (event.actor_id) {
       const actor = actorRow.get(event.actor_id);
-      if (actor && !canReadActor(actor, role)) return false;
+      if (!actor || !canReadActor(actor, role)) return false;
     }
     return true;
   };

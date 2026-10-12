@@ -1,7 +1,8 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { host, type ConnectionStatus, type Role, type Snapshot } from './api'
 import type { Actor } from './modules'
-import { brickDefinitions, createDefaultWorkspace, loadWorkspaceWithRecovery, saveWorkspace, type BrickInstance, type WorkspaceState } from './workspace'
+import { createDefaultWorkspace, getBrickDefinition, getBrickDefinitions, isSupportedBinding, loadWorkspaceWithRecovery, saveWorkspace, type BrickInstance, type WorkspaceState } from './workspace'
+import { CharacterView, createAuthorizedBrickAdapter, resolveDefaultBinding } from './workspace/contributions.tsx'
 import { resolveBrickLayout } from './workspace/layout.ts'
 import { useBrickDrag } from './workspace/use-brick-drag.ts'
 import './workspace/brick-canvas.css'
@@ -9,7 +10,6 @@ import './workspace/brick-canvas.css'
 const profileKey = 'potomac.workspace.demo-profile'
 const newId = () => crypto.randomUUID()
 const displayError = (cause: unknown) => cause instanceof Error ? cause.message : 'Request failed'
-const fieldValue = (source: Record<string, any>, path = '') => path.split('.').filter(Boolean).reduce((value, key) => value?.[key], source as any)
 
 class BrickBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
@@ -17,51 +17,23 @@ class BrickBoundary extends Component<{ children: ReactNode }, { failed: boolean
   render() { return this.state.failed ? <div className="brick-message" role="alert">This brick could not render. Your layout is preserved.</div> : this.props.children }
 }
 
-function Character({ actor, compact, busy, onAction, gm }: { actor: Actor; compact?: boolean; busy: boolean; onAction: (actor: Actor, actionId: string) => void; gm: boolean }) {
-  const controls = compact ? actor.module.view.brick : actor.module.view.layout
-  const stats = controls.filter(item => item.control === 'stat')
-  const resources = controls.filter(item => item.control === 'resource')
-  const actions = controls.filter(item => item.control === 'actionButton')
-  return <div className="character-view">
-    <div className="character-identity"><div className="avatar">{actor.name.slice(0, 1)}</div><div><p className="eyebrow">{actor.module.manifest.name} · {actor.module.manifest.version}</p><h3>{actor.name}</h3><p>{actor.epithet}</p></div><span className="revision">REV {actor.revision}</span></div>
-    {stats.length > 0 && <div className="stat-grid">{stats.map((item, index) => <div className="stat" key={`${item.field}-${index}`}><span>{item.label}</span><strong>{String(fieldValue(actor.data, item.field) ?? '—')}</strong></div>)}</div>}
-    {resources.length > 0 && <div className="resource-grid">{resources.map((item, index) => {
-      const data = fieldValue(actor.data, item.field)
-      const current = typeof data === 'object' ? data?.current : data
-      const maximum = typeof data === 'object' ? data?.maximum : current
-      const ratio = typeof current === 'number' && typeof maximum === 'number' && maximum > 0 ? Math.max(0, Math.min(100, current / maximum * 100)) : 0
-      return <div className="resource" key={`${item.field}-${index}`}><div><span>{item.label}</span><strong>{String(current ?? '—')} / {String(maximum ?? '—')}</strong></div><div className="meter"><i style={{ width: `${ratio}%` }} /></div></div>
-    })}</div>}
-    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => <button type="button" key={`${item.actionId}-${index}`} disabled={busy} onClick={() => item.actionId && onAction(actor, item.actionId)}>{item.label}</button>)}</div>}
-    {gm && actor.secretNote && <div className="gm-note"><b>GM only</b> {actor.secretNote}</div>}
-  </div>
-}
-
 function ActivityLog({ snapshot }: { snapshot: Snapshot | null }) {
   return <div className="activity-list">{snapshot?.activity.length ? snapshot.activity.slice(-12).reverse().map(item => <div className="activity-item" key={item.id}><span className="activity-dot" /><div><strong>{item.action}</strong><p>{item.detail || 'Campaign event'}</p><small>{item.actor} · {item.time}{item.visibility === 'gm' ? ' · GM only' : ''}</small></div></div>) : <p className="brick-message">Actions and encounter changes will appear here.</p>}</div>
 }
 
 function defaultBinding(typeId: string, snapshot: Snapshot | null): BrickInstance['binding'] {
-  if (typeId === 'encounters.summary') return { mode: 'follow', contextKey: 'session.activeEncounter' }
-  if (typeId === 'activity.log') return { mode: 'none' }
-  return { mode: 'pinned', entityId: snapshot?.actors[0]?.entityId || 'actor-unknown' }
+  const definition = getBrickDefinition(typeId)
+  if (!definition) return { mode: 'none' }
+  return resolveDefaultBinding(definition, createAuthorizedBrickAdapter(snapshot?.actors ?? [], snapshot?.encounters ?? [], snapshot?.context.activeEncounter ?? null, snapshot?.activity ?? []))
 }
 
-function BrickContent({ brick, snapshot, role, busy, onAction }: { brick: BrickInstance; snapshot: Snapshot | null; role: Role; busy: boolean; onAction: (actor: Actor, actionId: string) => void }) {
-  if (!brickDefinitions.some(definition => definition.typeId === brick.typeId)) return <p className="brick-message">Brick “{brick.typeId}” is unavailable. Its saved settings are preserved.</p>
+function BrickContent({ brick, snapshot, role: _role, busy, onAction }: { brick: BrickInstance; snapshot: Snapshot | null; role: Role; busy: boolean; onAction: (actor: Actor, actionId: string) => void }) {
+  const definition = getBrickDefinition(brick.typeId)
+  if (!definition) return <p className="brick-message">Brick “{brick.typeId}” is unavailable. Its saved settings are preserved.</p>
+  if (!isSupportedBinding(brick.typeId, brick.binding)) return <p className="brick-message">This saved binding is unsupported. Choose a supported binding to repair it; saved settings are preserved.</p>
   if (!snapshot) return <p className="brick-message">Waiting for the host…</p>
-  if (brick.typeId === 'activity.log') return <ActivityLog snapshot={snapshot} />
-  if (brick.typeId === 'encounters.summary') {
-    const pinnedId = brick.binding.mode === 'pinned' ? brick.binding.entityId : null
-    const encounter = brick.binding.mode === 'follow' ? snapshot.context.activeEncounter : pinnedId ? snapshot.encounters.find(item => item.id === pinnedId) : null
-    return encounter ? <div className="encounter-summary"><p className="eyebrow">{brick.binding.mode === 'follow' ? 'FOLLOWING SESSION' : 'PINNED ENCOUNTER'}</p><h3>{encounter.name}</h3><p>{encounter.summary}</p><small>Stable ID · {encounter.id}</small></div> : <p className="brick-message">No accessible encounter for this binding.</p>
-  }
-  if (brick.typeId === 'characters.sheet') {
-    const pinnedId = brick.binding.mode === 'pinned' ? brick.binding.entityId : null
-    const actor = pinnedId ? snapshot.actors.find(item => item.entityId === pinnedId) : null
-    return actor ? <Character actor={actor} compact gm={role === 'gm'} busy={busy} onAction={onAction} /> : <p className="brick-message">Character unavailable for this binding.</p>
-  }
-  return <p className="brick-message">This brick has no renderer.</p>
+  const adapter = createAuthorizedBrickAdapter(snapshot.actors, snapshot.encounters, snapshot.context.activeEncounter, snapshot.activity)
+  return <definition.render brick={brick} data={definition.resolve(brick.binding, adapter)} adapter={adapter} busy={busy} onAction={onAction} />
 }
 
 export default function App() {
@@ -162,10 +134,11 @@ export default function App() {
   }
   const addBrick = (typeId: string) => {
     if (!dashboard) return
-    const definition = brickDefinitions.find(item => item.typeId === typeId)
+    const definition = getBrickDefinition(typeId)
     if (!definition) return
     const bottom = Math.max(0, ...dashboard.bricks.map(item => item.layout.y + item.layout.h))
-    const brick: BrickInstance = { id: newId(), typeId, definitionVersion: definition.version, binding: defaultBinding(typeId, snapshot), options: {}, layout: { x: 0, y: bottom, w: definition.defaultSize.w, h: definition.defaultSize.h } }
+    const adapter = createAuthorizedBrickAdapter(snapshot?.actors ?? [], snapshot?.encounters ?? [], snapshot?.context.activeEncounter ?? null, snapshot?.activity ?? [])
+    const brick: BrickInstance = { id: newId(), typeId, definitionVersion: definition.version, binding: resolveDefaultBinding(definition, adapter), options: {}, layout: { x: 0, y: bottom, w: definition.defaultSize.w, h: definition.defaultSize.h } }
     updateDashboard(dashboard.id, item => ({ ...item, bricks: [...item.bricks, brick] }))
     setPicker(false)
   }
@@ -200,15 +173,15 @@ export default function App() {
     {section === 'dashboard' ? <main className="dashboard-page">
       <div className="page-intro"><div><p className="eyebrow">YOUR CAMPAIGN, YOUR LAYOUT</p><h1>{dashboard?.name || 'Start a dashboard'}</h1><p>Personal panels follow shared play, while your arrangement stays yours.</p></div><div className="intro-actions"><button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>
       <div className="dashboard-toolbar"><label>Group <select value={activeGroup?.id || ''} onChange={event => { const group = workspace.groups.find(item => item.id === event.target.value); update({ ...workspace, activeGroupId: event.target.value, activeDashboardId: group?.dashboardIds[0] || '' }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div className="dashboard-tabs" role="tablist" aria-label="Dashboards">{groupDashboards.map(item => <button role="tab" aria-selected={item.id === dashboard?.id} className={item.id === dashboard?.id ? 'active' : ''} key={item.id} onClick={() => update({ ...workspace, activeDashboardId: item.id })}>{item.name}</button>)}</div>{editing && <div className="toolbar-actions"><label>Move to <select aria-label="Move dashboard to group" value={activeGroup?.id || ''} disabled={!dashboard} onChange={event => { if (!dashboard) return; const groupId = event.target.value; update({ ...workspace, activeGroupId: groupId, groups: workspace.groups.map(group => ({ ...group, dashboardIds: group.id === groupId ? [...group.dashboardIds.filter(id => id !== dashboard.id), dashboard.id] : group.dashboardIds.filter(id => id !== dashboard.id) })) }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><button onClick={createGroup}>+ Group</button><button onClick={renameGroup} disabled={!activeGroup}>Rename group</button><button onClick={createDashboard}>+ Dashboard</button><button onClick={renameDashboard} disabled={!dashboard}>Rename</button><button onClick={deleteDashboard} disabled={!dashboard}>Delete</button><button className="primary" onClick={() => setPicker(!picker)}>+ Add brick</button></div>}</div>
-      {picker && editing && <div className="brick-picker"><strong>Brick library</strong><div>{brickDefinitions.map(definition => <button key={definition.typeId} onClick={() => addBrick(definition.typeId)}><span>{definition.title}</span><small>{definition.ownerAppId}</small></button>)}</div></div>}
+      {picker && editing && <div className="brick-picker"><strong>Brick library</strong><div>{getBrickDefinitions().map(definition => <button key={definition.typeId} onClick={() => addBrick(definition.typeId)}><span>{definition.title}</span><small>{definition.ownerAppId}</small></button>)}</div></div>}
       <div className="session-strip"><div><p className="eyebrow">SHARED SESSION CONTEXT</p><strong>{snapshot?.context.activeEncounter?.name || 'No active encounter'}</strong><small>Followers update for connected clients. Pinned bricks do not move.</small></div>{role === 'gm' && <div className="context-control"><label htmlFor="encounter-select">Active encounter</label><select id="encounter-select" value={encounterDraft} onChange={event => setEncounterDraft(event.target.value)}><option value="">None</option>{snapshot?.encounters.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button disabled={busy || connection === 'disconnected'} onClick={() => void saveEncounter()}>Set active</button></div>}</div>
       {editing && dashboard?.bricks.length ? <p className="brick-layout-caption">On desktop, drag a panel by its grip or resize from the lower-right corner. It follows your pointer and snaps into place when released; Escape cancels. The buttons inside each panel work with a keyboard. Changes save to this local profile.</p> : null}
       {dashboard?.bricks.length ? <div ref={drag.gridRef} className={`brick-grid ${editing ? 'is-editing' : ''}`}>{drag.visual && <div className="brick-drop-target" aria-hidden="true" style={{ gridColumn: `${drag.visual.dropLayout.x + 1} / span ${drag.visual.dropLayout.w}`, gridRow: `${drag.visual.dropLayout.y + 1} / span ${drag.visual.dropLayout.h}` }} />}{visibleBricks.map(brick => {
-        const definition = brickDefinitions.find(item => item.typeId === brick.typeId)
+        const definition = getBrickDefinition(brick.typeId)
         const pinnedEntityId = brick.binding.mode === 'pinned' ? brick.binding.entityId : ''
         return <section className={`brick ${drag.visual?.id === brick.id ? drag.visual.mode === 'move' ? 'is-dragging' : 'is-resizing' : ''}`} key={brick.id} style={{ gridColumn: `${brick.layout.x + 1} / span ${brick.layout.w}`, gridRow: `${brick.layout.y + 1} / span ${brick.layout.h}`, ...(drag.visual?.id === brick.id ? drag.visual.mode === 'move' ? { transform: `translate3d(${drag.visual.dx}px, ${drag.visual.dy}px, 0)` } : { width: `${drag.visual.width}px`, height: `${drag.visual.height}px` } : {}) }}><header className="brick-head"><div>{editing && <button type="button" className="brick-drag-handle" aria-label={`Drag ${definition?.title || brick.typeId}`} aria-pressed={drag.visual?.id === brick.id && drag.visual.mode === 'move'} onPointerDown={event => drag.start(event, brick.id, 'move')} onPointerMove={drag.move} onPointerUp={drag.finish} onPointerCancel={drag.cancel} />}<span className="brick-icon">◇</span><strong>{definition?.title || brick.typeId}</strong></div><small>{brick.binding.mode === 'follow' ? '↻ Following' : brick.binding.mode === 'pinned' ? '◆ Pinned' : 'Session'}</small></header><BrickBoundary><BrickContent brick={brick} snapshot={snapshot} role={role} busy={busy || connection === 'disconnected'} onAction={act} /></BrickBoundary>{editing && <div className="brick-edit"><label>Binding <select value={brick.binding.mode} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: event.target.value === 'follow' ? { mode: 'follow', contextKey: 'session.activeEncounter' } : event.target.value === 'none' ? { mode: 'none' } : defaultBinding(brick.typeId, snapshot) }))}>{definition?.supportedBindings.map(mode => <option value={mode} key={mode}>{mode}</option>)}</select></label>{brick.binding.mode === 'pinned' && <label>Entity <select value={pinnedEntityId} onChange={event => updateBrick(brick.id, item => ({ ...item, binding: { mode: 'pinned', entityId: event.target.value } }))}><option value={pinnedEntityId}>{pinnedEntityId}</option>{(brick.typeId === 'characters.sheet' ? snapshot?.actors.map(item => ({ id: item.entityId, name: item.name })) : snapshot?.encounters)?.filter(item => item.id !== pinnedEntityId).map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="brick-edit-buttons"><button aria-label="Move brick left" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, x: Math.max(0, layout.x - 1) }))}>←</button><button aria-label="Move brick right" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, x: Math.min(11, layout.x + 1) }))}>→</button><button aria-label="Move brick up" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, y: Math.max(0, layout.y - 1) }))}>↑</button><button aria-label="Move brick down" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, y: layout.y + 1 }))}>↓</button><button aria-label="Make brick narrower" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, w: Math.max(2, layout.w - 1) }))}>− width</button><button aria-label="Make brick wider" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, w: Math.min(12 - layout.x, layout.w + 1) }))}>+ width</button><button aria-label="Make brick shorter" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, h: Math.max(2, layout.h - 1) }))}>− height</button><button aria-label="Make brick taller" onClick={() => adjustBrick(brick.id, layout => ({ ...layout, h: layout.h + 1 }))}>+ height</button><button className="danger" onClick={() => updateDashboard(dashboard.id, item => ({ ...item, bricks: item.bricks.filter(value => value.id !== brick.id) }))}>Remove</button></div></div>}{editing && <button type="button" className="brick-resize-handle" aria-label={`Resize ${definition?.title || brick.typeId}`} onPointerDown={event => drag.start(event, brick.id, 'resize')} onPointerMove={drag.move} onPointerUp={drag.finish} onPointerCancel={drag.cancel} />}</section>
       })}</div> : <div className="empty-dashboard"><h2>No bricks here yet</h2><p>{editing ? 'Open the brick library to add a character, encounter, or activity panel.' : 'Turn on Edit layout to build this dashboard.'}</p><button onClick={() => { setEditing(true); setPicker(true) }}>Add a brick</button></div>}
       <p className="workspace-footnote">Saved locally in this browser · Host data is never stored in the layout · Cursor {snapshot?.context.cursor ?? '—'}</p>
-    </main> : <main className="characters-page"><div className="page-intro"><div><p className="eyebrow">APPLICATION / CHARACTERS</p><h1>Characters</h1><p>The full view and dashboard brick share the same host action contract.</p></div></div><div className="character-layout"><nav aria-label="Characters" className="character-list">{snapshot?.actors.map(actor => <button className={selectedActor?.entityId === actor.entityId ? 'active' : ''} key={actor.entityId} onClick={() => setSelectedActorId(actor.entityId)}><span className="avatar">{actor.name.slice(0, 1)}</span><span><strong>{actor.name}</strong><small>{actor.module.manifest.name}</small></span></button>)}</nav><section className="full-character brick">{selectedActor ? <Character actor={selectedActor} busy={busy || connection === 'disconnected'} onAction={act} gm={role === 'gm'} /> : <p className="brick-message">No authorized characters available.</p>}</section><aside className="brick app-activity"><header className="brick-head"><strong>Activity Log</strong></header><ActivityLog snapshot={snapshot} /></aside></div></main>}</div>
+    </main> : <main className="characters-page"><div className="page-intro"><div><p className="eyebrow">APPLICATION / CHARACTERS</p><h1>Characters</h1><p>The full view and dashboard brick share the same host action contract.</p></div></div><div className="character-layout"><nav aria-label="Characters" className="character-list">{snapshot?.actors.map(actor => <button className={selectedActor?.entityId === actor.entityId ? 'active' : ''} key={actor.entityId} onClick={() => setSelectedActorId(actor.entityId)}><span className="avatar">{actor.name.slice(0, 1)}</span><span><strong>{actor.name}</strong><small>{actor.module.manifest.name}</small></span></button>)}</nav><section className="full-character brick">{selectedActor ? <CharacterView actor={selectedActor} busy={busy || connection === 'disconnected'} onAction={act} gm={role === 'gm'} /> : <p className="brick-message">No authorized characters available.</p>}</section><aside className="brick app-activity"><header className="brick-head"><strong>Activity Log</strong></header><ActivityLog snapshot={snapshot} /></aside></div></main>}</div>
   </div>
 }

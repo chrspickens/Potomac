@@ -1,5 +1,9 @@
 # Architecture proposal (v0.1)
 
+## Current experiment versus target
+
+This document describes a proposed destination, not the deployed transport or storage stack. The checked-in 0.2 experiment uses a React/Vite browser client, a loopback-only Node HTTP host, SQLite on the host, server-sent events (SSE) with snapshot reconciliation, and browser `localStorage` for presentation layouts. It does not yet have an Electron wrapper, WebSocket transport, IndexedDB offline queue, production identity, or remote-host security. Consult the executable host and client plus the hardening checks for current behavior.
+
 ## Topology
 
 ```text

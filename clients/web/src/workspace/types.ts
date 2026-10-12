@@ -1,3 +1,7 @@
+import type { ComponentType } from 'react';
+import type { Activity, Encounter } from '../api.ts';
+import type { Actor } from '../modules.ts';
+
 export type BrickSize = { w: number; h: number };
 
 export type BrickLayout = BrickSize & { x: number; y: number };
@@ -29,7 +33,24 @@ export type WorkspaceState = {
   dashboards: Dashboard[];
 };
 
-export type BrickDefinition = {
+export type AuthorizedBrickDataAdapter = {
+  getActor(entityId: string): Actor | undefined;
+  getEncounter(entityId: string): Encounter | undefined;
+  getActorOptions(): Array<{ id: string; label: string }>;
+  getEncounterOptions(): Array<{ id: string; label: string }>;
+  getActiveEncounter(): Encounter | undefined;
+  getActivity(): Activity[];
+};
+
+export type BrickRenderProps<TData = unknown> = {
+  brick: BrickInstance;
+  data: TData | undefined;
+  adapter: AuthorizedBrickDataAdapter;
+  busy: boolean;
+  onAction: (actor: Actor, actionId: string) => void;
+};
+
+export type BrickDefinition<TData = unknown> = {
   typeId: string;
   version: number;
   ownerAppId: string;
@@ -37,6 +58,10 @@ export type BrickDefinition = {
   supportedBindings: BrickBinding['mode'][];
   defaultSize: BrickSize;
   defaultBinding?: BrickBinding;
+  resolve: (binding: BrickBinding, adapter: AuthorizedBrickDataAdapter) => TData | undefined;
+  render: ComponentType<BrickRenderProps<TData>>;
+  validateOptions: (options: unknown) => options is Record<string, unknown>;
+  getBindingOptions?: (adapter: AuthorizedBrickDataAdapter) => Array<{ id: string; label: string }>;
 };
 
 export type WorkspaceLoadResult = {

@@ -4,8 +4,11 @@ const MAX_NODES = 256;
 const MAX_DEPTH = 32;
 
 function readPath(root: unknown, path: string): unknown {
+  if (!path || path.split(".").some((part) => !part || part === "__proto__" || part === "prototype" || part === "constructor")) {
+    throw new Error(`Invalid field reference: ${path}`);
+  }
   return path.split(".").reduce<unknown>((value, key) => {
-    if (!value || typeof value !== "object" || !(key in value)) throw new Error(`Unknown field reference: ${path}`);
+    if (!value || typeof value !== "object" || !Object.hasOwn(value, key)) throw new Error(`Unknown field reference: ${path}`);
     return (value as Record<string, unknown>)[key];
   }, root);
 }
@@ -18,7 +21,9 @@ export function evaluate(expression: Expression, state: Record<string, JsonValue
     if ("literal" in node) return node.literal;
     if ("ref" in node) {
       const value = readPath(state, node.ref);
-      if (value === undefined || value === null || typeof value === "object") throw new Error(`Invalid scalar reference: ${node.ref}`);
+      if (value === null || typeof value === "object" || (typeof value === "number" && !Number.isFinite(value))) {
+        throw new Error(`Invalid scalar reference: ${node.ref}`);
+      }
       return value as JsonValue;
     }
     if (node.op === "not") {
@@ -48,30 +53,51 @@ export function evaluate(expression: Expression, state: Record<string, JsonValue
   return visit(expression, 0);
 }
 
-export function executeAction(action: ActionDefinition, state: Record<string, JsonValue>, rolls: number[] = []): { state: Record<string, JsonValue>; rolls: number[] } {
+type ModuleEffect = ActionDefinition["effects"][number] & { target?: string };
+type RuleAction = Omit<ActionDefinition, "effects"> & { effects?: ModuleEffect[]; resolution?: ActionDefinition["resolution"] };
+
+export function getRequiredRollCount(action: RuleAction): number {
+  const dice = action.resolution?.dice || (action.roll ? [{ count: action.roll.dice, sides: action.roll.sides }] : []);
+  if (dice.some((group) => !Number.isInteger(group.count) || group.count < 0 || !Number.isInteger(group.sides) || group.sides < 1)) throw new Error("Invalid dice definition");
+  const expected = dice.reduce((total, group) => total + group.count, 0);
+  if (expected > MAX_NODES) throw new Error("Rules execution budget exhausted");
+  return expected;
+}
+
+/** Purely evaluate an action against committed state and host-provided random values. */
+export function executeAction(
+  action: RuleAction,
+  state: Record<string, JsonValue>,
+  rolls: number[] = [],
+): { state: Record<string, JsonValue>; rolls: number[] } {
   if (action.requires && evaluate(action.requires, state) !== true) throw new Error("Action precondition failed");
   const next = structuredClone(state);
-  for (const effect of action.effects) {
-    const value = evaluate(effect.amount, state);
-    if (typeof value !== "number") throw new Error("Resource effect must be numeric");
-    const path = effect.resource.startsWith("resources.") ? effect.resource.split(".") : ["resources", ...effect.resource.split(".")];
-    const key = path.pop()!;
-    const resource = path.reduce<Record<string, JsonValue> | undefined>((value, part) => value && typeof value[part] === "object" && value[part] !== null && !Array.isArray(value[part]) ? value[part] as Record<string, JsonValue> : undefined, next);
-    if (!resource) throw new Error("Missing resource path");
-    const current = resource[key];
-    if (typeof current !== "number") throw new Error(`Unknown numeric resource: ${effect.resource}`);
-    const updated = current + value;
-    const maximum = typeof resource.maximum === "number" ? resource.maximum : Infinity;
-    if (updated < 0 || updated > maximum) throw new Error(`Resource ${effect.resource} is out of bounds`);
-    resource[key] = updated;
+  for (const effect of action.effects || []) {
+    if (effect.op !== "changeResource" || (effect.target !== undefined && effect.target !== "self")) throw new Error("Unsupported action effect");
+    const amount = evaluate(effect.amount, state);
+    if (typeof amount !== "number") throw new Error("Resource effect must be numeric");
+    const resourcePath = effect.resource.startsWith("resources.") ? effect.resource : `resources.${effect.resource}`;
+    const parts = resourcePath.split(".");
+    if (parts.some((part) => !part || part === "__proto__" || part === "prototype" || part === "constructor")) throw new Error("Invalid resource path");
+    const key = parts.pop()!;
+    const parent = parts.reduce<Record<string, JsonValue> | undefined>((value, part) =>
+      value && typeof value[part] === "object" && value[part] !== null && !Array.isArray(value[part]) ? value[part] as Record<string, JsonValue> : undefined, next);
+    const current = parent?.[key];
+    if (typeof current !== "number" || !Number.isFinite(current)) throw new Error(`Unknown numeric resource ${effect.resource}`);
+    const updated = current + amount;
+    const maximum = typeof parent?.maximum === "number" ? parent.maximum : Infinity;
+    if (!Number.isFinite(updated) || updated < 0 || updated > maximum) throw new Error(`Resource ${effect.resource} is out of bounds`);
+    parent[key] = updated;
   }
   const dice = action.resolution?.dice || (action.roll ? [{ count: action.roll.dice, sides: action.roll.sides }] : []);
-  const expected = dice.reduce((total, group) => total + group.count, 0);
-  let cursor = 0;
-  for (const group of dice) for (let die = 0; die < group.count; die++) {
-    const value = rolls[cursor++];
-    if (!Number.isInteger(value) || value < 1 || value > group.sides) throw new Error("Host roll results are missing or invalid");
-  }
+  const expected = getRequiredRollCount(action);
   if (rolls.length !== expected) throw new Error("Host roll results are missing or invalid");
+  let cursor = 0;
+  for (const group of dice) {
+    for (let die = 0; die < group.count; die++) {
+      const value = rolls[cursor++];
+      if (!Number.isInteger(value) || value < 1 || value > group.sides) throw new Error("Host roll results are missing or invalid");
+    }
+  }
   return { state: next, rolls: [...rolls] };
 }

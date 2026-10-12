@@ -2,6 +2,8 @@
 
 These are **proposals** from early product discussion, not irreversible decisions or implemented guarantees.
 
+The current localhost 0.2 experiment uses SSE rather than the proposed WebSocket notifications, and stores personal dashboard layouts in `localStorage` rather than an IndexedDB offline queue. Its static role tokens are demo fixtures, not authenticated player identities. The rows below remain targets unless a decision record explicitly promotes them.
+
 | Topic | Proposed direction | Status |
 | --- | --- | --- |
 | Hosting | Local-first, self-hosted host authoritative for shared state; optional dedicated deployment | Proposed |
@@ -33,3 +35,6 @@ These are **proposals** from early product discussion, not irreversible decision
 ## Decision records
 
 When implementation begins, add small ADRs under `docs/adr/` with context, considered alternatives, decision, consequences and date. Avoid treating the examples in these docs as finalized protocols.
+
+- [ADR 0001 — Local Workspace layouts](adr/0001-workspace-local-layout.md)
+- [ADR 0002 — Workspace hardening integration route](adr/0002-workspace-hardening-integration.md)
