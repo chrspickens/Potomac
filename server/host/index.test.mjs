@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -521,5 +522,123 @@ test('offline submission enforces authenticated member scope, current permission
     assert.equal(gmReplay.events.some(event => event.kind === 'offline.proposal.submitted' && event.payload.proposalId === receipt.proposalId), true);
     const unauthorized = await request('/api/proposals/mine', 'player');
     assert.equal(unauthorized.status, 403);
+  });
+});
+
+test('offline rolls keep the same verified dice in durable receipts and role-filtered history', async () => {
+  await withHost(async ({ request, restart }) => {
+    const member = await (await postJson(request, '/api/members/enroll', { displayName: 'Roller' })).json();
+    const manifest = {
+      id: 'verified.rolls', version: '1',
+      schema: { type: 'object', properties: {}, additionalProperties: true },
+      actions: [{
+        id: 'check', policy: 'selfService', effects: [],
+        input: { type: 'object', properties: { difficulty: { type: 'integer' } }, required: ['difficulty'], additionalProperties: false },
+        resolution: { dice: [{ count: 1, sides: 20 }], targetInput: 'difficulty', comparison: 'gte' }
+      }]
+    };
+    assert.equal((await postJson(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest })).status, 201);
+    assert.equal((await postJson(request, '/api/actors', {
+      id: 'roll-actor', moduleId: manifest.id, moduleVersion: manifest.version,
+      ownerMemberId: member.memberId, data: {}
+    })).status, 201);
+    const operation = {
+      operationId: 'verified-roll-1', campaignId: 'foundation-demo', memberId: member.memberId,
+      entityId: 'roll-actor', baseRevision: 1, moduleId: manifest.id, moduleVersion: manifest.version,
+      schemaVersion: 1, actionId: 'check', parameters: { difficulty: 10 }, dependencies: []
+    };
+    const first = await postJson(request, '/api/offline/operations', operation, member.credential);
+    assert.equal(first.status, 200);
+    const receipt = await first.json();
+    assert.equal(receipt.status, 'applied');
+    assert.equal(receipt.verified, true);
+    assert.equal(receipt.rolls.length, 1);
+    assert.ok(receipt.rolls[0] >= 1 && receipt.rolls[0] <= 20);
+    assert.equal(receipt.resolution.groups[0].dice[0], receipt.rolls[0]);
+    const playerEvents = (await (await request('/api/state', member.credential)).json()).events;
+    const rollEvent = playerEvents.find(event => event.payload.operationId === operation.operationId);
+    assert.ok(rollEvent, 'action has an authorized durable audit event');
+    assert.deepEqual(rollEvent.payload.rolls, receipt.rolls);
+    assert.deepEqual(rollEvent.payload.resolution, receipt.resolution);
+    assert.equal(rollEvent.payload.verified, true);
+    await restart();
+    assert.deepEqual(await (await postJson(request, '/api/offline/operations', operation, member.credential)).json(), receipt);
+    assert.deepEqual(await (await request('/api/offline/operations/verified-roll-1', member.credential)).json(), receipt);
+    assert.equal((await (await request('/api/actors/roll-actor', member.credential)).json()).revision, 2);
+  });
+});
+
+test('pre-upgrade GM actions can retry their original command without a second commit', async () => {
+  await withHost(async ({ host, request, restart }) => {
+    const member = await offlineFixture(request, 'legacy-gm-actor');
+    const command = { operationId: 'pre-upgrade-gm-1', entityId: 'legacy-gm-actor', baseRevision: 1, actionId: 'spend', parameters: {} };
+    const first = await postJson(request, '/api/actions', command);
+    assert.equal(first.status, 200);
+    const result = await first.json();
+    const legacyHash = createHash('sha256').update(JSON.stringify({
+      entityId: command.entityId, baseRevision: command.baseRevision,
+      actionId: command.actionId, parameters: command.parameters
+    })).digest('hex');
+    // Simulate an operations row created by the 0.2 host, before principal_id existed.
+    host.db.prepare('UPDATE operations SET principal_id=NULL,request_hash=? WHERE id=?').run(legacyHash, command.operationId);
+    await restart();
+    const repeated = await postJson(request, '/api/actions', command);
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(await repeated.json(), result);
+    assert.equal((await (await request('/api/actors/legacy-gm-actor')).json()).revision, 2);
+    const changed = await postJson(request, '/api/actions', { ...command, parameters: { changed: true } });
+    assert.equal(changed.status, 409);
+    assert.equal((await (await request('/api/actors/legacy-gm-actor')).json()).revision, 2);
+  });
+});
+
+test('grant and revoke send only an opaque refresh event to the affected live member', async () => {
+  await withHost(async ({ request }) => {
+    const alice = await (await postJson(request, '/api/members/enroll', { displayName: 'Alice' })).json();
+    const bob = await (await postJson(request, '/api/members/enroll', { displayName: 'Bob' })).json();
+    const manifest = { id: 'grant.refresh', version: '1', schema: { type: 'object', properties: {}, additionalProperties: true }, actions: [] };
+    assert.equal((await postJson(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest })).status, 201);
+    assert.equal((await postJson(request, '/api/actors', {
+      id: 'grant-private-actor', moduleId: manifest.id, moduleVersion: manifest.version,
+      ownerMemberId: alice.memberId, data: { name: 'A private character' }
+    })).status, 201);
+    const checkSignal = async changePermissions => {
+      const cursor = (await (await request('/api/state', bob.credential)).json()).revision;
+      const controller = new AbortController();
+      const stream = await request(`/api/stream?since=${cursor}`, bob.credential, { signal: controller.signal });
+      assert.equal(stream.status, 200);
+      const reader = stream.body.getReader();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      try {
+        const pending = (async () => {
+          let text = '';
+          while (!text.includes('permissions.refresh')) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            text += new TextDecoder().decode(value);
+          }
+          return text;
+        })();
+        await changePermissions();
+        const eventText = await pending;
+        assert.match(eventText, /permissions.refresh/, 'already connected player receives a refresh');
+        assert.equal(eventText.includes('grant-private-actor'), false, 'no private actor ID is disclosed by refresh');
+        assert.equal(eventText.includes(bob.memberId), false, 'no member ID is disclosed by refresh');
+      } finally {
+        clearTimeout(timeout);
+        controller.abort();
+      }
+    };
+    assert.equal((await request('/api/actors/grant-private-actor', bob.credential)).status, 404);
+    await checkSignal(async () => {
+      assert.equal((await postJson(request, '/api/actors/grant-private-actor/grants', { memberId: bob.memberId, permissions: ['read'] })).status, 201);
+    });
+    assert.equal((await request('/api/actors/grant-private-actor', bob.credential)).status, 200);
+    await checkSignal(async () => {
+      assert.equal((await request(`/api/actors/grant-private-actor/grants/${bob.memberId}`, 'gm', { method: 'DELETE' })).status, 200);
+    });
+    assert.equal((await request('/api/actors/grant-private-actor', bob.credential)).status, 404);
+    const replay = (await (await request('/api/state?since=0', bob.credential)).json()).events;
+    assert.equal(replay.some(event => event.kind === 'actor.granted' || event.kind === 'actor.grant_revoked'), false);
   });
 });
