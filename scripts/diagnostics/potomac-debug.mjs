@@ -101,7 +101,8 @@ async function doctor(options) {
 async function smoke() {
   const dir = await mkdtemp(join(tmpdir(), 'potomac-smoke-'));
   const gm = randomUUID();
-  const player = randomUUID();
+  const legacyPlayer = randomUUID();
+  const smokeCampaignId = 'agent-smoke-' + randomUUID();
   let host;
   let checks = 0;
   let passed = false;
@@ -119,13 +120,20 @@ async function smoke() {
   try {
     host = createHost({
       databasePath: join(dir, 'experiment.sqlite'),
-      campaignId: 'agent-smoke-' + randomUUID(),
-      gmToken: gm, playerToken: player,
+      campaignId: smokeCampaignId,
+      gmToken: gm, playerToken: legacyPlayer,
     });
     const address = await host.listen(0, '127.0.0.1');
     const base = new URL('http://127.0.0.1:' + address.port + '/');
     const get = (path, token) => request(base, path, { token });
     const post = (path, token, body) => request(base, path, { token, method: 'POST', body });
+    const enrolled = requiredStatus(await post('/api/members/enroll', gm, { displayName: 'Smoke Player' }), 201, 'player enrollment');
+    const player = enrolled.credential;
+    const commandFor = (entityId, moduleId, baseRevision, actionId, parameters = {}) => ({
+      operationId: randomUUID(), campaignId: smokeCampaignId, memberId: enrolled.memberId,
+      entityId, baseRevision, moduleId, moduleVersion: '0.1.0', schemaVersion: 1,
+      actionId, parameters, dependencies: [],
+    });
     const actorA = 'smoke-a-' + randomUUID();
     const actorB = 'smoke-b-' + randomUUID();
     let cursorBeforeActions = 0;
@@ -146,6 +154,7 @@ async function smoke() {
     await check('create-and-filter-characters', async () => {
       requiredStatus(await post('/api/actors', gm, {
         id: actorA, moduleId: 'example.system-a', moduleVersion: '0.1.0',
+        ownerMemberId: enrolled.memberId,
         data: {
           name: 'Smoke Mage', secretNote: 'GM-SMOKE-SECRET',
           attributes: { strength: 14, intelligence: 12 },
@@ -155,6 +164,7 @@ async function smoke() {
       }), 201, 'System A character');
       requiredStatus(await post('/api/actors', gm, {
         id: actorB, moduleId: 'example.system-b', moduleVersion: '0.1.0',
+        ownerMemberId: enrolled.memberId,
         data: {
           name: 'Smoke Wanderer',
           traits: { agility: 2, instinct: 3 },
@@ -176,7 +186,7 @@ async function smoke() {
     });
 
     await check('validated-action-and-exactly-once-retry', async () => {
-      const command = { operationId: randomUUID(), entityId: actorA, baseRevision: aRevision, actionId: 'spend-mana', parameters: {} };
+      const command = commandFor(actorA, 'example.system-a', aRevision, 'spend-mana');
       const first = requiredStatus(await post('/api/actions', player, command), 200, 'action');
       const retry = requiredStatus(await post('/api/actions', player, command), 200, 'idempotent retry');
       assert.deepEqual(retry, first);
@@ -189,22 +199,18 @@ async function smoke() {
     });
 
     await check('stale-revision-rejected', async () => {
-      requiredStatus(await post('/api/actions', player, {
-        operationId: randomUUID(), entityId: actorA, baseRevision: 1, actionId: 'spend-mana', parameters: {},
-      }), 409, 'stale revision');
+      requiredStatus(await post('/api/actions', player, commandFor(actorA, 'example.system-a', 1, 'spend-mana')), 409, 'stale revision');
     });
 
     await check('second-system-independent-rule', async () => {
-      requiredStatus(await post('/api/actions', player, {
-        operationId: randomUUID(), entityId: actorB, baseRevision: 1, actionId: 'spend-hope', parameters: {},
-      }), 200, 'System B resource change');
+      requiredStatus(await post('/api/actions', player, commandFor(actorB, 'example.system-b', 1, 'spend-hope')), 200, 'System B resource change');
       const state = requiredStatus(await get('/api/state', player), 200, 'System B projection');
       assert.equal(state.actors.find(item => item.id === actorB).data.resources.hope.current, 2);
     });
 
     await check('host-verified-roll-and-event-history', async () => {
       const command = { operationId: randomUUID(), entityId: actorA, baseRevision: aRevision, actionId: 'strength-check', parameters: { difficulty: 12 } };
-      const result = requiredStatus(await post('/api/actions', player, command), 200, 'dice action');
+      const result = requiredStatus(await post('/api/actions', gm, command), 200, 'host-verified dice action');
       const die = result.resolution?.groups?.[0]?.dice?.[0];
       assert.ok(Number.isInteger(die) && die >= 1 && die <= 20, 'Missing host-generated d20 result');
       const state = requiredStatus(await get('/api/state', gm), 200, 'GM roll history');

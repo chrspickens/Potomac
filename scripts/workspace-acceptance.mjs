@@ -33,7 +33,9 @@ const webPort = await freePort();
 const playerWebPort = await freePort();
 const debugPort = await freePort();
 const gmToken = `workspace-acceptance-gm-${process.pid}`;
-const playerToken = `workspace-acceptance-player-${process.pid}`;
+const legacyPlayerToken = `workspace-acceptance-legacy-player-${process.pid}`;
+let playerToken;
+let playerMemberId;
 const baseUrl = `http://127.0.0.1:${hostPort}`;
 const webUrl = `http://127.0.0.1:${webPort}/`;
 const playerWebUrl = `http://127.0.0.1:${playerWebPort}/`;
@@ -141,9 +143,12 @@ async function openContext(browserContextId, role, profile, clientUrl) {
 try {
   await mkdir(chromeProfile, { recursive: true });
   const host = start(process.execPath, [join(root, 'server/host/index.mjs')], {
-    env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: dbPath, POTOMAC_GM_TOKEN: gmToken, POTOMAC_PLAYER_TOKEN: playerToken },
+    env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: dbPath, POTOMAC_GM_TOKEN: gmToken, POTOMAC_PLAYER_TOKEN: legacyPlayerToken },
   });
   await waitFor(`${baseUrl}/health`, 'isolated host');
+  const enrollment = await fetch(`${baseUrl}/api/members/enroll`, { method: 'POST', headers: { authorization: `Bearer ${gmToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Acceptance Player' }) });
+  assert.equal(enrollment.status, 201, 'GM enrolls an individual player');
+  ({ credential: playerToken, memberId: playerMemberId } = await enrollment.json());
   const web = start(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(webPort), '--strictPort'], {
     cwd: join(root, 'clients/web'),
     env: { ...process.env, VITE_POTOMAC_HOST: baseUrl, VITE_POTOMAC_GM_TOKEN: gmToken, VITE_POTOMAC_PLAYER_TOKEN: playerToken },
@@ -174,6 +179,14 @@ try {
   const gmCtx = await cdp('Target.createBrowserContext');
   const playerCtx = await cdp('Target.createBrowserContext');
   const gm = await openContext(gmCtx.browserContextId, 'gm', `workspace-acceptance-gm-${process.pid}`, webUrl);
+  const gmProjectionResponse = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } });
+  const gmProjection = await gmProjectionResponse.json();
+  assert.equal(gmProjectionResponse.status, 200);
+  assert.ok(gmProjection.actors.length >= 2, 'GM seeded the fixture actors');
+  for (const actor of gmProjection.actors) {
+    const grant = await fetch(`${baseUrl}/api/actors/${encodeURIComponent(actor.id)}/grants`, { method: 'POST', headers: { authorization: `Bearer ${gmToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ memberId: playerMemberId, permissions: ['read', 'act'] }) });
+    assert.equal(grant.status, 201, `GM grants player access to ${actor.id}`);
+  }
   const player = await openContext(playerCtx.browserContextId, 'player', `workspace-acceptance-player-${process.pid}`, playerWebUrl);
 
   const gmState = await evaluate(gm.sessionId, `(() => { const e = document.querySelector('.gm-note'); return {note:e?.textContent || '', actor:document.querySelector('.character-view h3')?.textContent || '', key:Object.keys(localStorage).find(k=>k.startsWith('potomac:workspace:')), body:document.body.innerText.slice(0,900)} })()`);
