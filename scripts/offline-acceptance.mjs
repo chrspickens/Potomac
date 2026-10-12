@@ -153,6 +153,16 @@ async function selectValue(sessionId, selector, value) {
 }
 
 async function clickRecoveryAction(sessionId, actionId, buttonText) {
+  // After creating a replacement operation its acceptance may render before
+  // the conflict component has completed its asynchronous queue write and
+  // re-enabled its buttons. Wait for the *original* recovery UI, not only the
+  // unrelated accepted-operation status.
+  await waitForExpression(sessionId, `(() => {
+    const section = [...document.querySelectorAll('section[aria-labelledby="conflict-recovery-title"]')]
+      .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)})));
+    return !![...(section?.querySelectorAll('button') || [])]
+      .find(item => item.textContent.trim() === ${JSON.stringify(buttonText)} && !item.disabled);
+  })()`, `recovery action ${buttonText} for ${actionId} to become available`);
   const clicked = await evaluate(sessionId, `(() => {
     const section = [...document.querySelectorAll('section[aria-labelledby="conflict-recovery-title"]')]
       .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)})));
