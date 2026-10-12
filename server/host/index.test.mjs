@@ -70,6 +70,54 @@ test('context update is GM-only, validates IDs and publishes the selected stable
   });
 });
 
+test('campaign setup pins a registered module with GM-only revisioned updates that persist', async () => {
+  await withHost(async ({ request, restart }) => {
+    const initial = await (await request('/api/campaign')).json();
+    assert.equal(initial.id, 'foundation-demo');
+    assert.equal(initial.revision, 1);
+    assert.equal((await request('/api/campaign', 'player', { method: 'PUT', body: JSON.stringify({ name: 'Test', baseRevision: 1 }) })).status, 403);
+    const module = { id: 'campaign.system', version: '2', schema: { type: 'object' } };
+    assert.equal((await postJson(request, '/api/modules', { id: module.id, version: module.version, manifest: module })).status, 201);
+    const input = { name: '  New Campaign  ', systemModuleId: module.id, systemModuleVersion: module.version, baseRevision: 1 };
+    const put = await request('/api/campaign', 'gm', { method: 'PUT', body: JSON.stringify(input) });
+    assert.equal(put.status, 200);
+    assert.deepEqual(await put.json(), { id: 'foundation-demo', name: 'New Campaign', systemModuleId: module.id, systemModuleVersion: module.version, revision: 2 });
+    const stale = await request('/api/campaign', 'gm', { method: 'PUT', body: JSON.stringify(input) });
+    assert.equal(stale.status, 409);
+    await restart();
+    assert.equal((await (await request('/api/campaign')).json()).revision, 2);
+  });
+});
+
+test('encounters, participant ordering, and activation persist with GM-only participant changes', async () => {
+  await withHost(async ({ request, restart }) => {
+    const manifest = { id: 'encounter.actor', version: '1', schema: { type: 'object', properties: {}, additionalProperties: true }, actions: [] };
+    await postJson(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest });
+    await postJson(request, '/api/actors', { id: 'encounter-actor-a', moduleId: manifest.id, moduleVersion: manifest.version, data: {} });
+    await postJson(request, '/api/actors', { id: 'encounter-actor-b', moduleId: manifest.id, moduleVersion: manifest.version, data: {} });
+    const created = await postJson(request, '/api/encounters', { id: 'persistent-encounter', name: 'Persistent', summary: 'Test' });
+    assert.equal(created.status, 201);
+    assert.equal((await request('/api/encounters/persistent-encounter', 'player', { method: 'PUT', body: JSON.stringify({ baseRevision: 1, status: 'active' }) })).status, 403);
+    const participantSet = { baseRevision: 1, participants: [
+      { actorId: 'encounter-actor-b', initiative: 15, activationOrder: 0 },
+      { actorId: 'encounter-actor-a', initiative: 10, activationOrder: 1 }
+    ] };
+    const updated = await request('/api/encounters/persistent-encounter/participants', 'gm', { method: 'PUT', body: JSON.stringify(participantSet) });
+    assert.equal(updated.status, 200);
+    assert.deepEqual((await updated.json()).participants.map(item => item.actorId), ['encounter-actor-b', 'encounter-actor-a']);
+    const active = await request('/api/encounters/persistent-encounter', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision: 2, status: 'active' }) });
+    assert.equal((await active.json()).status, 'active');
+    const context = await postJson(request, '/api/context', { context: { activeEncounter: 'persistent-encounter' } });
+    assert.equal(context.status, 200);
+    await restart();
+    const state = await (await request('/api/state')).json();
+    assert.equal(state.context.activeEncounter, 'persistent-encounter');
+    const persisted = await (await request('/api/encounters/persistent-encounter')).json();
+    assert.equal(persisted.status, 'active');
+    assert.deepEqual(persisted.participants.map(item => item.actorId), ['encounter-actor-b', 'encounter-actor-a']);
+  });
+});
+
 test('encounter lookup returns one authorized projection and hides unknown IDs uniformly', async () => {
   await withHost(async ({ request }) => {
     const found = await request('/api/encounters/encounter-a', 'player');

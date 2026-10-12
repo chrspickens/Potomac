@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS offline_proposals (id TEXT PRIMARY KEY, operation_id 
 CREATE TABLE IF NOT EXISTS offline_decisions (decision_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS offline_proposals_status_created ON offline_proposals(status, created_at);
 CREATE INDEX IF NOT EXISTS offline_proposals_member_created ON offline_proposals(member_id, created_at);
-CREATE TABLE IF NOT EXISTS campaign (id TEXT PRIMARY KEY, context TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS campaign (id TEXT PRIMARY KEY, context TEXT NOT NULL DEFAULT '{}', name TEXT NOT NULL DEFAULT '', system_module_id TEXT, system_module_version TEXT, revision INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS encounters (id TEXT PRIMARY KEY, name TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'prepared', revision INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS encounter_participants (encounter_id TEXT NOT NULL REFERENCES encounters(id) ON DELETE CASCADE, actor_id TEXT NOT NULL REFERENCES actors(id), initiative INTEGER, status TEXT NOT NULL DEFAULT 'active', activation_order INTEGER, PRIMARY KEY(encounter_id,actor_id));
 CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, credential_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);
 CREATE TABLE IF NOT EXISTS actor_grants (actor_id TEXT NOT NULL, member_id TEXT NOT NULL, can_read INTEGER NOT NULL, can_act INTEGER NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY(actor_id, member_id));
 `;
@@ -42,12 +44,10 @@ const canonicalize = value => Array.isArray(value) ? value.map(canonicalize)
     : value;
 const canonicalJson = value => JSON.stringify(canonicalize(value));
 
-const encounters = [
+const legacyEncounters = [
   { id: 'encounter-a', name: 'The Glass Bridge', summary: 'A narrow crossing over a deep ravine.' },
   { id: 'encounter-b', name: 'The Sunken Archive', summary: 'A flooded chamber of forgotten records.' }
 ];
-const encounterById = new Map(encounters.map(encounter => [encounter.id, encounter]));
-
 function validateSchema(value, schema, root = schema, path = '$', depth = 0) {
   if (depth > 32) throw new Error('Schema nesting limit exceeded');
   if (schema.$ref) {
@@ -117,7 +117,14 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   for (const [column, type] of [['actor_id', 'TEXT'], ['action_id', 'TEXT'], ['request_hash', 'TEXT'], ['principal_id', 'TEXT']]) if (!operationColumns.has(column)) db.exec(`ALTER TABLE operations ADD COLUMN ${column} ${type}`);
   const proposalColumns = new Set(db.prepare('PRAGMA table_info(offline_proposals)').all().map(column => column.name));
   for (const [column, type] of [['campaign_id', 'TEXT'], ['base_revision', 'INTEGER'], ['rule_version', 'INTEGER']]) if (!proposalColumns.has(column)) db.exec(`ALTER TABLE offline_proposals ADD COLUMN ${column} ${type}`);
-  db.prepare('INSERT OR IGNORE INTO campaign(id,context) VALUES(?,?)').run(campaignId, '{}');
+  const campaignColumns = new Set(db.prepare('PRAGMA table_info(campaign)').all().map(column => column.name));
+  for (const [column, definition] of [['name', "TEXT NOT NULL DEFAULT ''"], ['system_module_id', 'TEXT'], ['system_module_version', 'TEXT'], ['revision', 'INTEGER NOT NULL DEFAULT 1']]) {
+    if (!campaignColumns.has(column)) db.exec(`ALTER TABLE campaign ADD COLUMN ${column} ${definition}`);
+  }
+  db.prepare('INSERT OR IGNORE INTO campaign(id,context,name,revision) VALUES(?,?,?,1)').run(campaignId, '{}', '');
+  const now = new Date().toISOString();
+  for (const encounter of legacyEncounters) db.prepare('INSERT OR IGNORE INTO encounters(id,name,summary,status,revision,created_at,updated_at) VALUES(?,?,? ,\'prepared\',1,?,?)')
+    .run(encounter.id, encounter.name, encounter.summary, now, now);
   const modulesDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../../modules');
   for (const folder of readdirSync(modulesDirectory, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
     try {
@@ -151,7 +158,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   };
   const projectActor = (row, auth) => {
     const actor = { id: row.id, moduleId: row.module_id, moduleVersion: row.module_version, revision: row.revision, data: JSON.parse(row.data) };
-    const module = JSON.parse(moduleRow.get(row.module_id, row.module_version).manifest);
+    const moduleRecord = moduleRow.get(row.module_id, row.module_version);
+    const module = moduleRecord ? JSON.parse(moduleRecord.manifest) : { derivedValues: [] };
     const visibility = JSON.parse(row.visibility);
     const hiddenPaths = auth.role === 'player' ? visibility.gmOnly || [] : [];
     if (hiddenPaths.length) {
@@ -206,11 +214,20 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const currentContext = () => {
     const stored = JSON.parse(db.prepare('SELECT context FROM campaign WHERE id=?').get(campaignId).context);
     const active = stored?.activeEncounter;
-    const encounterId = encounterById.has(active) ? active
-      : encounters.find(encounter => encounter.name === active)?.id || null;
+    const encounterId = (typeof active === 'string' ? db.prepare('SELECT id FROM encounters WHERE id=?').get(active)?.id : null)
+      || legacyEncounters.find(encounter => encounter.name === active)?.id || null;
     return { activeEncounter: encounterId };
   };
-  const publicEncounters = () => encounters.map(({ id, name, summary }) => ({ id, name, summary }));
+  const campaignJson = () => {
+    const row = db.prepare('SELECT * FROM campaign WHERE id=?').get(campaignId);
+    return { id: row.id, name: row.name, systemModuleId: row.system_module_id, systemModuleVersion: row.system_module_version, revision: row.revision };
+  };
+  const encounterJson = (row, auth) => ({
+    id: row.id, name: row.name, summary: row.summary, status: row.status, revision: row.revision,
+    participants: db.prepare('SELECT encounter_participants.actor_id, encounter_participants.initiative, encounter_participants.status, encounter_participants.activation_order FROM encounter_participants JOIN actors ON actors.id=encounter_participants.actor_id WHERE encounter_id=? ORDER BY COALESCE(activation_order,2147483647), actor_id')
+      .all(row.id).filter(participant => canReadActor(actorRow.get(participant.actor_id), auth)).map(({ actor_id, initiative, status, activation_order }) => ({ actorId: actor_id, initiative, status, activationOrder: activation_order }))
+  });
+  const publicEncounters = () => db.prepare('SELECT * FROM encounters ORDER BY id').all().map(row => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, revision: row.revision }));
   const transaction = (work) => {
     db.exec('BEGIN IMMEDIATE');
     try { const result = work(); db.exec('COMMIT'); return result; }
@@ -318,11 +335,80 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!receipt) return json(res, 404, { error: 'Offline receipt not found' });
         return json(res, 200, receiptJson(receipt));
       }
-      if (req.method === 'GET' && url.pathname.startsWith('/api/encounters/')) {
+      if (req.method === 'GET' && /^\/api\/encounters\/[^/]+$/.test(url.pathname)) {
         const id = decodeURIComponent(url.pathname.slice('/api/encounters/'.length));
-        const encounter = encounterById.get(id);
+        const encounter = db.prepare('SELECT * FROM encounters WHERE id=?').get(id);
         if (!encounter) return json(res, 404, { error: 'Encounter not found' });
-        return json(res, 200, { id: encounter.id, name: encounter.name, summary: encounter.summary });
+        const projection = encounterJson(encounter, auth);
+        const legacyFixture = legacyEncounters.some(item => item.id === id);
+        return json(res, 200, legacyFixture ? { id: projection.id, name: projection.name, summary: projection.summary } : projection);
+      }
+      if (req.method === 'PUT' && /^\/api\/encounters\/[^/]+$/.test(url.pathname)) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        const body = await readBody(req);
+        const id = decodeURIComponent(url.pathname.slice('/api/encounters/'.length));
+        const current = db.prepare('SELECT * FROM encounters WHERE id=?').get(id);
+        if (!current) return json(res, 404, { error: 'Encounter not found' });
+        if (!Number.isInteger(body.baseRevision) || body.baseRevision !== current.revision) return json(res, 409, { error: 'Encounter revision conflict', reasonCode: 'revision_conflict', currentRevision: current.revision });
+        const name = body.name ?? current.name, summary = body.summary ?? current.summary, status = body.status ?? current.status;
+        if (typeof name !== 'string' || !name.trim() || name.length > 160 || typeof summary !== 'string' || summary.length > 4000 || !['prepared', 'active', 'completed'].includes(status)) return json(res, 400, { error: 'Invalid encounter fields' });
+        transaction(() => {
+          db.prepare('UPDATE encounters SET name=?,summary=?,status=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?').run(name.trim(), summary, status, new Date().toISOString(), id, body.baseRevision);
+          insertEvent({ kind: 'encounter.updated', visibility: 'public', payload: { encounterId: id, revision: current.revision + 1 } });
+        });
+        notify();
+        return json(res, 200, encounterJson(db.prepare('SELECT * FROM encounters WHERE id=?').get(id), auth));
+      }
+      if (req.method === 'PUT' && /^\/api\/encounters\/[^/]+\/participants$/.test(url.pathname)) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        const body = await readBody(req);
+        const id = decodeURIComponent(url.pathname.slice('/api/encounters/'.length, -'/participants'.length));
+        const encounter = db.prepare('SELECT * FROM encounters WHERE id=?').get(id);
+        if (!encounter) return json(res, 404, { error: 'Encounter not found' });
+        if (!Number.isInteger(body.baseRevision) || body.baseRevision !== encounter.revision) return json(res, 409, { error: 'Encounter revision conflict', reasonCode: 'revision_conflict', currentRevision: encounter.revision });
+        if (!Array.isArray(body.participants) || body.participants.length > 200 || body.participants.some((item, index) => !item || typeof item.actorId !== 'string' || !item.actorId || ![null, undefined].includes(item.initiative) && !Number.isFinite(item.initiative) || !['active', 'defeated', 'removed'].includes(item.status || 'active') || ![null, undefined].includes(item.activationOrder) && (!Number.isInteger(item.activationOrder) || item.activationOrder < 0) || body.participants.findIndex(candidate => candidate?.actorId === item.actorId) !== index)) return json(res, 400, { error: 'Invalid or duplicate encounter participants' });
+        for (const item of body.participants) if (!actorRow.get(item.actorId)) return json(res, 400, { error: 'Participant actor not found', actorId: item.actorId });
+        transaction(() => {
+          db.prepare('DELETE FROM encounter_participants WHERE encounter_id=?').run(id);
+          const add = db.prepare('INSERT INTO encounter_participants(encounter_id,actor_id,initiative,status,activation_order) VALUES(?,?,?,?,?)');
+          for (const item of body.participants) add.run(id, item.actorId, item.initiative ?? null, item.status || 'active', item.activationOrder ?? null);
+          db.prepare('UPDATE encounters SET revision=revision+1,updated_at=? WHERE id=? AND revision=?').run(new Date().toISOString(), id, body.baseRevision);
+          insertEvent({ kind: 'encounter.participants.changed', visibility: 'public', payload: { encounterId: id, revision: encounter.revision + 1 } });
+        });
+        notify();
+        return json(res, 200, encounterJson(db.prepare('SELECT * FROM encounters WHERE id=?').get(id), auth));
+      }
+      if ((req.method === 'GET' || req.method === 'PUT') && url.pathname === '/api/campaign') {
+        if (req.method === 'GET') return json(res, 200, campaignJson());
+        const body = await readBody(req);
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        if (!body || Object.keys(body).some(key => !['name', 'systemModuleId', 'systemModuleVersion', 'baseRevision'].includes(key)) || typeof body.name !== 'string' || !body.name.trim() || body.name.length > 160 || !Number.isInteger(body.baseRevision) || body.baseRevision < 1 || (body.systemModuleId === null) !== (body.systemModuleVersion === null) || body.systemModuleId !== null && (typeof body.systemModuleId !== 'string' || typeof body.systemModuleVersion !== 'string' || !moduleRow.get(body.systemModuleId, body.systemModuleVersion))) return json(res, 400, { error: 'Campaign name, registered module pin, and positive baseRevision are required' });
+        const current = campaignJson();
+        if (body.baseRevision !== current.revision) return json(res, 409, { error: 'Campaign revision conflict', reasonCode: 'revision_conflict', currentRevision: current.revision });
+        transaction(() => {
+          db.prepare('UPDATE campaign SET name=?,system_module_id=?,system_module_version=?,revision=revision+1 WHERE id=? AND revision=?').run(body.name.trim(), body.systemModuleId, body.systemModuleVersion, campaignId, body.baseRevision);
+          insertEvent({ kind: 'campaign.updated', visibility: 'gm', payload: { campaignId, revision: current.revision + 1 } });
+        });
+        notify();
+        return json(res, 200, campaignJson());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/encounters') return json(res, 200, { encounters: publicEncounters() });
+      if (req.method === 'POST' && url.pathname === '/api/encounters') {
+        const body = await readBody(req);
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        if (!body || typeof body.id !== 'string' || !body.id || body.id.length > 128 || typeof body.name !== 'string' || !body.name.trim() || body.name.length > 160 || typeof (body.summary ?? '') !== 'string' || (body.summary ?? '').length > 4000 || body.status !== undefined && !['prepared', 'active', 'completed'].includes(body.status)) return json(res, 400, { error: 'Encounter ID, name, summary and valid status required' });
+        const timestamp = new Date().toISOString();
+        try {
+          transaction(() => {
+            db.prepare('INSERT INTO encounters(id,name,summary,status,revision,created_at,updated_at) VALUES(?,?,?,?,1,?,?)').run(body.id, body.name.trim(), body.summary || '', body.status || 'prepared', timestamp, timestamp);
+            insertEvent({ kind: 'encounter.created', visibility: 'public', payload: { encounterId: body.id, revision: 1 } });
+          });
+        } catch (error) {
+          if (String(error.message).includes('UNIQUE')) return json(res, 409, { error: 'Encounter ID already exists' });
+          throw error;
+        }
+        notify();
+        return json(res, 201, encounterJson(db.prepare('SELECT * FROM encounters WHERE id=?').get(body.id), auth));
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/actors/')) {
         const id = decodeURIComponent(url.pathname.slice('/api/actors/'.length));
@@ -567,8 +653,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
         if (!body || Object.keys(body).length !== 1 || !body.context || typeof body.context !== 'object' || Array.isArray(body.context)
           || Object.keys(body.context).length !== 1 || !Object.hasOwn(body.context, 'activeEncounter')
-          || !(body.context.activeEncounter === null || typeof body.context.activeEncounter === 'string' && encounterById.has(body.context.activeEncounter))) {
-          return json(res, 400, { error: 'context.activeEncounter must be a fixture encounter ID or null' });
+          || !(body.context.activeEncounter === null || typeof body.context.activeEncounter === 'string' && db.prepare('SELECT 1 FROM encounters WHERE id=?').get(body.context.activeEncounter))) {
+          return json(res, 400, { error: 'context.activeEncounter must be a known encounter ID or null' });
         }
         const context = { activeEncounter: body.context.activeEncounter };
         transaction(() => {

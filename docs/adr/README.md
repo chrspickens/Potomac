@@ -27,3 +27,5 @@ What experiment or test would confirm this choice?
 ```
 
 Do not retroactively treat current proposals in `docs/decisions.md` as accepted ADRs. Link accepted ADRs from the decision register.
+
+The [Workspace 0.4 requirements](../workspace-0.4-requirements.md) and ADRs 0004–0008 define the proposed first playable campaign contracts. Their acceptance is for the requirements baseline; implementation and verification are tracked separately in [issue #26 and its dependent issues](https://github.com/chrspickens/Potomac/issues/26).

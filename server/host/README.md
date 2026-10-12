@@ -15,3 +15,18 @@ All `/api/*` calls use `Authorization: Bearer <token>`. Use `local-gm` for GM an
 - `GET /health` is unauthenticated and returns `{ "ok": true }`.
 
 The server is intentionally localhost-only and uses fixed development bearer tokens, not user authentication. Private fields and events are filtered before transmission; player derived values are computed only from visible inputs, and public actor events are withheld if their actor is unavailable or unreadable. This slice has one campaign, no invitation flow, offline operation queue, approval proposals, WebSocket transport, or internet-facing deployment. The browser client uses the HTTP contract above and refreshes authorized snapshots after event notifications.
+
+## Local campaign backup and restore
+
+Use the CLI with the host stopped or while it is running; export uses SQLite's online backup API to capture a consistent snapshot. Node 22.5+ is required.
+
+```powershell
+node server/host/backup-cli.mjs export .\data\potomac.sqlite .\backups\campaign.json
+node server/host/backup-cli.mjs restore .\backups\campaign.json .\data\restored.sqlite
+```
+
+Export refuses to overwrite an existing backup file. Restore accepts a new destination or an existing SQLite database with no application tables; it refuses a non-empty destination and never merges into a live host. Use a distinct database path, verify the reported campaign ID, then point `POTOMAC_DB` at the restored file when ready to run it.
+
+The `potomac.campaign-backup` artifact has schema version 1, Potomac data version 1, campaign ID, pinned module IDs/versions, creation time, included collection names, exclusions, and a SHA-256 integrity digest over the canonicalized archive content. Restore checks the digest and archive shape, requires every actor's exact module version to be present in the local bundled modules, checks campaign/member/actor/proposal references, and commits all imported rows in one SQLite transaction. Unsupported formats, versions, malformed data, unavailable module versions, and corrupt artifacts fail before the destination is populated.
+
+The archive retains member records and credential hashes so membership and grants continue working; plaintext bearer credentials are never stored in host persistence or exported. Members must use their existing credentials, or the GM can rotate a credential after restore and securely deliver the newly displayed credential. Backups contain private campaign content and credential hashes: store them as sensitive files. Browser layouts, caches, queued operations, and private browser drafts are intentionally excluded; they are not host-authoritative campaign state. Encounters in this host are bundled static fixtures, so only the campaign's active encounter reference is persisted and exported; there are no persisted encounter or participant collections yet.

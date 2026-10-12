@@ -1,5 +1,7 @@
 # Architecture proposal (v0.1)
 
+The next milestone's campaign boundaries, command semantics, migration and backup requirements are specified in [Workspace 0.4 requirements](workspace-0.4-requirements.md) and tracked by [issue #26](https://github.com/chrspickens/Potomac/issues/26). This proposal remains a description of direction, not a claim that those capabilities are implemented.
+
 ## Current experiment versus target
 
 This document describes a proposed destination, not the deployed transport or storage stack. The 0.3 experiment uses a React/Vite browser client, a loopback-only Node HTTP host, SQLite on the host, server-sent events (SSE) with snapshot reconciliation, browser `localStorage` for personal layouts and an explicitly remembered player credential, and member-scoped IndexedDB for filtered snapshots, queued operations, and private drafts. It does not yet have an Electron wrapper, WebSocket transport, production identity, encrypted browser storage, or remote-host security. Consult the executable host and client plus the checks for current behavior.

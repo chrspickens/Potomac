@@ -49,6 +49,7 @@ export type BrickRenderProps<TData = unknown> = {
   busy: boolean;
   offline?: boolean;
   onAction: (actor: Actor, actionId: string) => void;
+  onOpenApp?: (appId: 'characters' | 'encounters', entityId?: string) => void;
 };
 
 export type BrickDefinition<TData = unknown> = {

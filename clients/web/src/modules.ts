@@ -4,6 +4,7 @@ export type GameModule = {
   manifest: { id: string; version: string; name: string; tagline: string }
   view: { title: string; layout: ViewControl[]; brick: ViewControl[] }
   actions: ModuleAction[]
+  schema?: Record<string, unknown>
 }
 export type Actor = { entityId: string; name: string; epithet: string; data: Record<string, any>; module: GameModule; revision: number; secretNote?: string }
 

@@ -14,6 +14,7 @@ export type HostAdapter = {
   load(role: Role): Promise<Snapshot>
   command(role: Role, body: ActionRequest): Promise<void>
   setEncounter(role: Role, id: string | null): Promise<void>
+  createActor(role: Role, input: { id: string; moduleId: string; moduleVersion: string; data: Record<string, unknown>; visibility?: Record<string, unknown> }): Promise<void>
   subscribe(role: Role, onSnapshot: (snapshot: Snapshot) => void, onStatus: (status: ConnectionStatus) => void): () => void
 }
 
@@ -67,6 +68,11 @@ export async function grantActorToMember(actorId: string, memberId: string): Pro
   await http(`/api/actors/${encodeURIComponent(actorId)}/grants`, 'gm', { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) })
 }
 
+export async function createCampaignActor(input: { id: string; moduleId: string; moduleVersion: string; data: Record<string, unknown>; visibility?: Record<string, unknown> }): Promise<void> {
+  if (!baseUrl) throw new Error('A local host is required to create a character')
+  await http('/api/actors', 'gm', { method: 'POST', body: JSON.stringify(input) })
+}
+
 export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; campaignId?: string | null; baseRevision?: number | null; ruleVersion?: number | null; status: string; createdAt: string; request?: OfflineOperation }
 
 export async function listReviewProposals(): Promise<ReviewProposal[]> {
@@ -87,7 +93,7 @@ export async function listMyOfflineReceipts(): Promise<OfflineReceipt[]> {
 
 type HostState = {
   campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
-  modules?: Array<Record<string, unknown>>
+  modules?: Array<Record<string, unknown> & { id?: string; version?: string; schema?: Record<string, unknown> }>
   actors?: Array<{ id: string; moduleId: string; moduleVersion: string; revision: number; data: Record<string, any> }>
   events?: Array<{ id: string; actorId: string | null; kind: string; payload: Record<string, any>; createdAt: string; visibility: string; cursor: number }>
 }
@@ -99,6 +105,7 @@ function fromHost(body: HostState, role: Role): Snapshot {
     const module: GameModule = {
       manifest: { id: String(definition.id), version: String(definition.version), name: String(definition.name || definition.id), tagline: String(definition.tagline || definition.type || 'Game system') },
       view: definition.view as GameModule['view'], actions: (definition.actions || []) as GameModule['actions'],
+      schema: definition.schema as Record<string, unknown> | undefined,
     }
     return [{ entityId: row.id, revision: row.revision, module, data: row.data, name: String(row.data.name || row.id), epithet: String(row.data.epithet || ''), secretNote: row.data.secretNote }]
   })
@@ -139,6 +146,7 @@ export const host: HostAdapter = hostConfigured ? {
   mode: 'host', load: loadHost,
   async command(role, body) { await http('/api/actions', role, { method: 'POST', body: JSON.stringify(body) }) },
   async setEncounter(role, id) { await http('/api/context', role, { method: 'POST', body: JSON.stringify({ context: { activeEncounter: id } }) }) },
+  async createActor(_role, input) { await createCampaignActor(input) },
   subscribe(role, onSnapshot, onStatus) {
     let stopped = false
     let controller: AbortController | undefined
@@ -214,6 +222,7 @@ export const host: HostAdapter = hostConfigured ? {
     demo = { ...demo, context: { ...demo.context, activeEncounter: encounter || null, cursor: demo.context.cursor + 1 } }
     events.dispatchEvent(new Event('change'))
   },
+  async createActor() { throw new Error('Character creation requires a configured host') },
   subscribe(role, onSnapshot, onStatus) {
     onStatus('connected')
     const listener = () => void host.load(role).then(onSnapshot)
