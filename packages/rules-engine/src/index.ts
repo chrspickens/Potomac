@@ -54,7 +54,20 @@ export function evaluate(expression: Expression, state: Record<string, JsonValue
 }
 
 type ModuleEffect = ActionDefinition["effects"][number] & { target?: string };
-type RuleAction = Omit<ActionDefinition, "effects"> & { effects?: ModuleEffect[]; resolution?: ActionDefinition["resolution"] };
+export type ActionPolicy = "selfService" | "gmReview";
+export type ResolvedActionPolicy = ActionPolicy | "immediate";
+export type RuleAction = Omit<ActionDefinition, "effects"> & {
+  effects?: ModuleEffect[];
+  policy?: ActionPolicy;
+  resolution?: ActionDefinition["resolution"];
+};
+
+/** Resolve the host-facing approval policy; missing metadata preserves legacy immediate behavior. */
+export function getActionPolicy(action: RuleAction): ResolvedActionPolicy {
+  if (action.policy === undefined) return "immediate";
+  if (action.policy === "selfService" || action.policy === "gmReview") return action.policy;
+  throw new Error("Unsupported action policy");
+}
 
 export function getRequiredRollCount(action: RuleAction): number {
   const dice = action.resolution?.dice || (action.roll ? [{ count: action.roll.dice, sides: action.roll.sides }] : []);
