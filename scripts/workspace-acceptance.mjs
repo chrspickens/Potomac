@@ -318,5 +318,6 @@ try {
     const timeout = setTimeout(() => { child.kill('SIGKILL'); resolvePromise(); }, 2500);
     child.once('exit', () => { clearTimeout(timeout); resolvePromise(); });
   })));
-  await rm(scratch, { recursive: true, force: true });
+  // Chrome may briefly recreate profile files after Browser.close acknowledges.
+  await rm(scratch, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
 }
