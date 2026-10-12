@@ -66,6 +66,24 @@ export async function grantActorToMember(actorId: string, memberId: string): Pro
   await http(`/api/actors/${encodeURIComponent(actorId)}/grants`, 'gm', { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) })
 }
 
+export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; status: string; createdAt: string; request?: OfflineOperation }
+
+export async function listReviewProposals(): Promise<ReviewProposal[]> {
+  return (await http<{ proposals: ReviewProposal[] }>('/api/proposals?status=pending', 'gm')).proposals
+}
+
+export async function loadReviewProposal(id: string): Promise<ReviewProposal> {
+  return http(`/api/proposals/${encodeURIComponent(id)}`, 'gm')
+}
+
+export async function decideReviewProposal(id: string, decisionId: string, decision: 'accept' | 'reject', reason?: string): Promise<OfflineReceipt> {
+  return http(`/api/proposals/${encodeURIComponent(id)}/decisions`, 'gm', { method: 'POST', body: JSON.stringify({ decisionId, decision, reason }) })
+}
+
+export async function listMyOfflineReceipts(): Promise<OfflineReceipt[]> {
+  return (await http<{ receipts: OfflineReceipt[] }>('/api/proposals/mine', 'player')).receipts
+}
+
 type HostState = {
   campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
   modules?: Array<Record<string, unknown>>

@@ -1,5 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { configuredHost, connectPlayerCredential, enrollLocalPlayer, grantActorToMember, host, submitOfflineOperation, type ConnectionStatus, type Role, type Snapshot } from './api'
+import { configuredHost, connectPlayerCredential, decideReviewProposal, enrollLocalPlayer, grantActorToMember, host, listMyOfflineReceipts, listReviewProposals, loadReviewProposal, submitOfflineOperation, type ConnectionStatus, type ReviewProposal, type Role, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import { openOfflineStorage, type OfflineOperation, type QueuedOperation } from './offline/storage'
@@ -51,6 +51,9 @@ export default function App() {
   const [identityRevision, setIdentityRevision] = useState(0)
   const [queued, setQueued] = useState<QueuedOperation[]>([])
   const [issuedCredential, setIssuedCredential] = useState<{ memberId: string; credential: string } | null>(null)
+  const [proposals, setProposals] = useState<ReviewProposal[]>([])
+  const [activeProposal, setActiveProposal] = useState<ReviewProposal | null>(null)
+  const decisionIds = useRef(new Map<string, string>())
   const syncInFlight = useRef(false)
   const [section, setSection] = useState<'dashboard' | 'characters'>('dashboard')
   const [selectedActorId, setSelectedActorId] = useState('')
@@ -210,6 +213,30 @@ export default function App() {
   useEffect(() => {
     if (role === 'player' && snapshot?.memberId) void syncPending(snapshot)
   }, [role, snapshot?.memberId, snapshot?.context.campaignId, connection])
+  useEffect(() => {
+    if (role !== 'gm' || connection !== 'connected' || !configuredHost) return
+    void listReviewProposals().then(setProposals).catch(cause => setError(displayError(cause)))
+  }, [role, connection, snapshot?.context.cursor])
+  useEffect(() => {
+    if (role !== 'player' || connection !== 'connected' || !configuredHost || !snapshot?.memberId) return
+    const campaignId = snapshot.context.campaignId
+    const memberId = snapshot.memberId
+    let stopped = false
+    const poll = async () => {
+      try {
+        const receipts = await listMyOfflineReceipts()
+        const storage = await openOfflineStorage({ host: configuredHost, campaignId, memberId })
+        try {
+          const own = new Set((await storage.listOperations()).map(row => row.operation.operationId))
+          for (const receipt of receipts) if (own.has(receipt.operationId)) await storage.recordReceipt(receipt)
+          if (!stopped) setQueued(await storage.listOperations())
+        } finally { storage.close() }
+      } catch (cause) { if (!stopped) setError(`Receipt refresh: ${displayError(cause)}`) }
+    }
+    void poll()
+    const timer = setInterval(() => void poll(), 3000)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [role, connection, snapshot?.memberId, snapshot?.context.campaignId])
   const saveEncounter = async () => {
     setBusy(true); setError('')
     try { await host.setEncounter(role, encounterDraft || null); setSnapshot(await host.load(role)) }
@@ -257,6 +284,27 @@ export default function App() {
     try { await grantActorToMember(selectedActor.entityId, memberId); setActionState(`${selectedActor.name} granted to member ${memberId}.`) }
     catch (cause) { setError(displayError(cause)) }
   }
+  const reviewProposal = async (id: string) => {
+    try { setActiveProposal(await loadReviewProposal(id)) }
+    catch (cause) { setError(displayError(cause)) }
+  }
+  const decideProposal = async (decision: 'accept' | 'reject') => {
+    if (!activeProposal) return
+    const reason = decision === 'reject' ? window.prompt('Reason for rejection (optional)', '') : undefined
+    if (reason === null) return
+    const key = `${activeProposal.id}:${decision}:${reason || ''}`
+    let decisionId = decisionIds.current.get(key)
+    if (!decisionId) { decisionId = newId(); decisionIds.current.set(key, decisionId) }
+    setBusy(true)
+    try {
+      const receipt = await decideReviewProposal(activeProposal.id, decisionId, decision, reason || undefined)
+      setActionState(`Proposal ${receipt.status}; operation ${receipt.operationId}.`)
+      setActiveProposal(null)
+      setProposals(await listReviewProposals())
+      setSnapshot(await host.load('gm'))
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
 
   return <div className="app-shell">
     <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{snapshot?.context.campaignId || 'Connecting…'}</strong></div><nav aria-label="Applications"><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▦ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><div className="rail-future">Encounters <small>Coming later</small></div><div className="rail-future">Maps <small>Coming later</small></div><div className="rail-future">Lore <small>Coming later</small></div></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
@@ -264,6 +312,7 @@ export default function App() {
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
     {role === 'gm' && configuredHost && <div className="action-status"><button onClick={() => void enrollPlayer()}>Enroll player</button><button disabled={!selectedActor} onClick={() => void grantSelectedActor()}>Grant selected character</button>{issuedCredential && <p>Member ID: <code>{issuedCredential.memberId}</code> · One-time credential: <code>{issuedCredential.credential}</code> <button onClick={() => setIssuedCredential(null)}>Hide credential</button></p>}</div>}
+    {role === 'gm' && configuredHost && <section className="action-status" aria-label="GM proposal review"><strong>GM review · {proposals.length} pending</strong>{proposals.map(proposal => <p key={proposal.id}>{proposal.actionId} · {proposal.entityId} · member {proposal.memberId.slice(0, 8)} <button onClick={() => void reviewProposal(proposal.id)}>Review</button></p>)}{activeProposal && <div><h2>Review {activeProposal.actionId}</h2><p>Member {activeProposal.memberId} · actor {activeProposal.entityId}</p><pre>{JSON.stringify(activeProposal.request, null, 2)}</pre><button disabled={busy} onClick={() => void decideProposal('accept')}>Accept after revalidation</button><button disabled={busy} onClick={() => void decideProposal('reject')}>Reject</button><button onClick={() => setActiveProposal(null)}>Close</button></div>}</section>}
     {role === 'player' && queued.length > 0 && <section className="action-status" aria-label="Your local operation status"><strong>Local edits</strong>{queued.slice(-8).map(row => <p key={row.operation.operationId}>{row.operation.actionId} · {row.state}{row.receipt?.reasonCode ? ` · ${row.receipt.reasonCode}` : ''} · {row.operation.operationId.slice(0, 8)}</p>)}</section>}
     {section === 'dashboard' ? <main className="dashboard-page">
       <div className="page-intro"><div><p className="eyebrow">YOUR CAMPAIGN, YOUR LAYOUT</p><h1>{dashboard?.name || 'Start a dashboard'}</h1><p>Personal panels follow shared play, while your arrangement stays yours.</p></div><div className="intro-actions"><button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>
