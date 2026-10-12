@@ -718,3 +718,15 @@ test('0.4 character field edit is revisioned, host-validated, idempotent and GM-
     assert.equal(activity.filter(event => event.kind === 'actor.edited' && event.payload.operationId === edit.operationId).length, 1);
   });
 });
+
+test('localhost browser preflight permits revisioned PUT mutations', async () => {
+  await withHost(async ({ request }) => {
+    const response = await request('/api/campaign', 'gm', {
+      method: 'OPTIONS',
+      headers: { origin: 'http://127.0.0.1:5173', 'access-control-request-method': 'PUT' }
+    });
+    assert.equal(response.status, 204);
+    assert.match(response.headers.get('access-control-allow-methods') || '', /PUT/);
+    assert.equal(response.headers.get('access-control-allow-origin'), 'http://127.0.0.1:5173');
+  });
+});
