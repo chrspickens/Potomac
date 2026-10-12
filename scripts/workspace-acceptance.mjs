@@ -223,6 +223,7 @@ try {
   await clickText(gm.sessionId, '+ Add brick');
   await clickText(gm.sessionId, 'Character Sheet');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.character-view h3')].some(e=>e.textContent==='Mira Vell')", 'pinned character brick');
+  await waitForExpression(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)}))?.groups.some(group => group.name === 'Acceptance Group')`, 'GM group persisted in local profile');
   const gmLayoutsBefore = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)}))`);
   assert.ok(gmLayoutsBefore.groups.some(group => group.name === 'Acceptance Group'), 'dashboard group is saved in the GM profile');
   const playerLayoutsBefore = await evaluate(player.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(initialPlayerKey)}))`);
