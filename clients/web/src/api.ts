@@ -67,7 +67,7 @@ export async function grantActorToMember(actorId: string, memberId: string): Pro
   await http(`/api/actors/${encodeURIComponent(actorId)}/grants`, 'gm', { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) })
 }
 
-export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; status: string; createdAt: string; request?: OfflineOperation }
+export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; campaignId?: string | null; baseRevision?: number | null; ruleVersion?: number | null; status: string; createdAt: string; request?: OfflineOperation }
 
 export async function listReviewProposals(): Promise<ReviewProposal[]> {
   return (await http<{ proposals: ReviewProposal[] }>('/api/proposals?status=pending', 'gm')).proposals
