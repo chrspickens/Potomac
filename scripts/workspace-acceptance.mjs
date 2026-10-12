@@ -265,6 +265,18 @@ try {
   const playerCtx = await cdp('Target.createBrowserContext');
   const secondPlayerCtx = await cdp('Target.createBrowserContext');
   const gm = await openContext(gmCtx.browserContextId, 'gm', `workspace-acceptance-gm-${process.pid}`, webUrl);
+
+  // Exercise configuration through the GM Workspace, not only the host API.
+  await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.campaign-setup input'))", 'GM campaign configuration form');
+  await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.campaign-setup input'); field.focus(); field.select(); })()");
+  await cdp('Input.insertText', { text: 'The Ashen Road' }, gm.sessionId);
+  await clickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent === 'The Ashen Road'", 'GM campaign name update');
+  const uiCampaign = await (await request('/api/campaign', gmToken)).json();
+  assert.equal(uiCampaign.name, 'The Ashen Road', 'campaign settings UI persists host configuration');
+  assert.equal(uiCampaign.systemModuleId, 'example.system-a', 'campaign UI retains the pinned rules module');
+  assert.equal(uiCampaign.revision, 3, 'campaign UI uses revision-checked writes');
+
   const fixtureDeadline = Date.now() + 12000;
   while (Date.now() < fixtureDeadline) {
     const state = await (await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } })).json();
@@ -392,10 +404,37 @@ try {
     const uiCreatedActor = uiCreatedState.actors.find(actor => actor.data.name === 'UI Created Character');
     assert.ok(uiCreatedActor, 'character created in the schema-driven UI is committed to the host');
     assert.equal(uiCreatedActor.data.moduleId, 'example.system-a', 'UI character creation uses the selected versioned module');
+    // Editing must use the same authoritative record as a brick, not a local-only form.
+    await clickText(gm.sessionId, 'Edit character fields');
+    await waitForExpression(gm.sessionId, "document.querySelector('.schema-form h2')?.textContent === 'Edit character'", 'GM character edit form');
+    await evaluate(gm.sessionId, "(() => { const input=[...document.querySelectorAll('.schema-form label')].find(label=>label.textContent.includes('Description / epithet'))?.querySelector('input'); if (!input) throw new Error('Epithet edit field missing'); input.focus(); input.select(); })()");
+    await cdp('Input.insertText', { text: 'Edited through Characters' }, gm.sessionId);
+    await clickText(gm.sessionId, 'Save changes', '.schema-form button');
+    await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Character fields updated on host.')", 'GM character update result');
+    const updatedUiActor = await (await request('/api/actors/' + encodeURIComponent(uiCreatedActor.id), gmToken)).json();
+    assert.equal(updatedUiActor.data.epithet, 'Edited through Characters', 'character field edit persisted on host');
+    assert.equal(updatedUiActor.revision, uiCreatedActor.revision + 1, 'character field edit advanced authoritative revision');
   }
 
   await clickText(gm.sessionId, 'Encounters', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='Edited Acceptance Encounter')", 'created encounter in the Encounters application');
+  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Prepare / edit') button.click() })");
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'encounter preparation controls');
+  await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.encounters-page .schema-form textarea'); field.focus(); field.select(); })()");
+  await cdp('Input.insertText', { text: 'Prepared in the Encounters app' }, gm.sessionId);
+  await evaluate(gm.sessionId, "(() => { const item=[...document.querySelectorAll('.encounters-page .schema-form fieldset label')].find(label=>label.textContent.includes('UI Created Character')); if (!item) throw new Error('Created actor missing from participant selector'); const input=item.querySelector('input'); if (!input.checked) input.click(); })()");
+  await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Encounter and participants saved on host.')", 'encounter update result');
+  const preparedEncounter = await (await request('/api/encounters/' + encodeURIComponent(createdEncounter.id), gmToken)).json();
+  assert.equal(preparedEncounter.summary, 'Prepared in the Encounters app', 'GM encounter editing persisted to the host');
+  assert.equal(preparedEncounter.participants.length, 3, 'GM UI added the created character to the encounter roster');
+  await clickText(gm.sessionId, 'Create encounter');
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent === 'New encounter'", 'new encounter UI');
+  await evaluate(gm.sessionId, "document.querySelector('.encounters-page .schema-form input').focus()");
+  await cdp('Input.insertText', { text: 'The Orchard Ruins' }, gm.sessionId);
+  await clickText(gm.sessionId, 'Create on host', '.encounters-page .schema-form button');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='The Orchard Ruins')", 'encounter created through app');
+  assert.ok((await (await request('/api/encounters', gmToken)).json()).encounters.some(e=>e.name==='The Orchard Ruins'), 'encounter creation via GM app persisted to host');
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Encounters application switches shared active context');
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
@@ -567,7 +606,8 @@ try {
     const recoveredCampaign = restoredDb.prepare('SELECT name,system_module_id,system_module_version,revision,context FROM campaign WHERE id=?').get('foundation-demo');
     assert.deepEqual({ ...recoveredCampaign }, { ...originalCampaign }, 'campaign configuration and selected active encounter round-trip');
     assert.equal(restoredDb.prepare('SELECT name FROM encounters WHERE id=?').get(createdEncounter.id).name, 'Edited Acceptance Encounter');
-    assert.equal(restoredDb.prepare('SELECT COUNT(*) AS n FROM encounter_participants WHERE encounter_id=?').get(createdEncounter.id).n, 2);
+    assert.equal(restoredDb.prepare('SELECT summary FROM encounters WHERE id=?').get(createdEncounter.id).summary, 'Prepared in the Encounters app');
+    assert.equal(restoredDb.prepare('SELECT COUNT(*) AS n FROM encounter_participants WHERE encounter_id=?').get(createdEncounter.id).n, 3);
     assert.equal(restoredDb.prepare('SELECT COUNT(*) AS n FROM actor_grants WHERE member_id=?').get(playerMemberId).n > 0, true);
   } finally { restoredDb.close(); sourceDb.close(); }
   const tamperedPath = join(scratch, 'campaign-tampered.json');
