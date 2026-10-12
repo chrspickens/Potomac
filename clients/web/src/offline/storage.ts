@@ -222,18 +222,12 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
 
     async savePrivateDraft(draft) {
       requireText(draft.draftId, 'draftId');
-      const key = JSON.stringify([scopedKey, draft.draftId]);
       const tx = db.transaction(DRAFTS, 'readwrite');
       const store = tx.objectStore(DRAFTS);
-      let saved: PrivateDraft | undefined;
-      const request = store.get(key);
-      request.onsuccess = () => {
-        const old = request.result as Stored<{ draft: PrivateDraft }> | undefined;
-        saved = { ...structuredClone(draft), updatedAt: Date.now() };
-        store.put(scoped({ draft: saved, createdAt: old?.createdAt ?? Date.now() }, draft.draftId));
-      };
+      const saved: PrivateDraft = { ...structuredClone(draft), updatedAt: Date.now() };
+      store.put(scoped({ draft: saved }, draft.draftId));
       await transactionResult(tx);
-      return saved!;
+      return saved;
     },
 
     async listPrivateDrafts() {
