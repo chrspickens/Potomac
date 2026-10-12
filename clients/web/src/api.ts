@@ -1,4 +1,5 @@
 import { initialActors, type Actor, type GameModule } from './modules'
+import { loadRememberedIdentity, rememberIdentity } from './identity'
 
 export type Role = 'gm' | 'player'
 export type Encounter = { id: string; name: string; summary: string }
@@ -16,6 +17,7 @@ export type HostAdapter = {
 }
 
 const baseUrl = import.meta.env.VITE_POTOMAC_HOST?.replace(/\/$/, '')
+export const configuredHost = baseUrl || null
 const hostConfigured = Boolean(baseUrl)
 const events = new EventTarget()
 const demoEncounters: Encounter[] = [
@@ -28,7 +30,18 @@ let demo: Snapshot = {
 }
 
 function tokenFor(role: Role) {
-  return role === 'gm' ? (import.meta.env.VITE_POTOMAC_GM_TOKEN || 'local-gm') : (import.meta.env.VITE_POTOMAC_PLAYER_TOKEN || 'local-player')
+  return role === 'gm' ? (import.meta.env.VITE_POTOMAC_GM_TOKEN || 'local-gm') : (baseUrl && loadRememberedIdentity(baseUrl)?.credential || import.meta.env.VITE_POTOMAC_PLAYER_TOKEN || 'local-player')
+}
+
+export async function connectPlayerCredential(credential: string): Promise<Snapshot> {
+  if (!baseUrl || !credential) throw new Error('A local host and player credential are required')
+  const response = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${credential}` } })
+  const body = await response.json().catch(() => ({})) as HostState
+  if (!response.ok || body.role !== 'player' || typeof body.memberId !== 'string' || !body.memberId || typeof body.campaignId !== 'string') {
+    throw new Error('Player credential was not accepted by this host')
+  }
+  rememberIdentity({ version: 1, host: baseUrl, campaignId: body.campaignId, memberId: body.memberId, credential })
+  return fromHost(body, 'player')
 }
 async function http<T>(path: string, role: Role, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenFor(role)}`, ...init?.headers } })
@@ -38,7 +51,7 @@ async function http<T>(path: string, role: Role, init?: RequestInit): Promise<T>
 }
 
 type HostState = {
-  campaignId: string; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
+  campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
   modules?: Array<Record<string, unknown>>
   actors?: Array<{ id: string; moduleId: string; moduleVersion: string; revision: number; data: Record<string, any> }>
   events?: Array<{ id: string; actorId: string | null; kind: string; payload: Record<string, any>; createdAt: string; visibility: string; cursor: number }>
