@@ -11,6 +11,7 @@
     { "control": "resource", "label": "Mana", "field": "resources.mana" },
     { "control": "stat", "label": "Melee Bonus", "field": "derived.meleeBonus", "readOnly": true },
     { "control": "actionButton", "actionId": "spend-mana", "label": "Spend 1 Mana" },
+    { "control": "actionButton", "actionId": "restore-mana", "label": "Request Mana Restoration" },
     { "control": "actionButton", "actionId": "strength-check", "label": "Roll Strength Check" }
   ],
   "brick": [
@@ -18,6 +19,7 @@
     { "control": "resource", "label": "HP", "field": "resources.hp" },
     { "control": "resource", "label": "Mana", "field": "resources.mana" },
     { "control": "actionButton", "actionId": "spend-mana", "label": "Spend 1 Mana" },
+    { "control": "actionButton", "actionId": "restore-mana", "label": "Request Mana Restoration" },
     { "control": "actionButton", "actionId": "strength-check", "label": "Strength Check", "parameters": { "difficulty": 12 } }
   ]
 }
