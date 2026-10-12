@@ -217,14 +217,13 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     catch (error) { db.exec('ROLLBACK'); throw error; }
   };
   const notify = () => {
-    for (const client of clients) {
-      const rows = db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(client.cursor);
-      for (const row of rows) {
-        client.cursor = Number(row.cursor);
-        if (visibleEvent(row, client.auth)) client.res.write(`id: ${row.cursor}\nevent: update\ndata: ${JSON.stringify(eventJson(row, client.auth))}\n\n`);
-      }
-    }
+    for (const client of clients) notifyClient(client);
   };
+  // Include verified results in authoritative receipts, so reconnects and audit
+  // history recover the *same* dice rather than silently losing the roll.
+  const verifiedResult = executed => executed.resolution
+    ? { resolution: executed.resolution, rolls: executed.resolution.groups.flatMap(group => group.dice) }
+    : {};
   const insertEvent = (event) => db.prepare('INSERT INTO events(id,operation_id,actor_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?)').run(
     event.id || randomUUID(), event.operationId || null, event.actorId || null, event.kind, event.visibility || 'public', JSON.stringify(event.payload), new Date().toISOString());
   const receiptJson = row => ({
@@ -442,7 +441,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const executed = validation.tested;
         const revision = validation.actor.revision + 1;
         executed.state.revision = revision;
-        const result = { proposalId, operationId: proposal.operation_id, entityId: proposal.actor_id, status: 'applied', decisionId: body.decisionId, revision };
+        const result = { proposalId, operationId: proposal.operation_id, entityId: proposal.actor_id, status: 'applied', decisionId: body.decisionId, revision, ...verifiedResult(executed) };
         transaction(() => {
           db.prepare('UPDATE actors SET data=?,revision=? WHERE id=?').run(JSON.stringify(executed.state), revision, proposal.actor_id);
           db.prepare('UPDATE offline_proposals SET status=?,decided_at=?,decision_id=?,decision=?,decision_response=? WHERE id=? AND status=?')
@@ -499,7 +498,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const executed = validation.tested;
         const revision = validation.actor.revision + 1;
         executed.state.revision = revision;
-        const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'applied', revision };
+        const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'applied', revision, ...verifiedResult(executed) };
         transaction(() => {
           db.prepare('UPDATE actors SET data=?,revision=? WHERE id=?').run(JSON.stringify(executed.state), revision, operation.entityId);
           insertEvent({ actorId: operation.entityId, kind: 'action.applied', visibility: 'public', payload: { ...receipt, memberId: auth.memberId, actionId: operation.actionId, moduleId: operation.moduleId, moduleVersion: operation.moduleVersion, schemaVersion: operation.schemaVersion, ruleVersion: validation.manifest.rulesVersion, verified: true } });
@@ -601,8 +600,12 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const legacyRequestHash = createHash('sha256').update(JSON.stringify({ entityId, baseRevision, actionId, parameters })).digest('hex');
         const cached = db.prepare('SELECT response,actor_id,action_id,request_hash,principal_id FROM operations WHERE id=?').get(operationId);
         if (cached) {
-          const oldFixtureRetry = auth.legacy && cached.principal_id === null && cached.request_hash === legacyRequestHash;
-          if (cached.actor_id !== entityId || cached.action_id !== actionId || cached.request_hash !== requestHash && !oldFixtureRetry || cached.principal_id !== auth.principalId && !oldFixtureRetry) return json(res, 409, { error: 'Operation ID was already used for a different command' });
+          // Pre-0.3 receipts had no principal ID. The GM may replay those old
+          // commands (including GM-authored ones), while legacy players remain
+          // restricted by the actor permission check above.
+          const oldFixtureRetry = cached.principal_id === null && cached.request_hash === legacyRequestHash && (auth.role === 'gm' || auth.legacy);
+          const currentRetry = cached.principal_id === auth.principalId && cached.request_hash === requestHash;
+          if (cached.actor_id !== entityId || cached.action_id !== actionId || !(oldFixtureRetry || currentRetry)) return json(res, 409, { error: 'Operation ID was already used for a different command' });
           return json(res, 200, JSON.parse(cached.response));
         }
         if (baseRevision !== actor.revision) return json(res, 409, { error: 'Revision conflict', currentRevision: actor.revision });
@@ -639,7 +642,14 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     const rows = db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(client.cursor);
     for (const row of rows) {
       client.cursor = Number(row.cursor);
-      if (visibleEvent(row, client.auth)) client.res.write(`id: ${row.cursor}\nevent: update\ndata: ${JSON.stringify(eventJson(row, client.auth))}\n\n`);
+      if (visibleEvent(row, client.auth)) {
+        client.res.write(`id: ${row.cursor}\nevent: update\ndata: ${JSON.stringify(eventJson(row, client.auth))}\n\n`);
+      } else if (client.auth.memberId && (row.kind === 'actor.granted' || row.kind === 'actor.grant_revoked')
+        && JSON.parse(row.payload).memberId === client.auth.memberId) {
+        // Private permission changes need a fresh authorized snapshot, but their
+        // GM-only payload (and target actor identity) must never reach the player.
+        client.res.write(`id: ${row.cursor}\nevent: update\ndata: {"kind":"permissions.refresh"}\n\n`);
+      }
     }
   }
   return {
