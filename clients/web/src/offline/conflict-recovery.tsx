@@ -81,7 +81,7 @@ export function ConflictRecovery({
 
   return (
     <section aria-labelledby="conflict-recovery-title">
-      <h2 id="conflict-recovery-title">Resolve offline conflict</h2>
+      <h2 id="conflict-recovery-title">{queuedOperation.state === 'rejected' ? 'Review rejected edit' : 'Resolve offline conflict'}</h2>
 
       <section aria-labelledby="conflict-original-title">
         <h3 id="conflict-original-title">Original intent</h3>
@@ -114,7 +114,7 @@ export function ConflictRecovery({
         <button type="button" disabled={busy || !discardable} onClick={() => setConfirmDiscard(true)}>
           Discard local conflict copy
         </button>
-        <button type="button" disabled={busy || !matchingActor} onClick={() => void createReplacement()}>
+        <button type="button" disabled={busy || !matchingActor || queuedOperation.state === 'rejected'} onClick={() => void createReplacement()}>
           Create new operation from current revision
         </button>
       </div>
