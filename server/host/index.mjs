@@ -222,7 +222,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   // Include verified results in authoritative receipts, so reconnects and audit
   // history recover the *same* dice rather than silently losing the roll.
   const verifiedResult = executed => executed.resolution
-    ? { resolution: executed.resolution, rolls: executed.resolution.groups.flatMap(group => group.dice) }
+    ? { verified: true, resolution: executed.resolution, rolls: executed.resolution.groups.flatMap(group => group.dice) }
     : {};
   const insertEvent = (event) => db.prepare('INSERT INTO events(id,operation_id,actor_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?)').run(
     event.id || randomUUID(), event.operationId || null, event.actorId || null, event.kind, event.visibility || 'public', JSON.stringify(event.payload), new Date().toISOString());
