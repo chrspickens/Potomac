@@ -59,6 +59,7 @@ export default function App() {
   const [activeProposal, setActiveProposal] = useState<ReviewProposal | null>(null)
   const decisionIds = useRef(new Map<string, string>())
   const syncInFlight = useRef(false)
+  const syncRequested = useRef(false)
   const [section, setSection] = useState<'dashboard' | 'characters'>('dashboard')
   const [selectedActorId, setSelectedActorId] = useState('')
   const [editing, setEditing] = useState(false)
@@ -208,8 +209,10 @@ export default function App() {
     finally { setBusy(false) }
   }
   const syncPending = async (current: Snapshot) => {
-    if (!configuredHost || !current.memberId || syncInFlight.current) return
+    if (!configuredHost || !current.memberId) return
+    if (syncInFlight.current) { syncRequested.current = true; return }
     syncInFlight.current = true
+    let transportFailed = false
     try {
       const storage = await openOfflineStorage({ host: configuredHost, campaignId: current.context.campaignId, memberId: current.memberId })
       try {
@@ -217,11 +220,19 @@ export default function App() {
         setDrafts(await storage.listPrivateDrafts())
         if (connection === 'connected') {
           const result = await flushOfflineQueue(storage, submitOfflineOperation, setQueued)
-          if (result.transportFailed) setActionState('Some edits remain queued; the host acknowledgement was unavailable.')
+          transportFailed = result.transportFailed
+          if (transportFailed) setActionState('Some edits remain queued; the host acknowledgement was unavailable.')
         }
       } finally { storage.close() }
     } catch (cause) { setError(`Offline queue: ${displayError(cause)}`) }
-    finally { syncInFlight.current = false }
+    finally {
+      syncInFlight.current = false
+      const needsAnotherPass = syncRequested.current
+      syncRequested.current = false
+      // A request issued during the active flush must not disappear. Avoid a
+      // tight retry loop on network failure: the reconnect/timer handles that.
+      if (needsAnotherPass && !transportFailed && connection === 'connected') void syncPending(current)
+    }
   }
   useEffect(() => {
     if (role === 'player' && snapshot?.memberId) void syncPending(snapshot)
