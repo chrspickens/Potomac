@@ -37,6 +37,14 @@ An unsent queued edit can be canceled locally; once a submission attempt starts,
 
 For the local-host demo, the GM enrolls a player from **GM administration** and shares the displayed credential privately. The player enters it with **Use player credential**; it is remembered in that browser profile so permitted cached data can reopen offline. **Forget this device** clears that remembered credential and its scoped cache, queue, and drafts. Anyone with access to the browser profile can access the credential and already downloaded data; revoking or rotating a member credential stops future host access but cannot erase copies already downloaded. The host stays loopback-only. The development `local-gm` and `local-player` tokens are fixtures, not a production login model.
 
+## 0.4 first playable campaign (review branch)
+
+The 0.4 implementation is being reviewed in [PR #33](https://github.com/chrspickens/Potomac/pull/33). It introduces a GM campaign setup form with an exact system-version pin, schema-driven character creation and GM field editing, persistent encounter preparation and participant editing, and cross-app dashboard bindings. The host remains one campaign per local database and only listens on loopback.
+
+Campaign backup and restore are available through `node server/host/backup-cli.mjs`. Version 2 exports include campaign configuration, modules, actors, memberships and grants, encounters and participants, events, operations, proposals and receipts. Restore validates the archive and refuses non-empty destinations. Backups contain sensitive campaign records and credential hashes: protect them appropriately. Browser-local layouts, caches and private drafts are deliberately not part of the backup.
+
+Run `pnpm acceptance:campaign` for the end-to-end GM/two-player browser workflow and live backup round trip, or `pnpm check` for the full suite. The local-host prototype is **not ready for internet exposure** and does not implement full game-specific character editing policies, hidden encounter authorization, or a general-purpose multi-campaign manager.
+
 ## Workspace 0.2 experiment
 
 The browser client includes a customizable dashboard shell inspired by the two concept images in the repository. A local profile can arrange Character, Encounter Summary, and Activity Log bricks, manage dashboard groups, and save personal layouts in browser storage. The GM can select one of two stable fixture encounters; encounter followers update from the host stream, while pinned Character bricks keep their references. The full Characters view and compact brick use the same host command adapter.
