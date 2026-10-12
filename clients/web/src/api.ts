@@ -1,10 +1,12 @@
 import { initialActors, type Actor, type GameModule } from './modules'
+import { loadRememberedIdentity, rememberIdentity } from './identity'
+import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 
 export type Role = 'gm' | 'player'
 export type Encounter = { id: string; name: string; summary: string }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
-export type Snapshot = { role: Role; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[] }
+export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[] }
 export type ActionRequest = { operationId: string; entityId: string; baseRevision: number; actionId: string; parameters: Record<string, unknown> }
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 export type HostAdapter = {
@@ -16,6 +18,7 @@ export type HostAdapter = {
 }
 
 const baseUrl = import.meta.env.VITE_POTOMAC_HOST?.replace(/\/$/, '')
+export const configuredHost = baseUrl || null
 const hostConfigured = Boolean(baseUrl)
 const events = new EventTarget()
 const demoEncounters: Encounter[] = [
@@ -23,12 +26,24 @@ const demoEncounters: Encounter[] = [
   { id: 'encounter-b', name: 'The Ashen Gate', summary: 'A sealed gate waits beyond the ridge; distant lights mark the approach.' },
 ]
 let demo: Snapshot = {
-  role: 'gm', actors: structuredClone(initialActors), encounters: demoEncounters,
+  role: 'gm', memberId: null, actors: structuredClone(initialActors), encounters: demoEncounters,
   context: { campaignId: 'foundation-demo', activeEncounter: demoEncounters[0], cursor: 1 }, activity: [],
 }
+let fixtureBootstrap: Promise<void> | undefined
 
 function tokenFor(role: Role) {
-  return role === 'gm' ? (import.meta.env.VITE_POTOMAC_GM_TOKEN || 'local-gm') : (import.meta.env.VITE_POTOMAC_PLAYER_TOKEN || 'local-player')
+  return role === 'gm' ? (import.meta.env.VITE_POTOMAC_GM_TOKEN || 'local-gm') : (baseUrl && loadRememberedIdentity(baseUrl)?.credential || import.meta.env.VITE_POTOMAC_PLAYER_TOKEN || 'local-player')
+}
+
+export async function connectPlayerCredential(credential: string): Promise<Snapshot> {
+  if (!baseUrl || !credential) throw new Error('A local host and player credential are required')
+  const response = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${credential}` } })
+  const body = await response.json().catch(() => ({})) as HostState
+  if (!response.ok || body.role !== 'player' || typeof body.memberId !== 'string' || !body.memberId || typeof body.campaignId !== 'string') {
+    throw new Error('Player credential was not accepted by this host')
+  }
+  rememberIdentity({ version: 1, host: baseUrl, campaignId: body.campaignId, memberId: body.memberId, credential })
+  return fromHost(body, 'player')
 }
 async function http<T>(path: string, role: Role, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenFor(role)}`, ...init?.headers } })
@@ -37,8 +52,41 @@ async function http<T>(path: string, role: Role, init?: RequestInit): Promise<T>
   return body as T
 }
 
+export async function submitOfflineOperation(operation: OfflineOperation): Promise<OfflineReceipt> {
+  if (!baseUrl) throw new Error('An authoritative host is required to reconcile offline work')
+  return http<OfflineReceipt>('/api/offline/operations', 'player', { method: 'POST', body: JSON.stringify(operation) })
+}
+
+export async function enrollLocalPlayer(displayName: string): Promise<{ memberId: string; displayName: string; credential: string }> {
+  if (!baseUrl) throw new Error('A local host is required to enroll players')
+  return http('/api/members/enroll', 'gm', { method: 'POST', body: JSON.stringify({ displayName }) })
+}
+
+export async function grantActorToMember(actorId: string, memberId: string): Promise<void> {
+  if (!baseUrl) throw new Error('A local host is required to grant access')
+  await http(`/api/actors/${encodeURIComponent(actorId)}/grants`, 'gm', { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) })
+}
+
+export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; campaignId?: string | null; baseRevision?: number | null; ruleVersion?: number | null; status: string; createdAt: string; request?: OfflineOperation }
+
+export async function listReviewProposals(): Promise<ReviewProposal[]> {
+  return (await http<{ proposals: ReviewProposal[] }>('/api/proposals?status=pending', 'gm')).proposals
+}
+
+export async function loadReviewProposal(id: string): Promise<ReviewProposal> {
+  return http(`/api/proposals/${encodeURIComponent(id)}`, 'gm')
+}
+
+export async function decideReviewProposal(id: string, decisionId: string, decision: 'accept' | 'reject', reason?: string): Promise<OfflineReceipt> {
+  return http(`/api/proposals/${encodeURIComponent(id)}/decisions`, 'gm', { method: 'POST', body: JSON.stringify({ decisionId, decision, reason }) })
+}
+
+export async function listMyOfflineReceipts(): Promise<OfflineReceipt[]> {
+  return (await http<{ receipts: OfflineReceipt[] }>('/api/proposals/mine', 'player')).receipts
+}
+
 type HostState = {
-  campaignId: string; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
+  campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
   modules?: Array<Record<string, unknown>>
   actors?: Array<{ id: string; moduleId: string; moduleVersion: string; revision: number; data: Record<string, any> }>
   events?: Array<{ id: string; actorId: string | null; kind: string; payload: Record<string, any>; createdAt: string; visibility: string; cursor: number }>
@@ -63,16 +111,27 @@ function fromHost(body: HostState, role: Role): Snapshot {
       : Array.isArray(event.payload.rolls) && event.payload.rolls.length ? `Verified roll: ${event.payload.rolls.join(' + ')}` : String(event.payload.actionId || ''),
     time: event.createdAt, visibility: event.visibility === 'gm' ? 'gm' : 'all', cursor: event.cursor,
   }))
-  return { role, actors, encounters, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
+  return { role, memberId: body.memberId ?? null, actors, encounters, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
 }
 async function loadHost(role: Role) {
   const body = await http<HostState>('/api/state', role)
   const snapshot = fromHost(body, role)
-  if (snapshot.actors.length || role !== 'gm') return snapshot
-  for (const fixture of initialActors) {
-    const data = structuredClone({ ...fixture.data, name: fixture.name, epithet: fixture.epithet })
-    await http('/api/actors', role, { method: 'POST', body: JSON.stringify({ id: fixture.entityId, moduleId: fixture.module.manifest.id, moduleVersion: fixture.module.manifest.version, data, visibility: { gmOnly: fixture.secretNote ? ['secretNote'] : [] } }) })
-  }
+  if (role !== 'gm' || snapshot.actors.length && !snapshot.actors.some(actor => initialActors.some(fixture => fixture.entityId === actor.entityId))) return snapshot
+  if (initialActors.every(fixture => snapshot.actors.some(actor => actor.entityId === fixture.entityId))) return snapshot
+  if (!fixtureBootstrap) fixtureBootstrap = (async () => {
+    for (const fixture of initialActors) {
+      const current = await http<HostState>('/api/state', 'gm')
+      if (current.actors?.some(actor => actor.id === fixture.entityId)) continue
+      const data = structuredClone({ ...fixture.data, name: fixture.name, epithet: fixture.epithet })
+      try {
+        await http('/api/actors', role, { method: 'POST', body: JSON.stringify({ id: fixture.entityId, moduleId: fixture.module.manifest.id, moduleVersion: fixture.module.manifest.version, data, visibility: { gmOnly: fixture.secretNote ? ['secretNote'] : [] } }) })
+      } catch (error) {
+        const after = await http<HostState>('/api/state', 'gm')
+        if (!after.actors?.some(actor => actor.id === fixture.entityId)) throw error
+      }
+    }
+  })().finally(() => { fixtureBootstrap = undefined })
+  await fixtureBootstrap
   return fromHost(await http<HostState>('/api/state', role), role)
 }
 

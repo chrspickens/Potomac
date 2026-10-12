@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { evaluate, executeAction, getRequiredRollCount } from './index.ts';
+import { evaluate, executeAction, getActionPolicy, getRequiredRollCount } from './index.ts';
 
 const literal = (value) => ({ literal: value });
 const binary = (op, left, right) => ({ op, left, right });
@@ -54,6 +55,40 @@ test('applies bounded resource effects without mutating input and enforces preco
   assert.equal(state.resources.mana.current, 2);
   assert.throws(() => executeAction({ ...action, effects: [{ ...action.effects[0], amount: literal(-3) }] }, state), /out of bounds/);
   assert.throws(() => executeAction({ ...action, requires: literal(false) }, state), /precondition/);
+});
+
+test('resolves action policies while preserving the legacy immediate default', () => {
+  assert.equal(getActionPolicy({ id: 'legacy', effects: [] }), 'immediate');
+  assert.equal(getActionPolicy({ id: 'self-service', policy: 'selfService', effects: [] }), 'selfService');
+  assert.equal(getActionPolicy({ id: 'review', policy: 'gmReview', effects: [] }), 'gmReview');
+  assert.throws(() => getActionPolicy({ id: 'unknown', policy: 'automatic', effects: [] }), /Unsupported action policy/);
+});
+
+test('both fictional systems declare bounded self-service and review-required resource actions', () => {
+  const readActions = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')).actions;
+  const systemA = readActions('../../../modules/system-a/rules/actions.json');
+  const systemB = readActions('../../../modules/system-b/rules/actions.json');
+  const action = (actions, id) => actions.find((candidate) => candidate.id === id);
+
+  const spendMana = action(systemA, 'spend-mana');
+  const restoreMana = action(systemA, 'restore-mana');
+  const spendHope = action(systemB, 'spend-hope');
+  const clearStress = action(systemB, 'clear-stress');
+  assert.equal(getActionPolicy(spendMana), 'selfService');
+  assert.equal(getActionPolicy(restoreMana), 'gmReview');
+  assert.equal(getActionPolicy(spendHope), 'selfService');
+  assert.equal(getActionPolicy(clearStress), 'gmReview');
+
+  const systemAState = { resources: { mana: { current: 2, maximum: 5 } } };
+  assert.equal(executeAction(spendMana, systemAState).state.resources.mana.current, 1);
+  assert.equal(executeAction(restoreMana, systemAState).state.resources.mana.current, 5);
+  assert.throws(() => executeAction(restoreMana, { resources: { mana: { current: 5, maximum: 5 } } }), /precondition/);
+  const systemBState = { resources: { hope: { current: 2, maximum: 4 }, stress: { current: 3, maximum: 6 } } };
+  assert.equal(executeAction(spendHope, systemBState).state.resources.hope.current, 1);
+  assert.equal(executeAction(clearStress, systemBState).state.resources.stress.current, 0);
+  assert.throws(() => executeAction(clearStress, { resources: { stress: { current: 0, maximum: 6 } } }), /precondition/);
+  assert.equal(systemAState.resources.mana.current, 2);
+  assert.equal(systemBState.resources.stress.current, 3);
 });
 
 test('validates host random inputs against both system dice definitions', () => {

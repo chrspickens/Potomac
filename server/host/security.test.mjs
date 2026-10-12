@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createHost } from './index.mjs';
@@ -13,7 +14,7 @@ async function fixture(run) {
   let baseUrl = `http://127.0.0.1:${address.port}`;
   const request = (path, role = 'player', options = {}) => fetch(`${baseUrl}${path}`, {
     ...options,
-    headers: { authorization: `Bearer local-${role}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers },
+    headers: { authorization: `Bearer ${role === 'gm' || role === 'player' ? `local-${role}` : role}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers },
   });
   try {
     await run({ request, get host() { return host; }, restart: async () => {
@@ -40,10 +41,88 @@ const moduleDefinition = {
   actions: [{ id: 'wait', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [] }],
 };
 
+test('host refuses non-loopback listeners so bearer credentials stay local', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-bind-security-'));
+  const host = createHost({ databasePath: join(directory, 'host.sqlite') });
+  try {
+    assert.throws(() => host.listen(0, '0.0.0.0'), /loopback/);
+    const address = await host.listen(0);
+    for (const token of ['local-gm', 'local-player']) {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/state`, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(response.status, 200);
+    }
+  } finally {
+    host.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('upgrade preserves 0.2 shared access only for existing player actors', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-legacy-upgrade-'));
+  const databasePath = join(directory, 'host.sqlite');
+  const legacyDb = new DatabaseSync(databasePath);
+  legacyDb.exec(`
+    CREATE TABLE modules (id TEXT NOT NULL, version TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(id, version));
+    CREATE TABLE actors (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, module_version TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT '{}', owner_role TEXT NOT NULL DEFAULT 'player');
+    CREATE TABLE events (cursor INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, operation_id TEXT UNIQUE, actor_id TEXT, kind TEXT NOT NULL, visibility TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE operations (id TEXT PRIMARY KEY, response TEXT NOT NULL, actor_id TEXT, action_id TEXT, request_hash TEXT);
+    CREATE TABLE offline_proposals (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, member_id TEXT NOT NULL, actor_id TEXT NOT NULL, action_id TEXT NOT NULL, request_hash TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT, decision_id TEXT UNIQUE, decision TEXT, decision_response TEXT);
+    CREATE TABLE campaign (id TEXT PRIMARY KEY, context TEXT NOT NULL DEFAULT '{}');
+  `);
+  legacyDb.prepare('INSERT INTO offline_proposals(id,operation_id,member_id,actor_id,action_id,request_hash,request,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run('legacy-proposal', 'legacy-operation', 'legacy-member', 'legacy-actor', 'wait', 'old-hash', '{}', 'pending', '2026-01-01T00:00:00.000Z');
+  legacyDb.prepare('INSERT INTO modules(id,version,manifest) VALUES(?,?,?)').run(moduleDefinition.id, moduleDefinition.version, JSON.stringify(moduleDefinition));
+  legacyDb.prepare('INSERT INTO actors(id,module_id,module_version,revision,data,visibility,owner_role) VALUES(?,?,?,?,?,?,?)')
+    .run('legacy-actor', moduleDefinition.id, moduleDefinition.version, 1, JSON.stringify({ moduleId: moduleDefinition.id, moduleVersion: moduleDefinition.version, schemaVersion: 1, entityId: 'legacy-actor', revision: 1, publicValue: 1, secret: 2, notes: { hidden: 'old' }, derived: {} }), '{}', 'player');
+  legacyDb.close();
+  const host = createHost({ databasePath });
+  try {
+    const migratedProposal = host.db.prepare('SELECT id,campaign_id,base_revision,rule_version FROM offline_proposals WHERE id=?').get('legacy-proposal');
+    assert.deepEqual({ ...migratedProposal }, { id: 'legacy-proposal', campaign_id: null, base_revision: null, rule_version: null });
+    const address = await host.listen(0);
+    const request = (path, token) => fetch(`http://127.0.0.1:${address.port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal((await request('/api/actors/legacy-actor', 'local-player')).status, 200);
+    const created = await fetch(`http://127.0.0.1:${address.port}/api/actors`, {
+      method: 'POST', headers: { authorization: 'Bearer local-gm', 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'new-actor', moduleId: moduleDefinition.id, moduleVersion: moduleDefinition.version, data: { publicValue: 1, secret: 2, notes: { hidden: 'new' } } }),
+    });
+    assert.equal(created.status, 201, JSON.stringify(await created.clone().json()));
+    assert.equal((await request('/api/actors/new-actor', 'local-player')).status, 404);
+  } finally {
+    host.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('GM cannot accept a proposal under a different rules version', async () => {
+  await fixture(async ({ request }) => {
+    const manifest = { ...moduleDefinition, rulesVersion: 1, actions: [{ id: 'review', policy: 'gmReview', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [] }] };
+    assert.equal((await post(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest }, 'gm')).status, 201);
+    const enrolled = await (await post(request, '/api/members/enroll', { displayName: 'Rules reviewer' }, 'gm')).json();
+    const created = await post(request, '/api/actors', { id: 'rule-version-actor', moduleId: manifest.id, moduleVersion: manifest.version, ownerMemberId: enrolled.memberId, data: { publicValue: 1, secret: 2, notes: { hidden: 'safe' } } }, 'gm');
+    assert.equal(created.status, 201, JSON.stringify(await created.clone().json()));
+    const operation = { operationId: 'review-old-rules', campaignId: 'foundation-demo', memberId: enrolled.memberId, entityId: 'rule-version-actor', baseRevision: 1, moduleId: manifest.id, moduleVersion: manifest.version, schemaVersion: 1, actionId: 'review', parameters: {}, dependencies: [] };
+    const submission = await post(request, '/api/offline/operations', operation, enrolled.credential);
+    assert.equal(submission.status, 202);
+    const proposalId = (await submission.json()).proposalId;
+    const proposal = await (await request(`/api/proposals/${proposalId}`, 'gm')).json();
+    assert.equal(proposal.campaignId, 'foundation-demo');
+    assert.equal(proposal.baseRevision, 1);
+    assert.equal(proposal.ruleVersion, 1);
+    assert.equal((await post(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest: { ...manifest, rulesVersion: 2 } }, 'gm')).status, 201);
+    const decision = await post(request, `/api/proposals/${proposalId}/decisions`, { decisionId: 'old-rules-decision', decision: 'accept' }, 'gm');
+    assert.equal(decision.status, 200);
+    const receipt = await decision.json();
+    assert.equal(receipt.status, 'conflicted');
+    assert.equal(receipt.reasonCode, 'rules_version_conflict');
+    assert.equal((await (await request('/api/actors/rule-version-actor', enrolled.credential)).json()).revision, 1);
+  });
+});
+
 async function addActors(request, host) {
   assert.equal((await post(request, '/api/modules', { id: moduleDefinition.id, version: moduleDefinition.version, manifest: moduleDefinition }, 'gm')).status, 201);
-  const add = (id, ownerRole, value) => host.db.prepare('INSERT INTO actors(id,module_id,module_version,revision,data,visibility,owner_role) VALUES(?,?,?,?,?,?,?)')
-    .run(id, moduleDefinition.id, moduleDefinition.version, 1, JSON.stringify(value), JSON.stringify({ gmOnly: ['secret', 'notes.hidden'] }), ownerRole);
+  const add = (id, ownerRole, value) => host.db.prepare('INSERT INTO actors(id,module_id,module_version,revision,data,visibility,owner_role,legacy_shared) VALUES(?,?,?,?,?,?,?,?)')
+    .run(id, moduleDefinition.id, moduleDefinition.version, 1, JSON.stringify(value), JSON.stringify({ gmOnly: ['secret', 'notes.hidden'] }), ownerRole, ownerRole === 'player' ? 1 : 0);
   add('player-actor', 'player', { publicValue: 7, secret: 42, notes: { hidden: 'classified' }, derived: { persistedLeak: 'classified' } });
   add('gm-actor', 'gm', { publicValue: 9, secret: 81, notes: { hidden: 'classified' }, derived: {} });
 }
@@ -64,6 +143,41 @@ test('unauthenticated, missing and unauthorized actor reads/actions do not revea
     assert.deepEqual(await unauthorizedAction.json(), await missingAction.json());
     assert.equal((await post(request, '/api/actions', command, 'nobody')).status, 401);
     assert.equal((await request('/api/actors/player-actor')).status, 200);
+  });
+});
+
+test('member credential and owned actor access survive restart, while member revocation invalidates credentials', async () => {
+  await fixture(async ({ request, restart }) => {
+    const enrollment = await post(request, '/api/members/enroll', { displayName: 'Persistent member' }, 'gm');
+    assert.equal(enrollment.status, 201);
+    const member = await enrollment.json();
+    assert.equal((await post(request, '/api/modules', { id: moduleDefinition.id, version: moduleDefinition.version, manifest: moduleDefinition }, 'gm')).status, 201);
+    assert.equal((await post(request, '/api/actors', {
+      id: 'persistent-private-actor', moduleId: moduleDefinition.id, moduleVersion: moduleDefinition.version,
+      ownerMemberId: member.memberId, data: { publicValue: 13, secret: 99, notes: { hidden: 'private' } }
+    }, 'gm')).status, 201);
+    const privateStateBefore = await (await request('/api/state', member.credential)).json();
+    assert.equal(privateStateBefore.memberId, member.memberId);
+    assert.equal(privateStateBefore.actors.some(actor => actor.id === 'persistent-private-actor'), true);
+    const cursor = privateStateBefore.revision;
+    await restart();
+    const privateStateAfter = await (await request(`/api/state?since=${cursor}`, member.credential)).json();
+    assert.equal(privateStateAfter.memberId, member.memberId);
+    assert.equal(privateStateAfter.actors.some(actor => actor.id === 'persistent-private-actor'), true);
+    assert.equal((await request('/api/actors/persistent-private-actor')).status, 404);
+    const rotatedResponse = await post(request, `/api/members/${member.memberId}/rotate`, {}, 'gm');
+    assert.equal(rotatedResponse.status, 200);
+    const rotated = await rotatedResponse.json();
+    assert.equal(rotated.memberId, member.memberId);
+    assert.notEqual(rotated.credential, member.credential);
+    assert.equal((await request('/api/state', member.credential)).status, 401);
+    assert.equal((await request('/api/state', rotated.credential)).status, 200);
+    await restart();
+    assert.equal((await request('/api/state', rotated.credential)).status, 200);
+    const revoked = await request(`/api/members/${member.memberId}`, 'gm', { method: 'DELETE' });
+    assert.equal(revoked.status, 200);
+    assert.equal((await request('/api/state', member.credential)).status, 401);
+    assert.equal((await request('/api/actors/persistent-private-actor', rotated.credential)).status, 401);
   });
 });
 

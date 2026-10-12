@@ -8,9 +8,19 @@
   "actions": [
     {
       "id": "spend-mana",
+      "policy": "selfService",
+      "reconciliation": "commutative",
       "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
       "requires": { "op": "gt", "left": { "ref": "resources.mana.current" }, "right": { "literal": 0 } },
       "effects": [{ "op": "changeResource", "target": "self", "resource": "mana.current", "amount": { "literal": -1 } }]
+    },
+    {
+      "id": "restore-mana",
+      "label": "Restore mana",
+      "policy": "gmReview",
+      "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+      "requires": { "op": "gt", "left": { "ref": "resources.mana.maximum" }, "right": { "ref": "resources.mana.current" } },
+      "effects": [{ "op": "changeResource", "target": "self", "resource": "mana.current", "amount": { "op": "subtract", "left": { "ref": "resources.mana.maximum" }, "right": { "ref": "resources.mana.current" } } }]
     },
     {
       "id": "strength-check",

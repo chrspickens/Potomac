@@ -14,7 +14,7 @@ function valueAt(source: Record<string, unknown>, path: string): unknown {
     typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined, source);
 }
 
-export function CharacterView({ actor, busy, onAction, compact, gm = false }: { actor: Actor; busy: boolean; onAction: (actor: Actor, actionId: string) => void; compact?: boolean; gm?: boolean }) {
+export function CharacterView({ actor, busy, offline = false, onAction, compact, gm = false }: { actor: Actor; busy: boolean; offline?: boolean; onAction: (actor: Actor, actionId: string) => void; compact?: boolean; gm?: boolean }) {
   const controls = compact ? actor.module.view.brick : actor.module.view.layout;
   const stats = controls.filter(item => item.control === 'stat');
   const resources = controls.filter(item => item.control === 'resource');
@@ -29,13 +29,17 @@ export function CharacterView({ actor, busy, onAction, compact, gm = false }: { 
       const ratio = typeof current === 'number' && typeof maximum === 'number' && maximum > 0 ? Math.max(0, Math.min(100, current / maximum * 100)) : 0;
       return <div className="resource" key={`${item.field}-${index}`}><div><span>{item.label}</span><strong>{String(current ?? '—')} / {String(maximum ?? '—')}</strong></div><div className="meter"><i style={{ width: `${ratio}%` }} /></div></div>;
     })}</div>}
-    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => <button type="button" key={`${item.actionId}-${index}`} disabled={busy} onClick={() => item.actionId && onAction(actor, item.actionId)}>{item.label}</button>)}</div>}
+    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => {
+      const action = actor.module.actions.find(value => value.id === item.actionId);
+      const hostOnly = Boolean(action?.resolution) || !['selfService', 'gmReview'].includes(action?.policy || '');
+      return <button type="button" key={`${item.actionId}-${index}`} disabled={busy || offline && hostOnly} title={offline && hostOnly ? 'Host connection required' : undefined} onClick={() => item.actionId && onAction(actor, item.actionId)}>{item.label}</button>;
+    })}</div>}
     {gm && actor.secretNote && <div className="gm-note"><b>GM only</b> {actor.secretNote}</div>}
   </div>;
 }
 
-function CharacterBrick({ data, busy, onAction }: BrickRenderProps<Actor>) {
-  return data ? <CharacterView actor={data} compact busy={busy} onAction={onAction} gm={Boolean(data.secretNote)} /> : <p className="brick-message">Character unavailable for this binding.</p>;
+function CharacterBrick({ data, busy, offline, onAction }: BrickRenderProps<Actor>) {
+  return data ? <CharacterView actor={data} compact busy={busy} offline={offline} onAction={onAction} gm={Boolean(data.secretNote)} /> : <p className="brick-message">Character unavailable for this binding.</p>;
 }
 
 function EncounterBrick({ data }: BrickRenderProps<{ encounter: Encounter; following: boolean }>) {

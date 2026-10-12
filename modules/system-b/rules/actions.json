@@ -8,9 +8,19 @@
   "actions": [
     {
       "id": "spend-hope",
+      "policy": "selfService",
+      "reconciliation": "commutative",
       "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
       "requires": { "op": "gt", "left": { "ref": "resources.hope.current" }, "right": { "literal": 0 } },
       "effects": [{ "op": "changeResource", "target": "self", "resource": "hope.current", "amount": { "literal": -1 } }]
+    },
+    {
+      "id": "clear-stress",
+      "label": "Clear stress",
+      "policy": "gmReview",
+      "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+      "requires": { "op": "gt", "left": { "ref": "resources.stress.current" }, "right": { "literal": 0 } },
+      "effects": [{ "op": "changeResource", "target": "self", "resource": "stress.current", "amount": { "op": "subtract", "left": { "literal": 0 }, "right": { "ref": "resources.stress.current" } } }]
     },
     {
       "id": "instinct-test",

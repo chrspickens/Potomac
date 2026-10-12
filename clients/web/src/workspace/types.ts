@@ -47,6 +47,7 @@ export type BrickRenderProps<TData = unknown> = {
   data: TData | undefined;
   adapter: AuthorizedBrickDataAdapter;
   busy: boolean;
+  offline?: boolean;
   onAction: (actor: Actor, actionId: string) => void;
 };
 

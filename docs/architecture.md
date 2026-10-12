@@ -2,7 +2,7 @@
 
 ## Current experiment versus target
 
-This document describes a proposed destination, not the deployed transport or storage stack. The checked-in 0.2 experiment uses a React/Vite browser client, a loopback-only Node HTTP host, SQLite on the host, server-sent events (SSE) with snapshot reconciliation, and browser `localStorage` for presentation layouts. It does not yet have an Electron wrapper, WebSocket transport, IndexedDB offline queue, production identity, or remote-host security. Consult the executable host and client plus the hardening checks for current behavior.
+This document describes a proposed destination, not the deployed transport or storage stack. The 0.3 experiment uses a React/Vite browser client, a loopback-only Node HTTP host, SQLite on the host, server-sent events (SSE) with snapshot reconciliation, browser `localStorage` for personal layouts and an explicitly remembered player credential, and member-scoped IndexedDB for filtered snapshots, queued operations, and private drafts. It does not yet have an Electron wrapper, WebSocket transport, production identity, encrypted browser storage, or remote-host security. Consult the executable host and client plus the checks for current behavior.
 
 ## Topology
 
@@ -85,6 +85,8 @@ Never trust the client for HP totals, grant permissions via binding IDs, or use 
 - Host revalidates permissions, state, dependencies and rules at submission time; stale or illegal actions conflict, not last-write-wins.
 - Compatible permitted edits commit; proposed advancement enters review queue; rejected edits remain available as local drafts.
 - Revoked access prevents new reads/sync but cannot retract copies already possessed.
+
+In the current localhost experiment, the GM enrolls members and distributes one-time displayed bearer credentials. The host stores credential hashes and supports rotation/revocation. A player may choose to remember the credential in the browser profile to reopen cached data after restart; this is convenience, not encryption or protection from other users of that profile. The host validates every submitted operation and persists the resulting receipt; client queue status is never a substitute for that receipt. Significant fixture actions become GM proposals, and rejected or conflicted intent may be kept as a private draft. The browser acceptance runner exercises the GM and two enrolled members against a restartable host, but it is not a production deployment test.
 
 ## Versioning and migration
 
