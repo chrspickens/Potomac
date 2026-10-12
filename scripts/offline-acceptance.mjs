@@ -145,7 +145,9 @@ async function selectValue(sessionId, selector, value) {
   const changed = await evaluate(sessionId, `(() => {
     const target = document.querySelector(${JSON.stringify(selector)});
     if (!target) return false;
-    target.value = ${JSON.stringify(value)};
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+    setter.call(target, ${JSON.stringify(value)});
+    target.dispatchEvent(new Event('input', { bubbles: true }));
     target.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`);
@@ -395,6 +397,7 @@ try {
   await clickText(memberAClient, 'Tarin Vale', '.character-list button');
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Tarin Vale'", 'offline dependency actor view');
   await selectValue(memberAClient, '[aria-label="Dependency guard"]', actorA);
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Dependency guard status\"]')?.textContent.includes('Mira Vell') && document.querySelector('[aria-label=\"Dependency guard status\"]')?.textContent.includes('revision 1')", 'controlled dependency guard is committed before queueing');
   await clickText(memberAClient, 'Spend 1 Hope', '.full-character .action-grid button');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · queued')", 'offline action with a selected dependency guard');
   await selectValue(memberAClient, '[aria-label="Dependency guard"]', '');
