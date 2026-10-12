@@ -641,7 +641,10 @@ try {
   const backupPath = join(scratch, 'campaign-backup.json');
   const restoredPath = join(scratch, 'campaign-restored.sqlite');
   const exportManifest = exportCampaignBackup(dbPath, backupPath);
-  assert.equal(exportManifest.potomacDataVersion, 2, '0.4 export format includes persistent encounters');
+  assert.equal(exportManifest.potomacDataVersion, 3, '0.5 export includes sessions and protected encounter metadata');
+  assert.ok(exportManifest.includedCollections.includes('sessions'));
+  assert.ok(exportManifest.includedCollections.includes('session_state'));
+  assert.ok(exportManifest.includedCollections.includes('session_operations'));
   assert.ok(exportManifest.includedCollections.includes('encounters'));
   assert.ok(exportManifest.includedCollections.includes('encounter_participants'));
   const restoredManifest = restoreCampaignBackup(backupPath, restoredPath);

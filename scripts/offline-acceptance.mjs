@@ -145,14 +145,31 @@ async function selectValue(sessionId, selector, value) {
   const changed = await evaluate(sessionId, `(() => {
     const target = document.querySelector(${JSON.stringify(selector)});
     if (!target) return false;
-    target.value = ${JSON.stringify(value)};
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+    setter.call(target, ${JSON.stringify(value)});
+    target.dispatchEvent(new Event('input', { bubbles: true }));
     target.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`);
   assert.equal(changed, true, `Expected a select matching ${selector}`);
+  // CDP-synthesized change is not a real mouse/keyboard interaction. Wait for
+  // React to commit the controlled state before invoking the next action.
+  await delay(180); // Headless background tabs can throttle requestAnimationFrame indefinitely.
+  const committed = await evaluate(sessionId, `document.querySelector(${JSON.stringify(selector)})?.value === ${JSON.stringify(value)}`);
+  assert.equal(committed, true, `Expected controlled select ${selector} to commit ${value}`);
 }
 
 async function clickRecoveryAction(sessionId, actionId, buttonText) {
+  // After creating a replacement operation its acceptance may render before
+  // the conflict component has completed its asynchronous queue write and
+  // re-enabled its buttons. Wait for the *original* recovery UI, not only the
+  // unrelated accepted-operation status.
+  await waitForExpression(sessionId, `(() => {
+    const section = [...document.querySelectorAll('section[aria-labelledby="conflict-recovery-title"]')]
+      .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)})));
+    return !![...(section?.querySelectorAll('button') || [])]
+      .find(item => item.textContent.trim() === ${JSON.stringify(buttonText)} && !item.disabled);
+  })()`, `recovery action ${buttonText} for ${actionId} to become available`);
   const clicked = await evaluate(sessionId, `(() => {
     const section = [...document.querySelectorAll('section[aria-labelledby="conflict-recovery-title"]')]
       .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)})));
@@ -380,6 +397,7 @@ try {
   await clickText(memberAClient, 'Tarin Vale', '.character-list button');
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Tarin Vale'", 'offline dependency actor view');
   await selectValue(memberAClient, '[aria-label="Dependency guard"]', actorA);
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Dependency guard status\"]')?.textContent.includes('Mira Vell') && document.querySelector('[aria-label=\"Dependency guard status\"]')?.textContent.includes('revision 1')", 'controlled dependency guard is committed before queueing');
   await clickText(memberAClient, 'Spend 1 Hope', '.full-character .action-grid button');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · queued')", 'offline action with a selected dependency guard');
   await selectValue(memberAClient, '[aria-label="Dependency guard"]', '');
@@ -397,7 +415,9 @@ try {
   cache = await readBrowserQueue(memberAClient);
   assert.equal(cache.operations.length, 3, 'three immutable offline operations persist in IndexedDB');
   assert.ok(cache.operations.every(row => row.state === 'queued'), 'all offline operations remain visibly pending before host acknowledgement');
-  const dependencyOperation = cache.operations.find(row => row.operation.actionId === 'spend-hope');
+  // Mira also has a pending spend-hope action; only Tarin's action was
+  // authored with a dependency guard on Mira.
+  const dependencyOperation = cache.operations.find(row => row.operation.entityId === actorDependency && row.operation.actionId === 'spend-hope');
   assert.deepEqual(dependencyOperation?.operation.dependencies, [{ entityId: actorA, revision: 1 }], 'dependency is captured from the cached authorized snapshot');
 
   await stop(host);
@@ -444,7 +464,10 @@ try {
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · applied')", 'rebased operation applies from current actor and dependency revisions');
   let recoveredQueue = await readBrowserQueue(memberAClient);
   const originalHopeOperation = recoveredQueue.operations.find(row => row.operation.operationId === conflictReceipt.operationId);
-  const rebasedHopeOperation = recoveredQueue.operations.find(row => row.operation.actionId === 'spend-hope' && row.operation.operationId !== originalHopeOperation?.operation.operationId);
+  // Both Mira and Tarin can have spend-hope operations. The rebased request
+  // must target the *conflicted Tarin actor*, not Mira's previously applied edit.
+  const rebasedHopeOperation = recoveredQueue.operations.find(row => row.operation.entityId === actorDependency
+    && row.operation.actionId === 'spend-hope' && row.operation.operationId !== originalHopeOperation?.operation.operationId);
   assert.ok(originalHopeOperation && rebasedHopeOperation, 'recovery UI retains the old operation and creates a separate replacement');
   assert.notEqual(rebasedHopeOperation.operation.operationId, originalHopeOperation.operation.operationId, 'rebase uses a new operation ID');
   assert.equal(rebasedHopeOperation.operation.baseRevision, 2, 'rebase uses the authorized current actor revision');
