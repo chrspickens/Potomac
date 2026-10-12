@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS actors (id TEXT PRIMARY KEY, module_id TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS events (cursor INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, operation_id TEXT UNIQUE, actor_id TEXT, kind TEXT NOT NULL, visibility TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, response TEXT NOT NULL, actor_id TEXT, action_id TEXT, request_hash TEXT, principal_id TEXT);
 CREATE TABLE IF NOT EXISTS offline_receipts (member_id TEXT NOT NULL, operation_id TEXT NOT NULL, campaign_id TEXT NOT NULL, request_hash TEXT NOT NULL, status TEXT NOT NULL, proposal_id TEXT, response TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(member_id, operation_id));
-CREATE TABLE IF NOT EXISTS offline_proposals (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, member_id TEXT NOT NULL, actor_id TEXT NOT NULL, action_id TEXT NOT NULL, request_hash TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT, decision_id TEXT UNIQUE, decision TEXT, decision_response TEXT);
+CREATE TABLE IF NOT EXISTS offline_proposals (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, member_id TEXT NOT NULL, actor_id TEXT NOT NULL, action_id TEXT NOT NULL, request_hash TEXT NOT NULL, request TEXT NOT NULL, campaign_id TEXT, base_revision INTEGER, rule_version INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT, decision_id TEXT UNIQUE, decision TEXT, decision_response TEXT);
 CREATE TABLE IF NOT EXISTS offline_decisions (decision_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS offline_proposals_status_created ON offline_proposals(status, created_at);
 CREATE INDEX IF NOT EXISTS offline_proposals_member_created ON offline_proposals(member_id, created_at);
@@ -115,6 +115,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   }
   const operationColumns = new Set(db.prepare('PRAGMA table_info(operations)').all().map(column => column.name));
   for (const [column, type] of [['actor_id', 'TEXT'], ['action_id', 'TEXT'], ['request_hash', 'TEXT'], ['principal_id', 'TEXT']]) if (!operationColumns.has(column)) db.exec(`ALTER TABLE operations ADD COLUMN ${column} ${type}`);
+  const proposalColumns = new Set(db.prepare('PRAGMA table_info(offline_proposals)').all().map(column => column.name));
+  for (const [column, type] of [['campaign_id', 'TEXT'], ['base_revision', 'INTEGER'], ['rule_version', 'INTEGER']]) if (!proposalColumns.has(column)) db.exec(`ALTER TABLE offline_proposals ADD COLUMN ${column} ${type}`);
   db.prepare('INSERT OR IGNORE INTO campaign(id,context) VALUES(?,?)').run(campaignId, '{}');
   const modulesDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../../modules');
   for (const folder of readdirSync(modulesDirectory, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
@@ -301,14 +303,14 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const rows = status
           ? db.prepare('SELECT * FROM offline_proposals WHERE status=? ORDER BY created_at,id LIMIT 200').all(status)
           : db.prepare('SELECT * FROM offline_proposals ORDER BY created_at,id LIMIT 200').all();
-        return json(res, 200, { proposals: rows.map(row => ({ id: row.id, operationId: row.operation_id, memberId: row.member_id, entityId: row.actor_id, actionId: row.action_id, requestHash: row.request_hash, status: row.status, createdAt: row.created_at, decidedAt: row.decided_at, decisionId: row.decision_id, decision: row.decision })) });
+        return json(res, 200, { proposals: rows.map(row => ({ id: row.id, operationId: row.operation_id, memberId: row.member_id, entityId: row.actor_id, actionId: row.action_id, requestHash: row.request_hash, campaignId: row.campaign_id, baseRevision: row.base_revision, ruleVersion: row.rule_version, status: row.status, createdAt: row.created_at, decidedAt: row.decided_at, decisionId: row.decision_id, decision: row.decision })) });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/proposals/')) {
         if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
         const proposalId = decodeURIComponent(url.pathname.slice('/api/proposals/'.length));
         const row = db.prepare('SELECT * FROM offline_proposals WHERE id=?').get(proposalId);
         if (!row) return json(res, 404, { error: 'Proposal not found' });
-        return json(res, 200, { id: row.id, operationId: row.operation_id, memberId: row.member_id, entityId: row.actor_id, actionId: row.action_id, requestHash: row.request_hash, request: JSON.parse(row.request), status: row.status, createdAt: row.created_at, decidedAt: row.decided_at, decisionId: row.decision_id, decision: row.decision, decisionResponse: row.decision_response ? JSON.parse(row.decision_response) : null });
+        return json(res, 200, { id: row.id, operationId: row.operation_id, memberId: row.member_id, entityId: row.actor_id, actionId: row.action_id, requestHash: row.request_hash, campaignId: row.campaign_id, baseRevision: row.base_revision, ruleVersion: row.rule_version, request: JSON.parse(row.request), status: row.status, createdAt: row.created_at, decidedAt: row.decided_at, decisionId: row.decision_id, decision: row.decision, decisionResponse: row.decision_response ? JSON.parse(row.decision_response) : null });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/offline/operations/')) {
         if (auth.memberId === null) return json(res, 403, { error: 'Enrolled member identity required' });
@@ -418,7 +420,10 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           return json(res, 200, receiptJson(receipt));
         }
         const operation = JSON.parse(proposal.request);
-        const validation = validateOfflineCommand(operation, { role: 'player', memberId: proposal.member_id, principalId: proposal.member_id }, 'gmReview');
+        let validation = validateOfflineCommand(operation, { role: 'player', memberId: proposal.member_id, principalId: proposal.member_id }, 'gmReview');
+        if (!validation.error && proposal.rule_version !== null && (validation.manifest.rulesVersion || 1) !== proposal.rule_version) {
+          validation = { error: 'Rules version changed after proposal submission', reasonCode: 'rules_version_conflict', currentRevision: validation.actor.revision };
+        }
         if (validation.error) {
           const result = { proposalId, operationId: proposal.operation_id, entityId: proposal.actor_id, status: 'conflicted', decisionId: body.decisionId, reasonCode: validation.reasonCode, currentRevision: validation.currentRevision };
           transaction(() => {
@@ -482,8 +487,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           const proposalId = randomUUID();
           const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'awaitingReview', proposalId };
           transaction(() => {
-            db.prepare('INSERT INTO offline_proposals(id,operation_id,member_id,actor_id,action_id,request_hash,request,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-              .run(proposalId, operation.operationId, auth.memberId, operation.entityId, operation.actionId, requestHash, canonicalJson(operation), 'pending', now);
+            db.prepare('INSERT INTO offline_proposals(id,operation_id,member_id,actor_id,action_id,request_hash,request,campaign_id,base_revision,rule_version,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+              .run(proposalId, operation.operationId, auth.memberId, operation.entityId, operation.actionId, requestHash, canonicalJson(operation), campaignId, operation.baseRevision, validation.manifest.rulesVersion || 1, 'pending', now);
             db.prepare('INSERT INTO offline_receipts(member_id,operation_id,campaign_id,request_hash,status,proposal_id,response,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
               .run(auth.memberId, operation.operationId, campaignId, requestHash, 'awaitingReview', proposalId, JSON.stringify(receipt), now, now);
             insertEvent({ actorId: operation.entityId, kind: 'offline.proposal.submitted', visibility: 'gm', payload: { proposalId, operationId: operation.operationId, memberId: auth.memberId, actionId: operation.actionId } });
