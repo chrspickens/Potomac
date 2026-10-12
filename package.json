@@ -12,6 +12,7 @@
     "debug:watch": "node scripts/diagnostics/potomac-debug.mjs watch",
     "debug:smoke": "node scripts/diagnostics/potomac-debug.mjs smoke",
     "acceptance:workspace": "node scripts/workspace-acceptance.mjs",
-    "check": "pnpm build && node --test packages/rules-engine/src/index.test.mjs server/host/index.test.mjs server/host/security.test.mjs clients/web/src/workspace/workspace.test.mjs clients/web/src/workspace/layout.test.mjs clients/web/src/workspace/registry.test.mjs && pnpm debug:smoke && pnpm acceptance:workspace"
+    "acceptance:offline": "node scripts/offline-acceptance.mjs",
+    "check": "pnpm build && node --test packages/rules-engine/src/index.test.mjs server/host/index.test.mjs server/host/security.test.mjs clients/web/src/identity.test.mjs clients/web/src/offline/storage.test.mjs clients/web/src/offline/reconcile.test.mjs clients/web/src/offline/conflict-recovery.test.mjs clients/web/src/workspace/workspace.test.mjs clients/web/src/workspace/layout.test.mjs clients/web/src/workspace/registry.test.mjs && pnpm debug:smoke && pnpm acceptance:workspace && pnpm acceptance:offline"
   }
 }
