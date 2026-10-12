@@ -135,10 +135,19 @@ test('member credential and owned actor access survive restart, while member rev
     assert.equal(privateStateAfter.memberId, member.memberId);
     assert.equal(privateStateAfter.actors.some(actor => actor.id === 'persistent-private-actor'), true);
     assert.equal((await request('/api/actors/persistent-private-actor')).status, 404);
+    const rotatedResponse = await post(request, `/api/members/${member.memberId}/rotate`, {}, 'gm');
+    assert.equal(rotatedResponse.status, 200);
+    const rotated = await rotatedResponse.json();
+    assert.equal(rotated.memberId, member.memberId);
+    assert.notEqual(rotated.credential, member.credential);
+    assert.equal((await request('/api/state', member.credential)).status, 401);
+    assert.equal((await request('/api/state', rotated.credential)).status, 200);
+    await restart();
+    assert.equal((await request('/api/state', rotated.credential)).status, 200);
     const revoked = await request(`/api/members/${member.memberId}`, 'gm', { method: 'DELETE' });
     assert.equal(revoked.status, 200);
     assert.equal((await request('/api/state', member.credential)).status, 401);
-    assert.equal((await request('/api/actors/persistent-private-actor', member.credential)).status, 401);
+    assert.equal((await request('/api/actors/persistent-private-actor', rotated.credential)).status, 401);
   });
 });
 

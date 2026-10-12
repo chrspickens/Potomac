@@ -368,6 +368,22 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }
       if (req.method !== 'POST') return json(res, 404, { error: 'Not found' });
       const body = await readBody(req);
+      const rotationMatch = url.pathname.match(/^\/api\/members\/([^/]+)\/rotate$/);
+      if (rotationMatch) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
+        const memberId = decodeURIComponent(rotationMatch[1]);
+        const credential = randomBytes(32).toString('base64url');
+        const credentialHash = createHash('sha256').update(credential).digest('hex');
+        const rotated = transaction(() => {
+          const result = db.prepare('UPDATE members SET credential_hash=? WHERE id=? AND revoked_at IS NULL').run(credentialHash, memberId);
+          if (result.changes) insertEvent({ kind: 'member.credential_rotated', visibility: 'gm', payload: { memberId } });
+          return result.changes;
+        });
+        if (!rotated) return json(res, 404, { error: 'Member not found' });
+        for (const client of clients) if (client.auth.memberId === memberId) { clients.delete(client); client.res.end(); }
+        notify();
+        return json(res, 200, { memberId, credential });
+      }
       const decisionMatch = url.pathname.match(/^\/api\/proposals\/([^/]+)\/decisions$/);
       if (decisionMatch) {
         if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required' });
