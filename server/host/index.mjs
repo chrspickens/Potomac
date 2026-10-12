@@ -193,7 +193,12 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const eventJson = (event, auth) => {
     const payload = JSON.parse(event.payload);
     // Action parameters are client supplied and may contain values copied from GM-only fields.
-    if (auth.role === 'player') delete payload.parameters;
+    if (auth.role === 'player') {
+      delete payload.parameters;
+      delete payload.memberId;
+      delete payload.proposalId;
+      delete payload.decisionId;
+    }
     return { cursor: event.cursor, id: event.id, actorId: event.actor_id, kind: event.kind, visibility: event.visibility, payload, createdAt: event.created_at };
   };
   const currentContext = () => {
@@ -425,7 +430,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
             .run('applied', JSON.stringify(result), now, proposal.member_id, proposal.operation_id);
           db.prepare('INSERT INTO offline_decisions(decision_id,proposal_id,request_hash,response,created_at) VALUES(?,?,?,?,?)')
             .run(body.decisionId, proposalId, decisionHash, JSON.stringify(result), now);
-          insertEvent({ actorId: proposal.actor_id, kind: 'action.applied', visibility: 'public', payload: { ...result, actionId: proposal.action_id, moduleId: validation.actor.module_id, moduleVersion: validation.actor.module_version, schemaVersion: operation.schemaVersion, ruleVersion: validation.manifest.rulesVersion, verified: true } });
+          insertEvent({ actorId: proposal.actor_id, kind: 'action.applied', visibility: 'public', payload: { ...result, memberId: proposal.member_id, actionId: proposal.action_id, moduleId: validation.actor.module_id, moduleVersion: validation.actor.module_version, schemaVersion: operation.schemaVersion, ruleVersion: validation.manifest.rulesVersion, verified: true } });
           insertEvent({ kind: 'offline.proposal.decided', visibility: 'gm', payload: { proposalId, operationId: proposal.operation_id, status: 'accepted', decisionId: body.decisionId, reason: body.reason || null } });
         });
         notify();
@@ -476,7 +481,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const receipt = { operationId: operation.operationId, entityId: operation.entityId, status: 'applied', revision };
         transaction(() => {
           db.prepare('UPDATE actors SET data=?,revision=? WHERE id=?').run(JSON.stringify(executed.state), revision, operation.entityId);
-          insertEvent({ actorId: operation.entityId, kind: 'action.applied', visibility: 'public', payload: { ...receipt, actionId: operation.actionId, moduleId: operation.moduleId, moduleVersion: operation.moduleVersion, schemaVersion: operation.schemaVersion, ruleVersion: validation.manifest.rulesVersion, verified: true } });
+          insertEvent({ actorId: operation.entityId, kind: 'action.applied', visibility: 'public', payload: { ...receipt, memberId: auth.memberId, actionId: operation.actionId, moduleId: operation.moduleId, moduleVersion: operation.moduleVersion, schemaVersion: operation.schemaVersion, ruleVersion: validation.manifest.rulesVersion, verified: true } });
           db.prepare('INSERT INTO offline_receipts(member_id,operation_id,campaign_id,request_hash,status,proposal_id,response,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
             .run(auth.memberId, operation.operationId, campaignId, requestHash, 'applied', null, JSON.stringify(receipt), now, now);
         });

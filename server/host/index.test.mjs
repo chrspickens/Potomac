@@ -349,6 +349,10 @@ test('offline self-service receipt is canonical, member-scoped, idempotent and d
     assert.equal(receipt.revision, 2);
     assert.match(receipt.requestHash, /^[0-9a-f]{64}$/);
     assert.equal((await (await request('/api/actors/offline-protocol-actor', member.credential)).json()).data.resources.focus, 2);
+    const gmAudit = (await (await request('/api/state')).json()).events.find(event => event.payload.operationId === command.operationId);
+    const playerAudit = (await (await request('/api/state', member.credential)).json()).events.find(event => event.payload.operationId === command.operationId);
+    assert.equal(gmAudit.payload.memberId, member.memberId);
+    assert.equal(playerAudit.payload.memberId, undefined);
     const reordered = { ...command, dependencies: [{ revision: 1, entityId: command.entityId }] };
     assert.deepEqual(await (await postJson(request, '/api/offline/operations', reordered, member.credential)).json(), receipt);
     const collision = await postJson(request, '/api/offline/operations', { ...command, actionId: 'recover' }, member.credential);
