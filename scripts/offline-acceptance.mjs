@@ -164,6 +164,18 @@ async function clickRecoveryAction(sessionId, actionId, buttonText) {
   assert.equal(clicked, true, `Expected ${buttonText} for ${actionId}`);
 }
 
+async function clickDraftAction(sessionId, actionId, buttonText) {
+  const clicked = await evaluate(sessionId, `(() => {
+    const draft = [...document.querySelectorAll('[aria-label="Private local drafts"] > div > div')]
+      .find(item => item.querySelector('p')?.textContent.includes(${JSON.stringify(actionId)}));
+    const button = [...(draft?.querySelectorAll('button') || [])]
+      .find(item => item.textContent.trim() === ${JSON.stringify(buttonText)});
+    if (!button || button.disabled) return false;
+    button.click(); return true;
+  })()`);
+  assert.equal(clicked, true, `Expected ${buttonText} for private draft ${actionId}`);
+}
+
 async function chooseRole(sessionId, role) {
   await evaluate(sessionId, `(() => {
     const selector = document.querySelector('.topbar-right select');
@@ -350,6 +362,11 @@ try {
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Mira Vell'", 'offline actor A view');
   await clickText(memberAClient, 'Spend 1 Mana', '.full-character .action-grid button');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'stale actor action queued offline');
+  await evaluate(memberAClient, 'window.confirm = () => true');
+  await clickText(memberAClient, 'Cancel unsent edit', '[aria-label="Your local operation status"] button');
+  await waitForExpression(memberAClient, "!document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'unsent local edit canceled without a host receipt');
+  await clickText(memberAClient, 'Spend 1 Mana', '.full-character .action-grid button');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'replacement local action has its own queued operation ID');
 
   await clickText(memberAClient, 'Tarin Vale', '.character-list button');
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Tarin Vale'", 'offline dependency actor view');
@@ -417,7 +434,7 @@ try {
   await clickRecoveryAction(memberAClient, 'spend-hope', 'Create new operation from current revision');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · applied')", 'rebased operation applies from current actor and dependency revisions');
   let recoveredQueue = await readBrowserQueue(memberAClient);
-  const originalHopeOperation = recoveredQueue.operations.find(row => row.operation.actionId === 'spend-hope');
+  const originalHopeOperation = recoveredQueue.operations.find(row => row.operation.operationId === conflictReceipt.operationId);
   const rebasedHopeOperation = recoveredQueue.operations.find(row => row.operation.actionId === 'spend-hope' && row.operation.operationId !== originalHopeOperation?.operation.operationId);
   assert.ok(originalHopeOperation && rebasedHopeOperation, 'recovery UI retains the old operation and creates a separate replacement');
   assert.notEqual(rebasedHopeOperation.operation.operationId, originalHopeOperation.operation.operationId, 'rebase uses a new operation ID');
@@ -435,7 +452,17 @@ try {
   await clickRecoveryAction(memberAClient, 'spend-hope', 'Confirm discard');
   await waitForExpression(memberAClient, "!document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · conflicted') && document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('dependency_revision_conflict')", 'discard removes only the terminal operation and keeps its private draft');
 
-  await clickText(memberAClient, 'Tarin Vale', '.character-list button');
+  const freshReviewActorId = 'actor-review-reject-01';
+  const initialReviewActor = seeded.actors.find(actor => actor.id === actorDependency);
+  const freshReviewActor = await request('/api/actors', gmToken, 'POST', {
+    id: freshReviewActorId, moduleId: initialReviewActor.moduleId, moduleVersion: initialReviewActor.moduleVersion,
+    ownerMemberId: memberA.memberId,
+    data: { ...initialReviewActor.data, name: 'Neris Holt', epithet: 'Keeper of the shoals', resources: { ...initialReviewActor.data.resources, stress: { current: 2, maximum: 6 } } },
+  });
+  assert.equal(freshReviewActor.status, 201, 'GM creates a fresh review fixture with eligible stress');
+  await clickSelector(memberAClient, 'nav[aria-label="Applications"] button:nth-child(2)');
+  await waitForExpression(memberAClient, "document.querySelector('.character-list')?.innerText.includes('Neris Holt')", 'fresh authorized review actor appears after reload');
+  await clickText(memberAClient, 'Neris Holt', '.character-list button');
   await clickText(memberAClient, 'Request Stress Recovery', '.full-character .action-grid button');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('clear-stress · awaitingReview')", 'second review request reaches the host');
   await waitForExpression(gm, "document.querySelector('.gm-admin summary')?.textContent.includes('1 pending')", 'rejection proposal reaches GM queue');
@@ -447,6 +474,9 @@ try {
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('clear-stress · rejected · gm_rejected')", 'player receives rejection reason and status');
   await clickRecoveryAction(memberAClient, 'clear-stress', 'Retain as private draft');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('clear-stress') && document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('gm_rejected')", 'rejected proposal retained as private draft');
+  await evaluate(memberAClient, "window.prompt = () => '{\"reviewNote\":\"ask GM before resubmitting\"}'");
+  await clickDraftAction(memberAClient, 'clear-stress', 'Edit private draft parameters');
+  await waitForExpression(memberAClient, "[...document.querySelectorAll('[aria-label=\"Private local drafts\"] pre')].some(pre => pre.textContent.includes('ask GM before resubmitting'))", 'rejected private draft remains editable without host submission');
 
   await stop(host);
   await waitForHostDown();
@@ -463,6 +493,7 @@ try {
   await cdp('Page.reload', { ignoreCache: true }, memberAClient);
   await waitForExpression(memberAClient, `performance.timeOrigin !== ${beforeRejectedReload} && document.readyState === 'complete'`, 'browser reload after host restart');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('gm_rejected')", 'rejected private draft remains visible after host restart and reload');
+  assert.equal(await evaluate(memberAClient, "[...document.querySelectorAll('[aria-label=\"Private local drafts\"] pre')].some(pre => pre.textContent.includes('ask GM before resubmitting'))"), true, 'edited rejected-draft parameters survive reload');
   await cdp('Network.setBlockedURLs', { urls: [] }, memberAClient);
 
   const finalState = await hostState(gmToken);
@@ -470,7 +501,7 @@ try {
   const tarin = finalState.actors.find(actor => actor.id === actorDependency);
   assert.equal(mira.revision, 3, 'GM change and rebased player operation produce two distinct revisions');
   assert.equal(mira.data.resources.mana.current, 3, 'rebased player operation applies once after GM change');
-  assert.equal(tarin.revision, 2, 'accepted review proposal increments Tarin exactly once');
+  assert.equal(tarin.revision, 3, 'accepted review and rebased operation each increment Tarin once');
   assert.equal(tarin.data.resources.stress.current, 0, 'accepted review proposal applies its effect');
 
   const queueBeforeRetry = await readBrowserQueue(memberAClient);
