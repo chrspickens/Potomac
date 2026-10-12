@@ -238,9 +238,20 @@ try {
   assert.ok(resizedLayout.w !== movedLayout.w || resizedLayout.h !== movedLayout.h, 'pointer resize changes brick grid dimensions');
   assert.ok(Number.isInteger(resizedLayout.w) && Number.isInteger(resizedLayout.h), 'pointer resize snaps to integer grid dimensions');
   const beforeKeyboard = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).dashboards.find(d=>d.id===JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).activeDashboardId).bricks[0].layout`);
-  await click(gm.sessionId, '[aria-label="Move brick right"]');
+  await evaluate(gm.sessionId, "document.querySelector('[aria-label=\"Move brick right\"]').focus()");
+  await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, gm.sessionId);
+  await cdp('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', text: '\r', unmodifiedText: '\r', windowsVirtualKeyCode: 13 }, gm.sessionId);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, gm.sessionId);
+  await delay(100);
   const afterKeyboard = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).dashboards.find(d=>d.id===JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).activeDashboardId).bricks[0].layout`);
-  assert.notEqual(afterKeyboard.x, beforeKeyboard.x, 'keyboard move control changes brick position');
+  assert.notEqual(afterKeyboard.x, beforeKeyboard.x, `keyboard move control changes brick position: ${JSON.stringify({ beforeKeyboard, afterKeyboard })}`);
+  await evaluate(gm.sessionId, "document.querySelector('[aria-label=\"Make brick taller\"]').focus()");
+  await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, gm.sessionId);
+  await cdp('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', text: '\r', unmodifiedText: '\r', windowsVirtualKeyCode: 13 }, gm.sessionId);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, gm.sessionId);
+  await delay(100);
+  const afterKeyboardResize = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).dashboards.find(d=>d.id===JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).activeDashboardId).bricks[0].layout`);
+  assert.notEqual(afterKeyboardResize.h, afterKeyboard.h, 'keyboard resize control changes brick height');
   const rectangles = await evaluate(gm.sessionId, "[...document.querySelectorAll('.brick')].map(e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}})");
   for (let a = 0; a < rectangles.length; a++) for (let b = a + 1; b < rectangles.length; b++) {
     const x = rectangles[a], y = rectangles[b];
@@ -255,9 +266,13 @@ try {
   await clickText(gm.sessionId, 'Edit layout');
 
   // Context following versus a separately pinned character; accepted action and live activity refresh.
+  await waitForExpression(player.sessionId, "document.querySelector('.encounter-summary h3')?.textContent === 'The Glass Bridge'", 'player follower at encounter A');
+  const playerLayoutBeforeContext = await evaluate(player.sessionId, `localStorage.getItem(${JSON.stringify(initialPlayerKey)})`);
   await evaluate(gm.sessionId, `(() => { const select=document.querySelector('#encounter-select'); select.value='encounter-b'; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
   await clickText(gm.sessionId, 'Set active');
   await waitForExpression(gm.sessionId, "document.querySelector('.encounter-summary h3')?.textContent === 'The Sunken Archive'", 'follower updated to encounter B');
+  await waitForExpression(player.sessionId, "document.querySelector('.encounter-summary h3')?.textContent === 'The Sunken Archive'", 'player follower updated to encounter B');
+  assert.equal(await evaluate(player.sessionId, `localStorage.getItem(${JSON.stringify(initialPlayerKey)})`), playerLayoutBeforeContext, 'shared context update does not change player layout');
   assert.match(await evaluate(gm.sessionId, "document.querySelector('.character-view h3')?.textContent || ''"), /Mira Vell/, 'pinned character brick remains bound to its character');
   await click(gm.sessionId, '.character-view .action-grid button');
   await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('accepted by host')", 'host-accepted action');
@@ -303,5 +318,6 @@ try {
     const timeout = setTimeout(() => { child.kill('SIGKILL'); resolvePromise(); }, 2500);
     child.once('exit', () => { clearTimeout(timeout); resolvePromise(); });
   })));
-  await rm(scratch, { recursive: true, force: true });
+  // Chrome may briefly recreate profile files after Browser.close acknowledges.
+  await rm(scratch, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
 }
