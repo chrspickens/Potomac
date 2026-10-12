@@ -168,7 +168,9 @@ try {
       open.onsuccess = () => {open.result.close();resolve();};
     });
     const actor = {entityId:'actor-a',revision:4,module:{manifest:{id:'fictional.core',version:'1.0.0'},view:{layout:[],brick:[]}},data:{schemaVersion:1,visible:'player'},name:'A'};
-    await snapshotsModule.cachePlayerSnapshot(scope.host,{role:'player',memberId:scope.memberId,actors:[actor],encounters:[],context:{campaignId:scope.campaignId,activeEncounter:null,cursor:23},activity:[]});
+    await snapshotsModule.cachePlayerSnapshot(scope.host,{role:'player',memberId:scope.memberId,actors:[actor],encounters:[],context:{campaignId:scope.campaignId,activeEncounter:null,cursor:23},activity:[],session:{revision:0,current:null,history:[]}});
+    const activeSession={id:'session-a',status:'active',revision:1,startedAt:'2026-01-01T00:00:00.000Z',updatedAt:'2026-01-01T00:00:01.000Z',finishedAt:null};
+    await snapshotsModule.cachePlayerSnapshot(scope.host,{role:'player',memberId:scope.memberId,actors:[],encounters:[],context:{campaignId:scope.campaignId,activeEncounter:null,cursor:24},activity:[],session:{revision:1,current:activeSession,history:[activeSession]}});
     const storage = await storageModule.openOfflineStorage(scope);
     const queued = await storage.enqueueOperation(${JSON.stringify(operation)});
     const secondQueued = await storage.enqueueOperation(${JSON.stringify(secondOperation)});
@@ -226,11 +228,13 @@ try {
   assert.equal(persistedSecond.createdAt, setup.secondCreatedAt, 'second createdAt is stable across restart');
   assert.equal(persistedSecond.operation.baseRevision, secondOperation.baseRevision);
   assert.equal(persistedSecond.operation.parameters.resourceId, 'stress');
-  assert.equal(persisted.metadata.cursor, 23);
+  assert.equal(persisted.metadata.cursor, 24);
+  assert.equal(persisted.metadata.session.revision, 1, 'cached Table session revision survives restart');
+  assert.equal(persisted.cached.snapshot.session.current.id, 'session-a', 'cached Table session status survives restart');
   assert.equal(persisted.snapshots.length, 1);
   assert.equal(persisted.drafts[0].draftId, 'private-draft-a');
   assert.equal(persisted.cached.snapshot.actors[0].entityId, 'actor-a', 'authorized character snapshot reopens offline after process restart');
-  assert.equal(persisted.cached.snapshot.context.cursor, 23);
+  assert.equal(persisted.cached.snapshot.context.cursor, 24);
   assert.equal(persisted.operations.find(row => row.operation.operationId === 'operation-before-createdAt').createdAt, 123);
   assert.deepEqual(persisted.isolated, { memberOperations: [], campaignOperations: [], memberSnapshots: [] });
 
@@ -337,7 +341,7 @@ try {
   assert.equal(recovery.replacementCaught, true, 'refresh does not silently overwrite corrupt cache');
   assert.equal(recovery.snapshotCount, 2, 'corrupt cached snapshot remains in IndexedDB for recovery');
 
-  console.log('Offline storage browser acceptance passed: process restart, raw scope isolation, durable createdAt, cancel semantics, and corruption preservation.');
+  console.log('Offline storage browser acceptance passed: process restart, cached session recovery, local-copy retention, raw scope isolation, durable createdAt, cancel semantics, and corruption preservation.');
 } finally {
   if (socket) { try { socket.close(); } catch {} }
   for (const child of processes.reverse()) await stop(child).catch(() => {});

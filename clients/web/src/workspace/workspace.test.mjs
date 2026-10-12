@@ -19,7 +19,7 @@ test('default workspace includes Combat and Planning with optional actor bricks'
   const state = createDefaultWorkspace('campaign-a', 'profile-a', ['actor-1']);
   assert.deepEqual(state.groups.map((group) => group.name), ['Combat', 'Planning']);
   assert.deepEqual(state.dashboards[0].bricks.map((brick) => brick.typeId), [
-    'characters.sheet', 'encounters.summary', 'activity.log',
+    'characters.sheet', 'table.session', 'table.participants', 'table.activity', 'encounters.summary', 'activity.log',
   ]);
   assert.equal(state.dashboards[0].bricks[0].binding.mode, 'pinned');
 });
@@ -38,10 +38,10 @@ test('brick edits are immutable and retain independent instances and dashboard c
     options: { compact: true },
     layout: { x: 2, y: 1, w: 7, h: 5 },
   });
-  assert.equal(removeBrick(configured, combat.id, character.id).dashboards[0].bricks.length, 2);
+  assert.equal(removeBrick(configured, combat.id, character.id).dashboards[0].bricks.length, 5);
   const other = initial.dashboards[1];
   const withAddedBrick = addBrick(initial, other.id, 'activity.log');
-  assert.equal(withAddedBrick.dashboards[0].bricks.length, 3);
+  assert.equal(withAddedBrick.dashboards[0].bricks.length, 6);
   assert.equal(withAddedBrick.dashboards[1].bricks.length, 1);
   assert.equal(selectDashboard(initial, other.id).activeDashboardId, other.id);
 });
@@ -83,7 +83,7 @@ test('recovery clamps bad layouts, preserves unknown bricks, and resets incompat
     layout: { x: -5, y: 7, w: 0, h: 100 },
   });
   const sanitized = sanitizeWorkspace(state, 'campaign-a', 'profile-a');
-  const future = sanitized.state.dashboards[0].bricks[2];
+  const future = sanitized.state.dashboards[0].bricks.at(-1);
   assert.equal(sanitized.recovered, true);
   assert.equal(future.typeId, 'future.widget');
   assert.deepEqual(future.layout, { x: 0, y: 7, w: 1, h: 12 });
@@ -130,7 +130,7 @@ test('local storage round-trips per campaign and local profile, with visible rec
   };
   const state = createDefaultWorkspace('campaign-a', 'profile-a', ['actor-1']);
   saveWorkspace(state);
-  assert.equal(loadWorkspace('campaign-a', 'profile-a').dashboards[0].bricks.length, 3);
+  assert.equal(loadWorkspace('campaign-a', 'profile-a').dashboards[0].bricks.length, 6);
   assert.equal(loadWorkspace('campaign-b', 'profile-a', ['actor-2']).dashboards[0].bricks[0].binding.entityId, 'actor-2');
   assert.equal(loadWorkspace('campaign-a', 'profile-b').campaignId, 'campaign-a');
   assert.notEqual(workspaceStorageKey('campaign-a', 'profile-a'), workspaceStorageKey('campaign-a', 'profile-b'));

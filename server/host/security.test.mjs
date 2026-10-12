@@ -9,7 +9,7 @@ import { createHost } from './index.mjs';
 async function fixture(run) {
   const directory = mkdtempSync(join(tmpdir(), 'potomac-security-'));
   const databasePath = join(directory, 'host.sqlite');
-  let host = createHost({ databasePath });
+  let host = createHost({ databasePath, seedDemo: true });
   let address = await host.listen(0);
   let baseUrl = `http://127.0.0.1:${address.port}`;
   const request = (path, role = 'player', options = {}) => fetch(`${baseUrl}${path}`, {
@@ -19,7 +19,7 @@ async function fixture(run) {
   try {
     await run({ request, get host() { return host; }, restart: async () => {
       host.close();
-      host = createHost({ databasePath });
+      host = createHost({ databasePath, seedDemo: true });
       address = await host.listen(0);
       baseUrl = `http://127.0.0.1:${address.port}`;
     } });
@@ -29,7 +29,13 @@ async function fixture(run) {
   }
 }
 
-const post = (request, path, body, role = 'player') => request(path, role, { method: 'POST', body: JSON.stringify(body) });
+const post = async (request, path, body, role = 'player') => {
+  if (path === '/api/actors' && role === 'gm') {
+    const campaign = await (await request('/api/campaign', 'gm')).json();
+    if (!campaign.systemModuleId) await request('/api/campaign', 'gm', { method: 'PUT', body: JSON.stringify({ name: 'Test campaign', systemModuleId: body.moduleId, systemModuleVersion: body.moduleVersion, baseRevision: campaign.revision }) });
+  }
+  return request(path, role, { method: 'POST', body: JSON.stringify(body) });
+};
 const moduleDefinition = {
   id: 'security.fixture', version: '1',
   schema: { type: 'object', properties: { publicValue: { type: 'number' }, secret: { type: 'number' }, notes: { type: 'object', properties: { hidden: { type: 'string' } } } }, additionalProperties: true },
@@ -67,15 +73,16 @@ test('upgrade preserves 0.2 shared access only for existing player actors', asyn
     CREATE TABLE events (cursor INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, operation_id TEXT UNIQUE, actor_id TEXT, kind TEXT NOT NULL, visibility TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE operations (id TEXT PRIMARY KEY, response TEXT NOT NULL, actor_id TEXT, action_id TEXT, request_hash TEXT);
     CREATE TABLE offline_proposals (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, member_id TEXT NOT NULL, actor_id TEXT NOT NULL, action_id TEXT NOT NULL, request_hash TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT, decision_id TEXT UNIQUE, decision TEXT, decision_response TEXT);
-    CREATE TABLE campaign (id TEXT PRIMARY KEY, context TEXT NOT NULL DEFAULT '{}');
+    CREATE TABLE campaign (id TEXT PRIMARY KEY, context TEXT NOT NULL DEFAULT '{}', name TEXT NOT NULL DEFAULT '', system_module_id TEXT, system_module_version TEXT, revision INTEGER NOT NULL DEFAULT 1);
   `);
   legacyDb.prepare('INSERT INTO offline_proposals(id,operation_id,member_id,actor_id,action_id,request_hash,request,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
     .run('legacy-proposal', 'legacy-operation', 'legacy-member', 'legacy-actor', 'wait', 'old-hash', '{}', 'pending', '2026-01-01T00:00:00.000Z');
   legacyDb.prepare('INSERT INTO modules(id,version,manifest) VALUES(?,?,?)').run(moduleDefinition.id, moduleDefinition.version, JSON.stringify(moduleDefinition));
+  legacyDb.prepare('INSERT INTO campaign(id,context,name,system_module_id,system_module_version,revision) VALUES(?,?,?,?,?,1)').run('foundation-demo', '{}', 'Legacy', moduleDefinition.id, moduleDefinition.version);
   legacyDb.prepare('INSERT INTO actors(id,module_id,module_version,revision,data,visibility,owner_role) VALUES(?,?,?,?,?,?,?)')
     .run('legacy-actor', moduleDefinition.id, moduleDefinition.version, 1, JSON.stringify({ moduleId: moduleDefinition.id, moduleVersion: moduleDefinition.version, schemaVersion: 1, entityId: 'legacy-actor', revision: 1, publicValue: 1, secret: 2, notes: { hidden: 'old' }, derived: {} }), '{}', 'player');
   legacyDb.close();
-  const host = createHost({ databasePath });
+  const host = createHost({ databasePath, seedDemo: true });
   try {
     const migratedProposal = host.db.prepare('SELECT id,campaign_id,base_revision,rule_version FROM offline_proposals WHERE id=?').get('legacy-proposal');
     assert.deepEqual({ ...migratedProposal }, { id: 'legacy-proposal', campaign_id: null, base_revision: null, rule_version: null });
@@ -194,6 +201,30 @@ test('player actor projection removes GM fields before evaluation and keeps unre
     const gmActor = await (await request('/api/actors/gm-actor', 'gm')).json();
     assert.equal(gmActor.data.derived.secretDerived, 86);
     assert.equal(gmActor.data.derived.nestedSecretDerived, true);
+  });
+});
+
+test('member revocation ends an existing stream and blocks subsequent recovery requests', async () => {
+  await fixture(async ({ request }) => {
+    const enrolled = await post(request, '/api/members/enroll', { displayName: 'Reconnect member' }, 'gm');
+    const member = await enrolled.json();
+    const controller = new AbortController();
+    const stream = await request('/api/stream?since=0', member.credential, { signal: controller.signal });
+    assert.equal(stream.status, 200);
+    const reader = stream.body.getReader();
+    const initial = await reader.read();
+    assert.equal(initial.done, false, 'authorized stream is established before revocation');
+
+    const revoked = await request(`/api/members/${member.memberId}`, 'gm', { method: 'DELETE' });
+    assert.equal(revoked.status, 200);
+    const ended = await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('revoked stream remained open')), 1000)),
+    ]);
+    assert.equal(ended.done, true);
+    assert.equal((await request('/api/state', member.credential)).status, 401);
+    assert.equal((await request('/api/stream?since=0', member.credential)).status, 401);
+    controller.abort();
   });
 });
 

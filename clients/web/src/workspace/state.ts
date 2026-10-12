@@ -29,8 +29,11 @@ export function createDefaultWorkspace(
     combatBricks.push(createBrick('characters.sheet', { mode: 'pinned', entityId }, { x: index * 4, y: 0 }));
   });
   combatBricks.push(
+    createBrick('table.session', { mode: 'none' }, { x: 0, y: 3 }),
+    createBrick('table.participants', { mode: 'follow', contextKey: 'session.activeEncounter' }, { x: 4, y: 3 }),
+    createBrick('table.activity', { mode: 'none' }, { x: 0, y: 7 }),
     createBrick('encounters.summary', { mode: 'follow', contextKey: 'session.activeEncounter' }, { x: actorIds.length * 4, y: 0 }),
-    createBrick('activity.log', { mode: 'none' }, { x: 0, y: 3 }),
+    createBrick('activity.log', { mode: 'none' }, { x: 4, y: 7 }),
   );
   return {
     schemaVersion: WORKSPACE_SCHEMA_VERSION,

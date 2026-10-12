@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
+import { getBrickDefinition, getBrickDefinitions, registerBrickDefinition } from './registry.ts';
 
 test('a fourth trusted brick resolves only data exposed by its authorized adapter', () => {
   const unregister = registerBrickDefinition({
@@ -33,4 +33,13 @@ test('a fourth trusted brick resolves only data exposed by its authorized adapte
     unregister();
   }
   assert.equal(getBrickDefinition('test.trusted-feed'), undefined);
+});
+
+test('Table brick contributions are registered with safe context bindings', () => {
+  const expected = ['table.session', 'table.participants', 'table.activity'];
+  for (const typeId of expected) assert.ok(getBrickDefinition(typeId), `${typeId} is registered`);
+  assert.ok(expected.every(typeId => getBrickDefinitions().some(definition => definition.typeId === typeId)));
+  assert.deepEqual(getBrickDefinition('table.participants').defaultBinding, { mode: 'follow', contextKey: 'session.activeEncounter' });
+  assert.deepEqual(getBrickDefinition('table.participants').supportedBindings, ['follow', 'pinned']);
+  assert.deepEqual(getBrickDefinition('table.session').supportedBindings, ['none']);
 });

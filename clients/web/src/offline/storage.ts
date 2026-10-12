@@ -18,6 +18,7 @@ export type AuthorizedSnapshot<TData = unknown> = {
 
 export type OfflineSessionMetadata = {
   cursor: number;
+  session?: { revision: number; current: { id: string; status: 'active' | 'paused' | 'finished'; revision: number; startedAt: string; updatedAt: string; finishedAt: string | null } | null; history: Array<{ id: string; status: 'active' | 'paused' | 'finished'; revision: number; startedAt: string; updatedAt: string; finishedAt: string | null }> };
   lastSyncedAt: number;
   activeEncounter: { id: string; name: string; summary: string } | null;
   encounters: Array<{ id: string; name: string; summary: string }>;
@@ -186,6 +187,13 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
           tx.abort();
           return;
         }
+        const previous = request.result as Stored<{ metadata: OfflineSessionMetadata }> | undefined;
+        if (previous && !isSessionMetadata(previous.metadata)) {
+          corrupt = true;
+          tx.abort();
+          return;
+        }
+        if (previous && !canReplaceSessionMetadata(metadata, previous.metadata)) return;
         store.put(scoped({ metadata: structuredClone(metadata) }, 'session'));
       };
       try { await transactionResult(tx) } catch (error) {
@@ -537,10 +545,26 @@ function isDraftRecord(value: unknown, scope: OfflineScope): value is Stored<{ d
   return value.key === JSON.stringify([scopeKey, value.draft.draftId]);
 }
 
-function isSessionMetadata(value: unknown): value is OfflineSessionMetadata {
+export function isSessionMetadata(value: unknown): value is OfflineSessionMetadata {
   if (!isRecord(value) || !Number.isSafeInteger(value.cursor) || (value.cursor as number) < 0 || !Number.isFinite(value.lastSyncedAt) || !Array.isArray(value.encounters)) return false;
+  const sessionRecord = (item: unknown) => isRecord(item) && isNonEmptyString(item.id)
+    && ['active', 'paused', 'finished'].includes(String(item.status))
+    && Number.isSafeInteger(item.revision) && (item.revision as number) > 0
+    && typeof item.startedAt === 'string' && typeof item.updatedAt === 'string'
+    && (item.finishedAt === null || typeof item.finishedAt === 'string');
+  if (value.session !== undefined && (!isRecord(value.session) || !Number.isSafeInteger(value.session.revision) || (value.session.revision as number) < 0
+    || !Array.isArray(value.session.history) || !value.session.history.every(sessionRecord)
+    || (value.session.current !== null && !sessionRecord(value.session.current)))) return false;
   const encounter = (item: unknown) => isRecord(item) && isNonEmptyString(item.id) && typeof item.name === 'string' && typeof item.summary === 'string';
   return (value.activeEncounter === null || encounter(value.activeEncounter)) && value.encounters.every(encounter);
+}
+
+/** Prevent delayed snapshot writes from moving recovery state backwards. */
+export function canReplaceSessionMetadata(next: OfflineSessionMetadata, current: OfflineSessionMetadata): boolean {
+  if (next.cursor < current.cursor) return false;
+  const currentRevision = current.session?.revision;
+  const nextRevision = next.session?.revision;
+  return currentRevision === undefined || nextRevision !== undefined && nextRevision >= currentRevision;
 }
 
 function isQueuedOperation(value: unknown, scope: OfflineScope, scopeKey: string): value is Stored<QueuedOperation> {

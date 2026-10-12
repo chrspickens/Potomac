@@ -12,6 +12,7 @@ pnpm debug:watch -- --role gm --since now
 pnpm check                         # build, tests, isolated host smoke and two-client browser acceptance
 pnpm debug:smoke                   # isolated host, separate temporary database
 pnpm acceptance:campaign           # isolated browser acceptance with a GM and two enrolled players
+pnpm acceptance:system-b-table     # fresh pinned System B host: Table start, action, redaction and reconnect
 ```
 
 Direct commands work without installation:
@@ -25,9 +26,13 @@ node scripts/diagnostics/potomac-debug.mjs watch --role player --since 0 --limit
 
 ## Campaign browser acceptance (current 0.4 slice)
 
-`pnpm acceptance:campaign` runs the isolated browser scenario with one GM and two separately enrolled player identities. It creates a temporary SQLite database, starts a loopback host and isolated Vite/browser sessions, and removes temporary state when the run ends. The second player's snapshot and event replay are checked for member-scope isolation while the existing workspace scenario verifies grants, host-filtered fields, actions, context-following bricks, and browser layout persistence.
+`pnpm acceptance:campaign` runs an isolated browser scenario with one GM and two separately enrolled player identities in distinct browser contexts. It creates a temporary SQLite database and starts a clean host without demo seeding, asserts that campaign data starts empty, then installs scenario fixtures through the host API using only the campaign-pinned module. Browser profile storage is initialized before the app loads. The runner checks member-scoped network projections and exercises the Table encounter roster plus committed session start/pause/resume refresh across all three live clients. If a connection stalls, it reports the first failed API request alongside browser state. The broader workspace scenario also verifies grants, host-filtered fields, actions, context-following bricks, and browser layout persistence.
 
-This is an incremental 0.4 harness, not the complete Ashen Road campaign journey: the host still supplies fixed fixture content and does not yet support the full create/edit/archive, encounter lifecycle, offline review, restart, System B browser scenario, or backup restore acceptance sequence. Run `pnpm acceptance:workspace` for the same current browser scenario under its 0.2 name. Both commands require Node dependencies and Chrome or Edge; set `POTOMAC_CHROME` to the browser executable when automatic discovery does not find it.
+`pnpm acceptance:system-b-table` starts a second, genuinely fresh host with demo seeding disabled, pins it to System B, and provisions a System B character/encounter through host APIs. A GM and player use isolated browser profiles against the same generic Table and Character UI. It starts a session from the Table control, submits a System B action during that session, checks the GM-only field against player DOM and actual HTTP/SSE response bytes, then takes the player browser offline and verifies reconnect refreshes the committed active session. It is a focused second-system browser scenario, not a repeat of the broad campaign-management walkthrough.
+
+`pnpm acceptance:table` complements those browser runs with focused isolated host HTTP/SSE checks for session lifecycle, replay, idempotent operations, offline retries, redaction, and revocation. `pnpm check` runs all three browser/host acceptance commands, so CI covers the broad System A walkthrough, the System B Table scenario, and lower-level host recovery cases.
+
+The System B browser scenario is intentionally limited to the generic Table session/action/redaction/reconnect path; it does not repeat the complete campaign-management workflow or manual visual QA. Run `pnpm acceptance:workspace` for the same System A browser scenario under its 0.2 name. Browser commands require Node dependencies and Chrome or Edge; set `POTOMAC_CHROME` to the browser executable when automatic discovery does not find it.
 
 ## Commands
 

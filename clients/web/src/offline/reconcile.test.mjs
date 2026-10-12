@@ -13,16 +13,19 @@ test('lost acknowledgement retries the same immutable operation', async () => {
     recordReceipt: async receipt => { row = { ...row, state: receipt.status } },
   }
   const ids = []
-  const failed = await flushOfflineQueue(storage, async submitted => { ids.push(submitted.operationId); throw new Error('ack lost') })
+  const bodies = []
+  const failed = await flushOfflineQueue(storage, async submitted => { ids.push(submitted.operationId); bodies.push(structuredClone(submitted)); throw new Error('ack lost') })
   assert.deepEqual(failed, { processed: 0, transportFailed: true })
   assert.equal(row.state, 'queued')
   assert.equal(row.lastError, 'transport')
   const passed = await flushOfflineQueue(storage, async submitted => {
     ids.push(submitted.operationId)
+    bodies.push(structuredClone(submitted))
     return { operationId: submitted.operationId, entityId: submitted.entityId, status: 'applied' }
   })
   assert.deepEqual(passed, { processed: 1, transportFailed: false })
   assert.deepEqual(ids, ['op-1', 'op-1'])
+  assert.deepEqual(bodies, [operation, operation], 'retry keeps the exact operation body so the host can return its original receipt without rerunning effects')
   assert.equal(row.state, 'applied')
   assert.equal(row.lastError, undefined)
 })

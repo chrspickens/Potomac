@@ -122,6 +122,7 @@ async function smoke() {
       databasePath: join(dir, 'experiment.sqlite'),
       campaignId: smokeCampaignId,
       gmToken: gm, playerToken: legacyPlayer,
+      seedDemo: true,
     });
     const address = await host.listen(0, '127.0.0.1');
     const base = new URL('http://127.0.0.1:' + address.port + '/');
@@ -149,6 +150,9 @@ async function smoke() {
       const state = requiredStatus(await get('/api/state', gm), 200, 'initial state');
       const ids = new Set(state.modules.map(item => item.id));
       assert.ok(ids.has('example.system-a') && ids.has('example.system-b'));
+      requiredStatus(await request(base, '/api/campaign', { token: gm, method: 'PUT', body: {
+        name: 'Diagnostic Campaign', systemModuleId: 'example.system-a', systemModuleVersion: '0.1.0', baseRevision: 1,
+      }}), 200, 'campaign pin');
     });
 
     await check('create-and-filter-characters', async () => {
@@ -163,12 +167,12 @@ async function smoke() {
         visibility: { gmOnly: ['secretNote'] },
       }), 201, 'System A character');
       requiredStatus(await post('/api/actors', gm, {
-        id: actorB, moduleId: 'example.system-b', moduleVersion: '0.1.0',
+        id: actorB, moduleId: 'example.system-a', moduleVersion: '0.1.0',
         ownerMemberId: enrolled.memberId,
         data: {
           name: 'Smoke Wanderer',
-          traits: { agility: 2, instinct: 3 },
-          resources: { stress: { current: 1, maximum: 6 }, hope: { current: 3, maximum: 6 } },
+          attributes: { strength: 10, intelligence: 9 },
+          resources: { hp: { current: 8, maximum: 8 }, mana: { current: 2, maximum: 4 } },
         },
       }), 201, 'System B character');
       const gmState = requiredStatus(await get('/api/state', gm), 200, 'GM projection');
@@ -203,9 +207,9 @@ async function smoke() {
     });
 
     await check('second-system-independent-rule', async () => {
-      requiredStatus(await post('/api/actions', player, commandFor(actorB, 'example.system-b', 1, 'spend-hope')), 200, 'System B resource change');
+      requiredStatus(await post('/api/actions', player, commandFor(actorB, 'example.system-a', 1, 'spend-mana')), 200, 'second actor resource change');
       const state = requiredStatus(await get('/api/state', player), 200, 'System B projection');
-      assert.equal(state.actors.find(item => item.id === actorB).data.resources.hope.current, 2);
+      assert.equal(state.actors.find(item => item.id === actorB).data.resources.mana.current, 1);
     });
 
     await check('host-verified-roll-and-event-history', async () => {

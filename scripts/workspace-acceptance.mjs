@@ -119,7 +119,7 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 12000
 
 function startHost() {
   hostProcess = start(process.execPath, [join(root, 'server/host/index.mjs')], {
-    env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: dbPath, POTOMAC_GM_TOKEN: gmToken, POTOMAC_PLAYER_TOKEN: legacyPlayerToken },
+    env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: dbPath, POTOMAC_GM_TOKEN: gmToken, POTOMAC_PLAYER_TOKEN: legacyPlayerToken, POTOMAC_SEED_DEMO: '0' },
   });
   return hostProcess;
 }
@@ -142,26 +142,42 @@ async function openContext(browserContextId, role, profile, clientUrl) {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId);
   const secrets = [];
   const requests = new Map();
+  const failures = [];
   browserSocket.addEventListener('message', event => {
     const message = JSON.parse(event.data);
     if (message.sessionId !== sessionId) return;
-    if (message.method === 'Network.responseReceived' && /\/api\//.test(message.params.response.url)) requests.set(message.params.requestId, message.params.response.url);
+    if (message.method === 'Network.requestWillBeSent' && /\/api\//.test(message.params.request.url)) {
+      requests.set(message.params.requestId, { url: message.params.request.url, method: message.params.request.method });
+    }
+    if (message.method === 'Network.responseReceived' && requests.has(message.params.requestId)) {
+      const request = requests.get(message.params.requestId);
+      request.status = message.params.response.status;
+      request.statusText = message.params.response.statusText;
+    }
+    if (message.method === 'Network.loadingFailed' && requests.has(message.params.requestId)) {
+      const request = requests.get(message.params.requestId);
+      failures.push({ ...request, error: message.params.errorText });
+    }
     if (message.method === 'Network.loadingFinished' && requests.has(message.params.requestId)) {
       const requestId = message.params.requestId;
-      void cdp('Network.getResponseBody', { requestId }, sessionId).then(({ body }) => secrets.push({ url: requests.get(requestId), body })).catch(() => {});
+      const request = requests.get(requestId);
+      void cdp('Network.getResponseBody', { requestId }, sessionId).then(({ body }) => secrets.push({ ...request, body })).catch(() => {});
     }
   });
+  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('potomac.workspace.demo-profile', ${JSON.stringify(profile)}); window.__workspaceAcceptanceRole = ${JSON.stringify(role)};` }, sessionId);
   await cdp('Page.navigate', { url: clientUrl }, sessionId);
-  await waitForExpression(sessionId, "document.readyState === 'complete'", 'client document');
-  await evaluate(sessionId, `localStorage.setItem('potomac.workspace.demo-profile', ${JSON.stringify(profile)}); window.__workspaceAcceptanceRole = ${JSON.stringify(role)};`);
-  await cdp('Page.reload', { ignoreCache: true }, sessionId);
-  await delay(300);
   await waitForExpression(sessionId, "Boolean(document.querySelector('.topbar-right select'))", `${role} role selector`);
+  assert.equal(await evaluate(sessionId, "localStorage.getItem('potomac.workspace.demo-profile')"), profile, `${role} profile is initialized before the app reads browser storage`);
   await evaluate(sessionId, `(() => { const s = document.querySelector('.topbar-right select'); if (s.value !== ${JSON.stringify(role)}) { s.value = ${JSON.stringify(role)}; s.dispatchEvent(new Event('change', {bubbles:true})); } })()`);
-  await waitForExpression(sessionId, `document.querySelector('.status')?.textContent.includes('CONNECTED')`, `${role} connection`);
-  await waitForExpression(sessionId, "document.querySelector('.workspace-footnote')?.textContent.includes('Cursor') && !document.querySelector('.workspace-footnote')?.textContent.includes('Cursor —')", `${role} authorized snapshot`);
+  try {
+    await waitForExpression(sessionId, `document.querySelector('.status')?.textContent.includes('CONNECTED')`, `${role} connection`);
+    await waitForExpression(sessionId, "document.querySelector('.workspace-footnote')?.textContent.includes('Cursor') && !document.querySelector('.workspace-footnote')?.textContent.includes('Cursor —')", `${role} authorized snapshot`);
+  } catch (error) {
+    const firstFailedRequest = [...requests.values()].find(request => request.status >= 400) || failures[0];
+    throw new Error(`${error.message}\n${role} first failed API request: ${JSON.stringify(firstFailedRequest || null)}; API requests: ${JSON.stringify([...requests.values()])}`);
+  }
   await delay(250);
-  return { sessionId, secrets };
+  return { sessionId, secrets, requests: [...requests.values()], failures };
 }
 
 try {
@@ -187,8 +203,8 @@ try {
   assert.equal(freshSetupResponse.status, 200, `fresh campaign state is readable after empty context initialization: ${JSON.stringify(freshSetup)}`);
   assert.equal(freshSetup.campaignId, 'foundation-demo', 'fresh host exposes its configured campaign identity');
   assert.deepEqual(freshSetup.context, { activeEncounter: null }, 'fresh campaign can start without an active encounter');
-  assert.deepEqual(freshSetup.actors, [], 'fresh campaign starts without characters before the web client bootstraps demo fixtures');
-  assert.deepEqual(freshSetup.encounters.map(encounter => encounter.id).filter(id => id.startsWith('encounter-')), ['encounter-a', 'encounter-b'], 'fresh campaign exposes bundled encounter definitions');
+  assert.deepEqual(freshSetup.actors, [], 'fresh campaign starts without characters before acceptance fixtures are explicitly installed');
+  assert.deepEqual(freshSetup.encounters, [], 'fresh campaign starts without demo encounters');
   assert.ok(freshSetup.modules.some(module => module.id === 'example.system-a' && module.version === '0.1.0')
     && freshSetup.modules.some(module => module.id === 'example.system-b' && module.version === '0.1.0'), 'fresh campaign has both versioned system modules available');
   const deniedCampaignEdit = await request('/api/campaign', legacyPlayerToken, { method: 'PUT', body: jsonBody({ name: 'Denied', systemModuleId: 'example.system-a', systemModuleVersion: '0.1.0', baseRevision: 1 }) });
@@ -229,6 +245,23 @@ try {
   assert.equal(secondEnrollment.status, 201, 'GM enrolls a second individual player');
   ({ credential: secondPlayerToken, memberId: secondPlayerMemberId } = await secondEnrollment.json());
   assert.notEqual(secondPlayerMemberId, playerMemberId, 'each enrolled player receives a distinct member identity');
+  // The clean-host contract is asserted above. Install scenario fixtures explicitly
+  // through host APIs, and keep every actor on the campaign's pinned module so
+  // client startup does not try to bootstrap a cross-system legacy fixture.
+  for (const encounter of [
+    { id: 'encounter-a', name: 'The Glass Bridge', summary: 'A narrow crossing over a deep ravine.' },
+    { id: 'encounter-b', name: 'The Sunken Archive', summary: 'A flooded chamber of forgotten records.' },
+  ]) {
+    const response = await request('/api/encounters', gmToken, { method: 'POST', body: jsonBody(encounter) });
+    assert.equal(response.status, 201, `acceptance fixture encounter ${encounter.id} is created explicitly`);
+  }
+  for (const actor of [
+    { id: 'actor-emberfall-01', data: { name: 'Mira Vell', epithet: 'Ashbound arcanist', attributes: { strength: 14, intelligence: 12 }, resources: { hp: { current: 24, maximum: 32 }, mana: { current: 5, maximum: 8 } }, derived: { meleeBonus: 4 }, secretNote: 'The magistrate recognizes Mira.' }, visibility: { gmOnly: ['secretNote'] } },
+    { id: 'actor-tidebound-01', data: { name: 'Tarin Vale', epithet: 'Second acceptance character', attributes: { strength: 12, intelligence: 10 }, resources: { hp: { current: 20, maximum: 24 }, mana: { current: 3, maximum: 4 } } } },
+  ]) {
+    const response = await request('/api/actors', gmToken, { method: 'POST', body: jsonBody({ ...actor, moduleId: 'example.system-a', moduleVersion: '0.1.0' }) });
+    assert.equal(response.status, 201, `acceptance fixture actor ${actor.id} is created with the pinned module`);
+  }
   const web = start(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(webPort), '--strictPort'], {
     cwd: join(root, 'clients/web'),
     env: { ...process.env, VITE_POTOMAC_HOST: baseUrl, VITE_POTOMAC_GM_TOKEN: gmToken, VITE_POTOMAC_PLAYER_TOKEN: playerToken },
@@ -277,16 +310,10 @@ try {
   assert.equal(uiCampaign.systemModuleId, 'example.system-a', 'campaign UI retains the pinned rules module');
   assert.equal(uiCampaign.revision, 3, 'campaign UI uses revision-checked writes');
 
-  const fixtureDeadline = Date.now() + 12000;
-  while (Date.now() < fixtureDeadline) {
-    const state = await (await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } })).json();
-    if (state.actors.length >= 2) break;
-    await delay(100);
-  }
   const gmProjectionResponse = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } });
   const gmProjection = await gmProjectionResponse.json();
   assert.equal(gmProjectionResponse.status, 200);
-  assert.ok(gmProjection.actors.length >= 2, `GM seeded the fixture actors: ${JSON.stringify({ actors: gmProjection.actors, network: gm.secrets.filter(item => item.url.includes('/api/actors')), ui: await evaluate(gm.sessionId, "({role:document.querySelector('.topbar-right select')?.value, status:document.querySelector('.status')?.textContent, error:document.querySelector('.error-banner')?.textContent, body:document.body.innerText.slice(0,500)})") })}`);
+  assert.ok(gmProjection.actors.length >= 2, `GM reads the explicitly-created compatible acceptance actors: ${JSON.stringify(gmProjection.actors.map(actor => ({ id: actor.id, moduleId: actor.moduleId, moduleVersion: actor.moduleVersion })))}`);
   const createdActorResponse = await request('/api/actors', gmToken, { method: 'POST', body: jsonBody({
     id: 'acceptance-created-actor', moduleId: 'example.system-a', moduleVersion: '0.1.0',
     data: { name: 'Acceptance Created Character', epithet: 'API acceptance fixture', attributes: { strength: 10, intelligence: 11 }, resources: { hp: { current: 7, maximum: 7 }, mana: { current: 2, maximum: 3 } } },
@@ -348,6 +375,29 @@ try {
   assert.ok(secondPlayerProjection.events.every(event => event.visibility === 'public'
     && (!event.actorId || secondPlayerProjection.actors.some(actor => actor.id === event.actorId))), 'second player event replay contains only public events for readable actors');
   assert.ok(secondPlayer.secrets.every(item => !item.body.includes(playerMemberId)), 'second player browser network payloads do not disclose the first member identity');
+
+  // Exercise the registered Table bricks in three isolated browser profiles.
+  // The GM and Player A have authorized roster entries; Player B has no grants.
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
+  await waitForExpression(player.sessionId, "document.querySelector('.session-strip strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
+  await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No participants'))", 'Player B empty authorized Table roster');
+  const tableRoster = await evaluate(player.sessionId, "[...document.querySelectorAll('.table-participants article strong')].map(item=>item.textContent)");
+  assert.deepEqual(tableRoster.sort(), ['Mira Vell', 'Tarin Vale'], 'Player A Table shows only its two granted participants from the active encounter');
+  await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel button')?.textContent === 'Start session' && !document.querySelector('.table-session-panel button').disabled", 'GM Table start control enabled for active encounter');
+  await clickText(gm.sessionId, 'Start session', '.table-session-panel button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", 'GM starts the live Table session against the committed active encounter');
+  for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
+    await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed active Table session`);
+  }
+  await clickText(gm.sessionId, 'Pause session', '.table-session-panel button');
+  for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
+    await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Paused'", `${label} sees committed paused Table session`);
+  }
+  await clickText(gm.sessionId, 'Resume session', '.table-session-panel button');
+  for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
+    await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
+  }
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.')"), true, 'player Table view has no GM session controls');
 
   const gmState = await evaluate(gm.sessionId, `(() => { const e = document.querySelector('.gm-note'); return {note:e?.textContent || '', actor:document.querySelector('.character-view h3')?.textContent || '', key:Object.keys(localStorage).find(k=>k.startsWith('potomac:workspace:')), body:document.body.innerText.slice(0,900)} })()`);
   assert.match(gmState.note, /The magistrate recognizes Mira\./, `GM sees the fixture secret note: ${JSON.stringify(gmState)}`);
@@ -537,8 +587,9 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.character-view h3')?.textContent", 'pinned character after context update');
   assert.ok((await evaluate(gm.sessionId, "document.querySelector('.character-view h3')?.textContent || ''")).trim().length > 0, 'pinned character brick remains bound to an authorized character');
   await click(gm.sessionId, '.character-view .action-grid button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('accepted by host')", 'host-accepted action');
-  assert.ok(gm.secrets.some(item => item.url.includes('/api/actions') && item.body.includes('"actionId":"spend-mana"')), 'host action response is present in the GM network trace');
+  await waitForExpression(gm.sessionId, "['accepted by host', 'accepted at revision'].some(text=>document.querySelector('.action-status')?.textContent.includes(text))", 'host-accepted action');
+  const acceptedActionState = await (await request('/api/state', gmToken)).json();
+  assert.ok(acceptedActionState.events.some(event => event.kind === 'action.applied' && event.payload.actionId === 'spend-mana'), 'GM character action is committed to authoritative event history');
   await waitForExpression(player.sessionId, "document.querySelector('.activity-item strong')?.textContent", 'player activity refresh after authorized action');
   assert.ok(player.secrets.every(item => !item.body.includes('The magistrate recognizes Mira.')), 'player payloads stay redacted after activity refresh');
 
@@ -622,7 +673,7 @@ try {
   // logged as a gap. Every gap is now a hard failure in pnpm check / CI.
   assert.deepEqual(knownAcceptanceGaps, [], 'all required campaign acceptance steps must pass');
 
-  console.log('PASS: fresh campaign setup/configuration; schema-valid character creation by API and UI; action-based character edits; participant enrollment and character grants by API and UI; encounter create/edit, participant assignment and encounter-app activation; player permission denials; two-player/member visibility isolation; host restart persistence for campaign, encounter context, characters and grants; dashboard layout, browser reload, action activity and secret redaction.');
+  console.log('PASS: fresh campaign setup/configuration; schema-valid character creation by API and UI; action-based character edits; participant enrollment and character grants by API and UI; encounter create/edit, participant assignment and encounter-app activation; three isolated browsers exercise Table roster projections and session start/pause/resume; player permission denials; two-player/member visibility isolation; host restart persistence for campaign, encounter context, characters and grants; dashboard layout, browser reload, action activity and secret redaction.');
   console.log('PASS: versioned backup/restore, campaign pin, encounter participants and corruption rejection.');
   console.log(`Isolated host database: ${dbPath}`);
   console.log('Note: browser profile layout is verified across reload; the runner cleans its temporary profile and database on exit.');

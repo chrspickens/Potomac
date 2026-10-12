@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import type { Activity, Encounter } from '../api.ts';
+import type { Activity, Encounter, Role, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 
 export type BrickSize = { w: number; h: number };
@@ -40,6 +40,10 @@ export type AuthorizedBrickDataAdapter = {
   getEncounterOptions(): Array<{ id: string; label: string }>;
   getActiveEncounter(): Encounter | undefined;
   getActivity(): Activity[];
+  getParticipants(): Array<{ actor: Actor; status?: string }>;
+  getParticipantsForEncounter?(encounterId: string): Array<{ actor: Actor; status?: string }> | undefined;
+  getSession(): SessionSnapshot | undefined;
+  getRole(): Role;
 };
 
 export type BrickRenderProps<TData = unknown> = {
@@ -49,7 +53,8 @@ export type BrickRenderProps<TData = unknown> = {
   busy: boolean;
   offline?: boolean;
   onAction: (actor: Actor, actionId: string) => void;
-  onOpenApp?: (appId: 'characters' | 'encounters', entityId?: string) => void;
+  onSessionCommand?: (command: 'start' | 'pause' | 'resume' | 'finish', encounter?: { id: string; revision: number }) => void;
+  onOpenApp?: (appId: 'table' | 'characters' | 'encounters', entityId?: string) => void;
 };
 
 export type BrickDefinition<TData = unknown> = {

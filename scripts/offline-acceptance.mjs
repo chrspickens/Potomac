@@ -1,4 +1,4 @@
-// Repeatable Workspace 0.3 offline acceptance: pnpm acceptance:offline
+// Repeatable Workspace 0.3 offline acceptance on a clean System B campaign: pnpm acceptance:offline
 // Requires the repository's Node/Vite dependencies and an installed Chrome/Edge.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -122,13 +122,13 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 15000
 }
 
 async function clickText(sessionId, text, selector = 'button') {
-  const clicked = await evaluate(sessionId, `(() => {
+  const result = await evaluate(sessionId, `(() => {
     const target = [...document.querySelectorAll(${JSON.stringify(selector)})]
       .find(element => element.textContent.trim().includes(${JSON.stringify(text)}));
-    if (!target || target.disabled) return false;
-    target.click(); return true;
+    if (!target || target.disabled) return { clicked: false, matches: [...document.querySelectorAll(${JSON.stringify(selector)})].map(element => ({ text: element.textContent.trim(), disabled: element.disabled })) };
+    target.click(); return { clicked: true };
   })()`);
-  assert.equal(clicked, true, `Expected an enabled ${selector} containing ${text}`);
+  assert.equal(result.clicked, true, `Expected an enabled ${selector} containing ${text}; found ${JSON.stringify(result)}`);
 }
 
 async function clickSelector(sessionId, selector) {
@@ -281,14 +281,23 @@ try {
   await chooseRole(gm, 'gm');
   await waitForExpression(gm, "document.querySelector('.campaign-select strong')?.textContent === 'foundation-demo'", 'GM host session');
 
-  let seeded;
-  const seedDeadline = Date.now() + 15000;
-  while (Date.now() < seedDeadline) {
-    const state = await request('/api/state', gmToken);
-    if (state.status === 200 && state.value.actors?.length >= 2) { seeded = state.value; break; }
-    await delay(150);
+  const emptyHost = await hostState(gmToken);
+  assert.deepEqual(emptyHost.actors, [], 'fresh offline acceptance host contains no implicit demo actors');
+  const campaign = await request('/api/campaign', gmToken);
+  assert.equal(campaign.status, 200, 'fresh campaign configuration is readable');
+  const configured = await request('/api/campaign', gmToken, 'PUT', {
+    name: 'Offline Acceptance', systemModuleId: 'example.system-b', systemModuleVersion: '0.1.0', baseRevision: campaign.value.revision,
+  });
+  assert.equal(configured.status, 200, 'offline acceptance explicitly pins its fixture rules module');
+  for (const actor of [
+    { id: 'actor-emberfall-01', data: { name: 'Mira Vell', epithet: 'Ashbound arcanist', traits: { agility: 3, instinct: 2 }, resources: { stress: { current: 1, maximum: 6 }, hope: { current: 5, maximum: 6 } }, derived: { composure: 5 }, secretNote: 'The magistrate recognizes Mira.' }, visibility: { gmOnly: ['secretNote'] } },
+    { id: 'actor-tidebound-01', data: { name: 'Tarin Vale', epithet: 'Second acceptance character', traits: { agility: 2, instinct: 3 }, resources: { stress: { current: 2, maximum: 6 }, hope: { current: 4, maximum: 6 } } } },
+  ]) {
+    const created = await request('/api/actors', gmToken, 'POST', { ...actor, moduleId: 'example.system-b', moduleVersion: '0.1.0' });
+    assert.equal(created.status, 201, `GM explicitly creates offline acceptance actor ${actor.id}`);
   }
-  assert.ok(seeded, 'GM client seeds the two fixture actors');
+  const seeded = await hostState(gmToken);
+  assert.deepEqual(seeded.actors.map(actor => actor.id).sort(), ['actor-emberfall-01', 'actor-tidebound-01'], 'offline fixtures exist only after explicit host creation');
 
   const enrolledA = await request('/api/members/enroll', gmToken, 'POST', { displayName: 'Acceptance Member A' });
   const enrolledB = await request('/api/members/enroll', gmToken, 'POST', { displayName: 'Acceptance Member B' });
@@ -340,33 +349,33 @@ try {
   await cdp('Page.reload', { ignoreCache: true }, memberAClient);
   await waitForExpression(memberAClient, `performance.timeOrigin !== ${beforeOfflineReload} && document.readyState === 'complete'`, 'offline page reload completion');
   await waitForExpression(memberAClient, "document.querySelector('.status-disconnected') && document.querySelector('.topbar-right .status')?.textContent.includes('OFFLINE')", 'offline stale view after browser reload', 30000);
-  await clickSelector(memberAClient, 'nav[aria-label="Applications"] button:nth-child(2)');
+  await clickText(memberAClient, 'Characters', 'nav[aria-label="Applications"] button');
   await waitForExpression(memberAClient, `document.querySelector('.character-list')?.innerText.includes('Mira Vell')`, 'offline character list');
   assert.equal(await evaluate(memberAClient, `document.querySelector('.character-list')?.innerText.includes('Mira Vell')`), true, 'offline reload renders the cached authorized actor in Characters');
 
-  await clickSelector(gm, 'nav[aria-label="Applications"] button:nth-child(2)');
+  await clickText(gm, 'Characters', 'nav[aria-label="Applications"] button');
   await clickText(gm, 'Mira Vell', '.character-list button');
-  await clickText(gm, 'Spend 1 Mana', '.full-character .action-grid button');
+  await clickText(gm, 'Spend 1 Hope', '.full-character .action-grid button');
   const gmChangedDeadline = Date.now() + 15000;
   let changedDependency;
   while (Date.now() < gmChangedDeadline) {
     const current = await hostState(gmToken);
     changedDependency = current.actors.find(actor => actor.id === actorA);
-    if (changedDependency?.revision === 2 && changedDependency.data.resources.mana.current === 4) break;
+    if (changedDependency?.revision === 2 && changedDependency.data.resources.hope.current === 4) break;
     await delay(150);
   }
   assert.equal(changedDependency?.revision, 2, 'GM changes Mira while member A is offline');
-  assert.equal(changedDependency?.data.resources.mana.current, 4, 'GM action commits before member A reconnects');
+  assert.equal(changedDependency?.data.resources.hope.current, 4, 'GM action commits before member A reconnects');
 
   await clickText(memberAClient, 'Mira Vell', '.character-list button');
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Mira Vell'", 'offline actor A view');
-  await clickText(memberAClient, 'Spend 1 Mana', '.full-character .action-grid button');
-  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'stale actor action queued offline');
+  await clickText(memberAClient, 'Spend 1 Hope', '.full-character .action-grid button');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · queued')", 'stale actor action queued offline');
   await evaluate(memberAClient, 'window.confirm = () => true');
   await clickText(memberAClient, 'Cancel unsent edit', '[aria-label="Your local operation status"] button');
-  await waitForExpression(memberAClient, "!document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'unsent local edit canceled without a host receipt');
-  await clickText(memberAClient, 'Spend 1 Mana', '.full-character .action-grid button');
-  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'replacement local action has its own queued operation ID');
+  await waitForExpression(memberAClient, "!document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · queued')", 'unsent local edit canceled without a host receipt');
+  await clickText(memberAClient, 'Spend 1 Hope', '.full-character .action-grid button');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · queued')", 'replacement local action has its own queued operation ID');
 
   await clickText(memberAClient, 'Tarin Vale', '.character-list button');
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Tarin Vale'", 'offline dependency actor view');
@@ -460,7 +469,7 @@ try {
     data: { ...initialReviewActor.data, name: 'Neris Holt', epithet: 'Keeper of the shoals', resources: { ...initialReviewActor.data.resources, stress: { current: 2, maximum: 6 } } },
   });
   assert.equal(freshReviewActor.status, 201, 'GM creates a fresh review fixture with eligible stress');
-  await clickSelector(memberAClient, 'nav[aria-label="Applications"] button:nth-child(2)');
+  await clickText(memberAClient, 'Characters', 'nav[aria-label="Applications"] button');
   await waitForExpression(memberAClient, "document.querySelector('.character-list')?.innerText.includes('Neris Holt')", 'fresh authorized review actor appears after reload');
   await clickText(memberAClient, 'Neris Holt', '.character-list button');
   await clickText(memberAClient, 'Request Stress Recovery', '.full-character .action-grid button');
@@ -500,7 +509,7 @@ try {
   const mira = finalState.actors.find(actor => actor.id === actorA);
   const tarin = finalState.actors.find(actor => actor.id === actorDependency);
   assert.equal(mira.revision, 3, 'GM change and rebased player operation produce two distinct revisions');
-  assert.equal(mira.data.resources.mana.current, 3, 'rebased player operation applies once after GM change');
+  assert.equal(mira.data.resources.hope.current, 3, 'rebased player operation applies once after GM change');
   assert.equal(tarin.revision, 3, 'accepted review and rebased operation each increment Tarin once');
   assert.equal(tarin.data.resources.stress.current, 0, 'accepted review proposal applies its effect');
 

@@ -15,9 +15,12 @@ export async function cachePlayerSnapshot(host: string, snapshot: Snapshot): Pro
       schemaVersion: typeof actor.data.schemaVersion === 'number' ? actor.data.schemaVersion : 1,
       data: actor,
     }))
-    await storage.replaceAuthorizedSnapshots(actors)
+    // Keep previously downloaded records as local copies. Revocation cannot
+    // recall browser data; the live snapshot remains the only current view.
+    for (const actor of actors) await storage.putAuthorizedSnapshot(actor)
     await storage.putSessionMetadata({
       cursor: snapshot.context.cursor,
+      ...(snapshot.session ? { session: snapshot.session } : {}),
       lastSyncedAt: Date.now(),
       activeEncounter: snapshot.context.activeEncounter,
       encounters: snapshot.encounters,
@@ -38,6 +41,7 @@ export async function loadCachedPlayerSnapshot(identity: RememberedIdentity): Pr
         encounters: metadata.encounters,
         context: { campaignId: identity.campaignId, activeEncounter: metadata.activeEncounter, cursor: metadata.cursor },
         activity: [],
+        ...(metadata.session ? { session: metadata.session } : {}),
       },
       lastSyncedAt: metadata.lastSyncedAt,
     }

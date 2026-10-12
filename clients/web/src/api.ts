@@ -7,8 +7,36 @@ export type Encounter = { id: string; name: string; summary: string; status?: 'p
 export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
-export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[]; modules?: GameModule[] }
+export type SessionRecord = { id: string; status: 'active' | 'paused' | 'finished'; revision: number; startedAt: string; updatedAt: string; finishedAt: string | null }
+export type SessionSnapshot = { revision: number; current: SessionRecord | null; history: SessionRecord[] }
+export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[]; modules?: GameModule[]; session?: SessionSnapshot }
 export type ActionRequest = { operationId: string; entityId: string; baseRevision: number; actionId: string; parameters: Record<string, unknown> }
+export type SessionActionRequest = ActionRequest & {
+  sessionId: string
+  campaignId?: string
+  memberId?: string
+  moduleId?: string
+  moduleVersion?: string
+  schemaVersion?: number
+  dependencies?: Array<{ entityId: string; revision: number }>
+}
+export type ActionReceipt = {
+  operationId: string
+  entityId: string
+  actorId: string
+  actionId: string
+  status: 'applied'
+  revision: number
+  sessionId?: string
+  moduleId?: string
+  moduleVersion?: string
+  schemaVersion?: number
+  ruleVersion?: number
+  eventCursor?: number
+  verified?: boolean
+  rolls?: number[]
+  resolution?: Record<string, unknown>
+}
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 export type HostAdapter = {
   mode: 'demo' | 'host'
@@ -17,6 +45,24 @@ export type HostAdapter = {
   setEncounter(role: Role, id: string | null): Promise<void>
   createActor(role: Role, input: { id: string; moduleId: string; moduleVersion: string; data: Record<string, unknown>; visibility?: Record<string, unknown> }): Promise<void>
   subscribe(role: Role, onSnapshot: (snapshot: Snapshot) => void, onStatus: (status: ConnectionStatus) => void): () => void
+}
+
+export async function loadSessionSnapshot(role: Role): Promise<SessionSnapshot> {
+  if (!baseUrl) return { revision: 0, current: null, history: [] }
+  return http<SessionSnapshot>('/api/session', role)
+}
+
+export async function commandSession(command: 'start' | 'pause' | 'resume' | 'finish', sessionId: string, baseRevision: number, encounter?: { id: string; revision: number }): Promise<SessionSnapshot> {
+  if (!baseUrl) throw new Error('Session controls require a configured host')
+  if (command === 'start' && (!encounter || !encounter.id || !Number.isInteger(encounter.revision) || encounter.revision < 1)) {
+    throw new Error('Choose an active encounter with a current host revision before starting a session')
+  }
+  return http<SessionSnapshot>('/api/session/commands', 'gm', { method: 'POST', body: JSON.stringify({ operationId: crypto.randomUUID(), command, sessionId, baseRevision, ...(command === 'start' ? { encounterId: encounter!.id, encounterRevision: encounter!.revision } : {}) }) })
+}
+
+export async function submitSessionAction(role: Role, command: SessionActionRequest): Promise<ActionReceipt> {
+  if (!baseUrl) throw new Error('Session actions require a configured host')
+  return http<ActionReceipt>('/api/session/actions', role, { method: 'POST', body: JSON.stringify(command) })
 }
 
 const baseUrl = import.meta.env.VITE_POTOMAC_HOST?.replace(/\/$/, '')
@@ -93,6 +139,9 @@ export async function createCampaignEncounter(name: string, summary: string): Pr
 export async function loadCampaignEncounter(id: string): Promise<Encounter> {
   return http('/api/encounters/' + encodeURIComponent(id), 'gm')
 }
+export async function loadAuthorizedEncounter(id: string, role: Role): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id), role)
+}
 export async function editCampaignEncounter(id: string, baseRevision: number, fields: { name: string; summary: string; status: 'prepared' | 'active' | 'completed' }): Promise<Encounter> {
   return http('/api/encounters/' + encodeURIComponent(id), 'gm', { method: 'PUT', body: JSON.stringify({ ...fields, baseRevision }) })
 }
@@ -119,7 +168,7 @@ export async function listMyOfflineReceipts(): Promise<OfflineReceipt[]> {
 }
 
 type HostState = {
-  campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
+  campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]; session?: SessionSnapshot
   modules?: Array<Record<string, unknown> & { id?: string; version?: string; schema?: Record<string, unknown> }>
   actors?: Array<{ id: string; moduleId: string; moduleVersion: string; revision: number; data: Record<string, any> }>
   events?: Array<{ id: string; actorId: string | null; kind: string; payload: Record<string, any>; createdAt: string; visibility: string; cursor: number }>
@@ -151,13 +200,17 @@ function fromHost(body: HostState, role: Role): Snapshot {
       : Array.isArray(event.payload.rolls) && event.payload.rolls.length ? `Verified roll: ${event.payload.rolls.join(' + ')}` : String(event.payload.actionId || ''),
     time: event.createdAt, visibility: event.visibility === 'gm' ? 'gm' : 'all', cursor: event.cursor,
   }))
-  return { role, memberId: body.memberId ?? null, actors, encounters, modules: installedModules, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
+  return { role, memberId: body.memberId ?? null, actors, encounters, modules: installedModules, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity, ...(body.session ? { session: body.session } : {}) }
 }
 async function loadHost(role: Role) {
   const body = await http<HostState>('/api/state', role)
   const snapshot = fromHost(body, role)
   if (role !== 'gm' || snapshot.actors.length && !snapshot.actors.some(actor => initialActors.some(fixture => fixture.entityId === actor.entityId))) return snapshot
   if (initialActors.every(fixture => snapshot.actors.some(actor => actor.entityId === fixture.entityId))) return snapshot
+  // A genuinely fresh host is intentionally unpinned and must not receive the
+  // legacy demo actors until GM setup chooses a module.
+  const campaign = await http<CampaignConfig>('/api/campaign', 'gm')
+  if (!campaign.systemModuleId || !campaign.systemModuleVersion) return snapshot
   if (!fixtureBootstrap) fixtureBootstrap = (async () => {
     for (const fixture of initialActors) {
       const current = await http<HostState>('/api/state', 'gm')
