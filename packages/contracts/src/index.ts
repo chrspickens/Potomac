@@ -16,6 +16,7 @@ export type Expression =
 export type ActionDefinition = {
   id: string;
   label?: string;
+  policy?: "selfService" | "gmReview";
   input?: { properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
   requires?: Expression;
   effects: Array<{ op: "changeResource"; resource: string; amount: Expression }>;
@@ -51,3 +52,30 @@ export type ActionRequest = {
 };
 
 export type ActorProjection = Omit<Actor, "gmNotes"> & { gmNotes?: string };
+
+// A host-bound intent, never a locally committed actor update. The authenticated
+// member is verified against memberId again by the host on every submission.
+export type OfflineOperation = {
+  operationId: string;
+  campaignId: string;
+  memberId: string;
+  entityId: string;
+  baseRevision: number;
+  moduleId: string;
+  moduleVersion: string;
+  schemaVersion: number;
+  actionId: string;
+  parameters: Record<string, JsonValue>;
+  dependencies?: Array<{ entityId: string; revision: number }>;
+};
+
+export type OfflineReceiptStatus = "applied" | "awaitingReview" | "rejected" | "conflicted";
+
+export type OfflineReceipt = {
+  operationId: string;
+  entityId: string;
+  status: OfflineReceiptStatus;
+  revision?: number;
+  proposalId?: string;
+  reasonCode?: string;
+};

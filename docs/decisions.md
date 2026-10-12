@@ -38,3 +38,4 @@ When implementation begins, add small ADRs under `docs/adr/` with context, consi
 
 - [ADR 0001 — Local Workspace layouts](adr/0001-workspace-local-layout.md)
 - [ADR 0002 — Workspace hardening integration route](adr/0002-workspace-hardening-integration.md)
+- [ADR 0003 — Local enrollment and offline authority](adr/0003-local-enrollment-and-offline-authority.md)
