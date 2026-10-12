@@ -12,10 +12,10 @@ export type ConflictRecoveryProps = {
   reason: ConflictReason
   /** Supply only an actor from the caller's currently authorized snapshot. */
   authorizedCurrentActor?: Actor | null
-  /** True only when the caller can establish that this operation has never been submitted. */
-  isUnsentLocalWork: boolean
+  /** Host receipt remains durable; this removes only a terminal local copy. */
+  canDiscardLocalOutcome: boolean
   onRetainAsPrivateDraft: (draft: PrivateDraft) => void | Promise<void>
-  onDiscardUnsent: (operationId: string) => void | Promise<void>
+  onDiscardLocalOutcome: (operationId: string) => void | Promise<void>
   onCreateOperation: (operation: OfflineOperation) => void | Promise<void>
   createId?: () => string
 }
@@ -27,9 +27,9 @@ export function ConflictRecovery({
   queuedOperation,
   reason,
   authorizedCurrentActor,
-  isUnsentLocalWork,
+  canDiscardLocalOutcome,
   onRetainAsPrivateDraft,
-  onDiscardUnsent,
+  onDiscardLocalOutcome,
   onCreateOperation,
   createId = defaultCreateId,
 }: ConflictRecoveryProps) {
@@ -38,7 +38,7 @@ export function ConflictRecovery({
   const [feedback, setFeedback] = useState('')
   const operation = queuedOperation.operation
   const matchingActor = authorizedCurrentActor?.entityId === operation.entityId ? authorizedCurrentActor : null
-  const discardable = isUnsentLocalWork && queuedOperation.state === 'queued'
+  const discardable = canDiscardLocalOutcome && ['conflicted', 'rejected'].includes(queuedOperation.state)
 
   const run = async (action: () => void | Promise<void>, successMessage: string) => {
     setBusy(true)
@@ -63,17 +63,21 @@ export function ConflictRecovery({
     if (!result.ok) {
       setFeedback(result.reason === 'invalid-operation-id'
         ? 'A new operation ID could not be created. Try again.'
-        : 'A currently authorized version of this actor is required to create a new operation.')
+        : result.reason === 'module-incompatible'
+          ? 'The actor module or schema changed. Keep a draft and review the edit against the new version.'
+          : result.reason === 'dependency-review-required'
+            ? 'Referenced dependencies must be reviewed against current host state. Keep a draft before creating a new request.'
+          : 'A currently authorized version of this actor is required to create a new operation.')
       return
     }
     return run(() => onCreateOperation(result.operation), 'New operation sent to the caller for queueing.')
   }
 
   const discard = () => run(async () => {
-    if (!discardable) throw new Error('Only an unsent queued operation can be discarded here.')
-    await onDiscardUnsent(operation.operationId)
+    if (!discardable) throw new Error('Only a rejected or conflicted local copy can be discarded here.')
+    await onDiscardLocalOutcome(operation.operationId)
     setConfirmDiscard(false)
-  }, 'Unsent local operation discarded.')
+  }, 'Local copy discarded; the host receipt remains in audit history.')
 
   return (
     <section aria-labelledby="conflict-recovery-title">
@@ -108,18 +112,18 @@ export function ConflictRecovery({
           Retain as private draft
         </button>
         <button type="button" disabled={busy || !discardable} onClick={() => setConfirmDiscard(true)}>
-          Discard unsent local work
+          Discard local conflict copy
         </button>
         <button type="button" disabled={busy || !matchingActor} onClick={() => void createReplacement()}>
           Create new operation from current revision
         </button>
       </div>
 
-      {!discardable && <p>Discard is available only while this operation is still queued and unsent.</p>}
+      {!discardable && <p>Discard is available only for a rejected or conflicted local copy.</p>}
       {confirmDiscard && discardable && (
         <fieldset>
           <legend>Confirm discard</legend>
-          <p>This permanently removes this unsent operation from the local queue. The original intent will not be retained.</p>
+          <p>This removes the local copy, but not the host receipt or audit history. Save a private draft first if you want to retain your intent.</p>
           <button type="button" disabled={busy} onClick={() => void discard()}>
             Confirm discard
           </button>

@@ -8,7 +8,7 @@ export type ConflictReason = {
 
 export type ReplacementOperationResult =
   | { ok: true; operation: OfflineOperation }
-  | { ok: false; reason: 'current-actor-unavailable' | 'actor-does-not-match' | 'invalid-operation-id' }
+  | { ok: false; reason: 'current-actor-unavailable' | 'actor-does-not-match' | 'module-incompatible' | 'dependency-review-required' | 'invalid-operation-id' }
 
 /**
  * Creates a fresh intent based on an explicitly authorized current actor.
@@ -21,6 +21,11 @@ export function createReplacementOperation(
 ): ReplacementOperationResult {
   if (!authorizedCurrentActor) return { ok: false, reason: 'current-actor-unavailable' }
   if (authorizedCurrentActor.entityId !== original.entityId) return { ok: false, reason: 'actor-does-not-match' }
+  const currentSchemaVersion = typeof authorizedCurrentActor.data.schemaVersion === 'number' ? authorizedCurrentActor.data.schemaVersion : 1
+  if (authorizedCurrentActor.module.manifest.id !== original.moduleId || authorizedCurrentActor.module.manifest.version !== original.moduleVersion || currentSchemaVersion !== original.schemaVersion) {
+    return { ok: false, reason: 'module-incompatible' }
+  }
+  if (original.dependencies?.length) return { ok: false, reason: 'dependency-review-required' }
   if (!Number.isSafeInteger(authorizedCurrentActor.revision) || authorizedCurrentActor.revision < 0) {
     return { ok: false, reason: 'current-actor-unavailable' }
   }

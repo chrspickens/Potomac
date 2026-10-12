@@ -104,6 +104,7 @@ export type OfflineStorage = {
   markSubmitting(operationId: string): Promise<QueuedOperation>;
   retryOperation(operationId: string): Promise<QueuedOperation>;
   recordReceipt(receipt: OfflineReceipt): Promise<QueuedOperation>;
+  deleteLocalOutcome(operationId: string): Promise<void>;
   savePrivateDraft(draft: PrivateDraft): Promise<PrivateDraft>;
   listPrivateDrafts(): Promise<PrivateDraft[]>;
   deletePrivateDraft(draftId: string): Promise<void>;
@@ -269,6 +270,22 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
         transition(row, receipt.status);
         row.receipt = structuredClone(receipt);
       });
+    },
+
+    async deleteLocalOutcome(operationId) {
+      requireText(operationId, 'operationId');
+      const tx = db.transaction(OPERATIONS, 'readwrite');
+      const store = tx.objectStore(OPERATIONS);
+      let failure: Error | undefined;
+      const request = store.get(JSON.stringify([scopedKey, operationId]));
+      request.onsuccess = () => {
+        const row = request.result as Stored<QueuedOperation> | undefined;
+        if (!row || row.scopeKey !== scopedKey || !['conflicted', 'rejected'].includes(row.state)) {
+          failure = new Error('Only a rejected or conflicted local copy can be discarded');
+          tx.abort();
+        } else store.delete(row.key);
+      };
+      try { await transactionResult(tx) } catch (error) { throw failure ?? error }
     },
 
     async savePrivateDraft(draft) {

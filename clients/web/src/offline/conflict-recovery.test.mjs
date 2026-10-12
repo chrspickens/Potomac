@@ -13,13 +13,13 @@ const original = () => ({
   schemaVersion: 3,
   actionId: 'spend-resource',
   parameters: { amount: 2, options: { mode: 'careful' } },
-  dependencies: [{ entityId: 'item-1', revision: 7 }],
+  dependencies: [],
 })
 
 test('replacement uses a new ID and current revision while preserving immutable intent', () => {
   const source = original()
   const before = structuredClone(source)
-  const actor = { entityId: 'actor-1', revision: 9 }
+  const actor = { entityId: 'actor-1', revision: 9, module: { manifest: { id: 'example.system-a', version: '1.2.0' } }, data: { schemaVersion: 3 } }
 
   const result = createReplacementOperation(source, actor, 'operation-new')
 
@@ -44,4 +44,10 @@ test('replacement is blocked when the current actor does not match the operation
   const result = createReplacementOperation(original(), { entityId: 'other-actor', revision: 9 }, 'operation-new')
 
   assert.deepEqual(result, { ok: false, reason: 'actor-does-not-match' })
+})
+
+test('replacement refuses to silently refresh stale dependency bases', () => {
+  const actor = { entityId: 'actor-1', revision: 9, module: { manifest: { id: 'example.system-a', version: '1.2.0' } }, data: { schemaVersion: 3 } }
+  const operation = { ...original(), dependencies: [{ entityId: 'item-1', revision: 7 }] }
+  assert.deepEqual(createReplacementOperation(operation, actor, 'operation-new'), { ok: false, reason: 'dependency-review-required' })
 })
