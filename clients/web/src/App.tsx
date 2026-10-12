@@ -408,6 +408,7 @@ export default function App() {
     try {
       const updated = await editCampaignEncounter(encounterDetails.id, encounterDetails.revision,
         { name: encounterNameInput.trim(), summary: encounterSummaryInput, status: encounterStatusInput })
+      if (updated.revision === undefined) throw new Error('Encounter revision missing from host response')
       const latest = await saveEncounterParticipants(updated.id, updated.revision,
         encounterParticipantIds.map((actorId, index) => ({ actorId, status: 'active', activationOrder: index })))
       setEncounterDetails(latest); setSnapshot(await host.load('gm'))
