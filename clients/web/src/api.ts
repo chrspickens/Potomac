@@ -3,10 +3,11 @@ import { loadRememberedIdentity, rememberIdentity } from './identity'
 import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 
 export type Role = 'gm' | 'player'
-export type Encounter = { id: string; name: string; summary: string }
+export type Encounter = { id: string; name: string; summary: string; status?: 'prepared' | 'active' | 'completed'; revision?: number; participants?: Array<{ actorId: string; initiative?: number | null; status?: string; activationOrder?: number | null }> }
+export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
-export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[] }
+export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[]; modules?: GameModule[] }
 export type ActionRequest = { operationId: string; entityId: string; baseRevision: number; actionId: string; parameters: Record<string, unknown> }
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 export type HostAdapter = {
@@ -73,6 +74,32 @@ export async function createCampaignActor(input: { id: string; moduleId: string;
   await http('/api/actors', 'gm', { method: 'POST', body: JSON.stringify(input) })
 }
 
+
+export async function getCampaignConfig(): Promise<CampaignConfig> {
+  return http<CampaignConfig>('/api/campaign', 'gm')
+}
+export async function saveCampaignConfig(config: Omit<CampaignConfig, 'id'>): Promise<CampaignConfig> {
+  return http<CampaignConfig>('/api/campaign', 'gm', { method: 'PUT', body: JSON.stringify({
+    name: config.name, systemModuleId: config.systemModuleId, systemModuleVersion: config.systemModuleVersion,
+    baseRevision: config.revision
+  }) })
+}
+export async function editCharacterFields(entityId: string, baseRevision: number, changes: Record<string, unknown>, operationId: string): Promise<void> {
+  await http('/api/actors/' + encodeURIComponent(entityId), 'gm', { method: 'PUT', body: JSON.stringify({ operationId, baseRevision, changes }) })
+}
+export async function createCampaignEncounter(name: string, summary: string): Promise<Encounter> {
+  return http('/api/encounters', 'gm', { method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), name, summary }) })
+}
+export async function loadCampaignEncounter(id: string): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id), 'gm')
+}
+export async function editCampaignEncounter(id: string, baseRevision: number, fields: { name: string; summary: string; status: 'prepared' | 'active' | 'completed' }): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id), 'gm', { method: 'PUT', body: JSON.stringify({ ...fields, baseRevision }) })
+}
+export async function saveEncounterParticipants(id: string, baseRevision: number, participants: NonNullable<Encounter['participants']>): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id) + '/participants', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, participants }) })
+}
+
 export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; campaignId?: string | null; baseRevision?: number | null; ruleVersion?: number | null; status: string; createdAt: string; request?: OfflineOperation }
 
 export async function listReviewProposals(): Promise<ReviewProposal[]> {
@@ -99,6 +126,12 @@ type HostState = {
 }
 function fromHost(body: HostState, role: Role): Snapshot {
   const modules = new Map((body.modules || []).map(entry => [`${entry.id}@${entry.version}`, entry]))
+  const installedModules: GameModule[] = [...modules.values()].map(definition => ({
+    manifest: { id: String(definition.id), version: String(definition.version), name: String(definition.name || definition.id), tagline: String(definition.tagline || definition.type || 'Game system') },
+    view: (definition.view || { title: 'Character', layout: [], brick: [] }) as GameModule['view'],
+    actions: (definition.actions || []) as GameModule['actions'],
+    schema: definition.schema as Record<string, unknown> | undefined,
+  }))
   const actors: Actor[] = (body.actors || []).flatMap(row => {
     const definition = modules.get(`${row.moduleId}@${row.moduleVersion}`)
     if (!definition) return []
@@ -118,7 +151,7 @@ function fromHost(body: HostState, role: Role): Snapshot {
       : Array.isArray(event.payload.rolls) && event.payload.rolls.length ? `Verified roll: ${event.payload.rolls.join(' + ')}` : String(event.payload.actionId || ''),
     time: event.createdAt, visibility: event.visibility === 'gm' ? 'gm' : 'all', cursor: event.cursor,
   }))
-  return { role, memberId: body.memberId ?? null, actors, encounters, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
+  return { role, memberId: body.memberId ?? null, actors, encounters, modules: installedModules, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity }
 }
 async function loadHost(role: Role) {
   const body = await http<HostState>('/api/state', role)
