@@ -79,4 +79,5 @@ export type OfflineReceipt = {
   revision?: number;
   proposalId?: string;
   reasonCode?: string;
+  reason?: string | null;
 };

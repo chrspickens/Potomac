@@ -444,7 +444,10 @@ test('offline review rejection and stale acceptance persist decisions without ap
     const rejectedReceipt = await (await postJson(request, '/api/offline/operations', rejectCommand, member.credential)).json();
     const reject = await postJson(request, `/api/proposals/${rejectedReceipt.proposalId}/decisions`, { decisionId: 'decision-reject-1', decision: 'reject', reason: 'Not approved' });
     assert.equal(reject.status, 200);
-    assert.equal((await reject.json()).status, 'rejected');
+    const rejection = await reject.json();
+    assert.equal(rejection.status, 'rejected');
+    assert.equal(rejection.reasonCode, 'gm_rejected');
+    assert.equal(rejection.reason, 'Not approved');
     assert.equal((await postJson(request, `/api/proposals/${rejectedReceipt.proposalId}/decisions`, { decisionId: 'decision-reject-1', decision: 'reject', reason: 'Not approved' })).status, 200);
     assert.equal((await postJson(request, `/api/proposals/${rejectedReceipt.proposalId}/decisions`, { decisionId: 'decision-reject-1', decision: 'accept' })).status, 409);
 

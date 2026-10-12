@@ -403,7 +403,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (proposal.status !== 'pending') return json(res, 409, { error: 'Proposal has already been decided', status: proposal.status });
         const now = new Date().toISOString();
         if (body.decision === 'reject') {
-          const result = { proposalId, operationId: proposal.operation_id, status: 'rejected', decisionId: body.decisionId };
+          const result = { proposalId, operationId: proposal.operation_id, entityId: proposal.actor_id, status: 'rejected', decisionId: body.decisionId, reasonCode: 'gm_rejected', reason: body.reason || null };
           transaction(() => {
             db.prepare('UPDATE offline_proposals SET status=?,decided_at=?,decision_id=?,decision=?,decision_response=? WHERE id=? AND status=?')
               .run('rejected', now, body.decisionId, 'reject', JSON.stringify(result), proposalId, 'pending');
