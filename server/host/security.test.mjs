@@ -94,6 +94,31 @@ test('upgrade preserves 0.2 shared access only for existing player actors', asyn
   }
 });
 
+test('GM cannot accept a proposal under a different rules version', async () => {
+  await fixture(async ({ request }) => {
+    const manifest = { ...moduleDefinition, rulesVersion: 1, actions: [{ id: 'review', policy: 'gmReview', input: { type: 'object', properties: {}, additionalProperties: false }, effects: [] }] };
+    assert.equal((await post(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest }, 'gm')).status, 201);
+    const enrolled = await (await post(request, '/api/members/enroll', { displayName: 'Rules reviewer' }, 'gm')).json();
+    const created = await post(request, '/api/actors', { id: 'rule-version-actor', moduleId: manifest.id, moduleVersion: manifest.version, ownerMemberId: enrolled.memberId, data: { publicValue: 1, secret: 2, notes: { hidden: 'safe' } } }, 'gm');
+    assert.equal(created.status, 201, JSON.stringify(await created.clone().json()));
+    const operation = { operationId: 'review-old-rules', campaignId: 'foundation-demo', memberId: enrolled.memberId, entityId: 'rule-version-actor', baseRevision: 1, moduleId: manifest.id, moduleVersion: manifest.version, schemaVersion: 1, actionId: 'review', parameters: {}, dependencies: [] };
+    const submission = await post(request, '/api/offline/operations', operation, enrolled.credential);
+    assert.equal(submission.status, 202);
+    const proposalId = (await submission.json()).proposalId;
+    const proposal = await (await request(`/api/proposals/${proposalId}`, 'gm')).json();
+    assert.equal(proposal.campaignId, 'foundation-demo');
+    assert.equal(proposal.baseRevision, 1);
+    assert.equal(proposal.ruleVersion, 1);
+    assert.equal((await post(request, '/api/modules', { id: manifest.id, version: manifest.version, manifest: { ...manifest, rulesVersion: 2 } }, 'gm')).status, 201);
+    const decision = await post(request, `/api/proposals/${proposalId}/decisions`, { decisionId: 'old-rules-decision', decision: 'accept' }, 'gm');
+    assert.equal(decision.status, 200);
+    const receipt = await decision.json();
+    assert.equal(receipt.status, 'conflicted');
+    assert.equal(receipt.reasonCode, 'rules_version_conflict');
+    assert.equal((await (await request('/api/actors/rule-version-actor', enrolled.credential)).json()).revision, 1);
+  });
+});
+
 async function addActors(request, host) {
   assert.equal((await post(request, '/api/modules', { id: moduleDefinition.id, version: moduleDefinition.version, manifest: moduleDefinition }, 'gm')).status, 201);
   const add = (id, ownerRole, value) => host.db.prepare('INSERT INTO actors(id,module_id,module_version,revision,data,visibility,owner_role,legacy_shared) VALUES(?,?,?,?,?,?,?,?)')
