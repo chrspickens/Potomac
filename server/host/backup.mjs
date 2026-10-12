@@ -5,10 +5,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const BACKUP_FORMAT = 'potomac.campaign-backup';
-export const BACKUP_SCHEMA_VERSION = 1;
-const COLLECTIONS = ['campaign', 'modules', 'actors', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions'];
+export const BACKUP_SCHEMA_VERSION = 2;
+const COLLECTIONS = ['campaign', 'modules', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions'];
 const TABLES = {
-  campaign: ['id', 'context'], modules: ['id', 'version', 'manifest'],
+  campaign: ['id', 'context', 'name', 'system_module_id', 'system_module_version', 'revision'], modules: ['id', 'version', 'manifest'],
+  encounters: ['id', 'name', 'summary', 'status', 'revision', 'created_at', 'updated_at'],
+  encounter_participants: ['encounter_id', 'actor_id', 'initiative', 'status', 'activation_order'],
   actors: ['id', 'module_id', 'module_version', 'revision', 'data', 'visibility', 'owner_role', 'owner_member_id', 'legacy_shared'],
   members: ['id', 'display_name', 'credential_hash', 'created_at', 'revoked_at'],
   actor_grants: ['actor_id', 'member_id', 'can_read', 'can_act', 'granted_at'],
@@ -25,7 +27,7 @@ const fail = message => { throw new Error(`Backup ${message}`); };
 
 function validateArchive(archive, modulesDirectory) {
   if (!archive || archive.format !== BACKUP_FORMAT || archive.schemaVersion !== BACKUP_SCHEMA_VERSION) fail('format or schema version is unsupported');
-  if (!archive.manifest || archive.manifest.potomacDataVersion !== 1 || typeof archive.manifest.campaignId !== 'string' || !archive.manifest.campaignId || !Array.isArray(archive.manifest.modules) || !Array.isArray(archive.manifest.includedCollections)) fail('manifest is invalid');
+  if (!archive.manifest || archive.manifest.potomacDataVersion !== 2 || typeof archive.manifest.campaignId !== 'string' || !archive.manifest.campaignId || !Array.isArray(archive.manifest.modules) || !Array.isArray(archive.manifest.includedCollections)) fail('manifest is invalid');
   if (!archive.data || checksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data }) !== archive.integrity?.sha256) fail('integrity check failed');
   if (JSON.stringify([...archive.manifest.includedCollections].sort()) !== JSON.stringify([...COLLECTIONS].sort())) fail('collection manifest is incomplete');
   for (const collection of COLLECTIONS) if (!Array.isArray(archive.data[collection])) fail(`collection ${collection} is missing or invalid`);
@@ -48,8 +50,17 @@ function validateArchive(archive, modulesDirectory) {
     } catch { /* handled below */ }
   }
   for (const actor of archive.data.actors) if (!modules.has(`${actor.module_id}@${actor.module_version}`) || !available.has(`${actor.module_id}@${actor.module_version}`)) fail(`required module ${actor.module_id}@${actor.module_version} is unavailable`);
+  const pinned = archive.data.campaign[0];
+  if (Boolean(pinned.system_module_id) !== Boolean(pinned.system_module_version)) fail('campaign system pin is incomplete');
+  if (pinned.system_module_id && !available.has(`${pinned.system_module_id}@${pinned.system_module_version}`)) fail('pinned campaign module is unavailable');
+  if (!Number.isInteger(pinned.revision) || pinned.revision < 1) fail('campaign revision is invalid');
+  const encounterIds = new Set(archive.data.encounters.map(row => row.id));
+  const context = JSON.parse(pinned.context);
+  if (context.activeEncounter !== null && context.activeEncounter !== undefined && !encounterIds.has(context.activeEncounter)) fail('active encounter reference is invalid');
   const ids = (name, key) => new Set(archive.data[name].map(row => row[key]));
   const actors = ids('actors', 'id'), members = ids('members', 'id'), proposals = ids('offline_proposals', 'id');
+  for (const participant of archive.data.encounter_participants)
+    if (!encounterIds.has(participant.encounter_id) || !actors.has(participant.actor_id)) fail('participant references a missing encounter or actor');
   for (const grant of archive.data.actor_grants) if (!actors.has(grant.actor_id) || !members.has(grant.member_id)) fail('actor grant references a missing actor or member');
   for (const actor of archive.data.actors) if (actor.owner_member_id && !members.has(actor.owner_member_id)) fail('actor owner references a missing member');
   for (const row of archive.data.offline_receipts) if (!members.has(row.member_id) || row.campaign_id !== archive.manifest.campaignId || row.proposal_id && !proposals.has(row.proposal_id)) fail('receipt references missing campaign, member or proposal');
@@ -72,7 +83,7 @@ export function exportCampaignBackup(databasePath, outputPath, { modulesDirector
     const data = Object.fromEntries(COLLECTIONS.map(table => [table, snapshot.prepare(`SELECT ${TABLES[table].join(',')} FROM ${table} ORDER BY rowid`).all()]));
     if (data.campaign.length !== 1) fail('export requires a single-campaign host database');
     const modules = data.modules.map(({ id, version }) => ({ id, version })).sort((a, b) => `${a.id}@${a.version}`.localeCompare(`${b.id}@${b.version}`));
-    const manifest = { potomacDataVersion: 1, campaignId: data.campaign[0].id, modules, createdAt: now.toISOString(), includedCollections: [...COLLECTIONS], excludedData: ['browser layouts', 'browser caches', 'private browser drafts'] };
+    const manifest = { potomacDataVersion: 2, campaignId: data.campaign[0].id, modules, createdAt: now.toISOString(), includedCollections: [...COLLECTIONS], excludedData: ['browser layouts', 'browser caches', 'private browser drafts'] };
     const content = { format: BACKUP_FORMAT, schemaVersion: BACKUP_SCHEMA_VERSION, manifest, data };
     const archive = { ...content, integrity: { algorithm: 'sha256', sha256: checksum(content) } };
     validateArchive(archive, modulesDirectory);
