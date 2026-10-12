@@ -12,6 +12,8 @@ export type ConflictRecoveryProps = {
   reason: ConflictReason
   /** Supply only an actor from the caller's currently authorized snapshot. */
   authorizedCurrentActor?: Actor | null
+  /** Current authorized dependency actors only; absent actors must remain unavailable. */
+  authorizedCurrentDependencies?: Actor[]
   /** Host receipt remains durable; this removes only a terminal local copy. */
   canDiscardLocalOutcome: boolean
   onRetainAsPrivateDraft: (draft: PrivateDraft) => void | Promise<void>
@@ -27,6 +29,7 @@ export function ConflictRecovery({
   queuedOperation,
   reason,
   authorizedCurrentActor,
+  authorizedCurrentDependencies = [],
   canDiscardLocalOutcome,
   onRetainAsPrivateDraft,
   onDiscardLocalOutcome,
@@ -38,6 +41,10 @@ export function ConflictRecovery({
   const [feedback, setFeedback] = useState('')
   const operation = queuedOperation.operation
   const matchingActor = authorizedCurrentActor?.entityId === operation.entityId ? authorizedCurrentActor : null
+  const dependencies = operation.dependencies || []
+  const currentDependencies = dependencies.map(dependency => authorizedCurrentDependencies.find(actor => actor.entityId === dependency.entityId) || null)
+  const dependenciesAvailable = currentDependencies.every(Boolean)
+  const [reviewedDependencies, setReviewedDependencies] = useState(false)
   const discardable = canDiscardLocalOutcome && ['conflicted', 'rejected'].includes(queuedOperation.state)
 
   const run = async (action: () => void | Promise<void>, successMessage: string) => {
@@ -61,6 +68,17 @@ export function ConflictRecovery({
   const createReplacement = () => {
     const result = createReplacementOperation(operation, matchingActor, createId())
     if (!result.ok) {
+      if (result.reason === 'dependency-review-required' && reviewedDependencies && dependenciesAvailable && matchingActor) {
+        const replacement = structuredClone(operation)
+        replacement.operationId = createId()
+        replacement.baseRevision = matchingActor.revision
+        replacement.dependencies = dependencies.map(dependency => {
+          const current = currentDependencies.find(actor => actor?.entityId === dependency.entityId)
+          if (!current) throw new Error('An authorized current dependency is required before rebasing.')
+          return { entityId: dependency.entityId, revision: current.revision }
+        })
+        return run(() => onCreateOperation(replacement), `New operation ${replacement.operationId} created after reviewing current dependencies.`)
+      }
       setFeedback(result.reason === 'invalid-operation-id'
         ? 'A new operation ID could not be created. Try again.'
         : result.reason === 'module-incompatible'
@@ -86,6 +104,7 @@ export function ConflictRecovery({
       <section aria-labelledby="conflict-original-title">
         <h3 id="conflict-original-title">Original intent</h3>
         <p><strong>Action:</strong> {operation.actionId}</p>
+        <p><strong>Operation ID:</strong> <code>{operation.operationId}</code></p>
         <p><strong>Base revision:</strong> {operation.baseRevision}</p>
         <details>
           <summary>Show action parameters</summary>
@@ -107,6 +126,17 @@ export function ConflictRecovery({
         )}
       </section>
 
+      {dependencies.length > 0 && (
+        <section aria-label="Current dependency review">
+          <h3>Authorized current dependencies</h3>
+          <ul>{dependencies.map((dependency, index) => {
+            const current = currentDependencies[index]
+            return <li key={dependency.entityId}>{current ? `${current.name} — current revision ${current.revision}` : 'A dependency is unavailable in your current authorized view.'}</li>
+          })}</ul>
+          <label><input aria-label="Confirm dependency rebase" type="checkbox" checked={reviewedDependencies} disabled={!dependenciesAvailable} onChange={event => setReviewedDependencies(event.target.checked)} /> I reviewed these dependency revisions and want a newly validated operation.</label>
+        </section>
+      )}
+
       <div aria-label="Conflict recovery actions">
         <button type="button" disabled={busy} onClick={() => void retainAsDraft()}>
           Retain as private draft
@@ -114,7 +144,7 @@ export function ConflictRecovery({
         <button type="button" disabled={busy || !discardable} onClick={() => setConfirmDiscard(true)}>
           Discard local conflict copy
         </button>
-        <button type="button" disabled={busy || !matchingActor || queuedOperation.state === 'rejected'} onClick={() => void createReplacement()}>
+        <button type="button" disabled={busy || !matchingActor || queuedOperation.state === 'rejected' || (dependencies.length > 0 && (!dependenciesAvailable || !reviewedDependencies))} onClick={() => void createReplacement()}>
           Create new operation from current revision
         </button>
       </div>

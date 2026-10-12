@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createReplacementOperation } from './conflict-recovery.ts'
+import { createConflictPrivateDraft, createReplacementOperation } from './conflict-recovery.ts'
 
 const original = () => ({
   operationId: 'operation-original',
@@ -50,4 +50,19 @@ test('replacement refuses to silently refresh stale dependency bases', () => {
   const actor = { entityId: 'actor-1', revision: 9, module: { manifest: { id: 'example.system-a', version: '1.2.0' } }, data: { schemaVersion: 3 } }
   const operation = { ...original(), dependencies: [{ entityId: 'item-1', revision: 7 }] }
   assert.deepEqual(createReplacementOperation(operation, actor, 'operation-new'), { ok: false, reason: 'dependency-review-required' })
+})
+
+test('retained conflict draft preserves the immutable intent, operation ID, and authorized reason', () => {
+  const operation = original()
+  const queuedOperation = { operation, state: 'conflicted', receipt: { reasonCode: 'dependency_revision_conflict' } }
+  const reason = { code: 'dependency_revision_conflict', message: 'An authorized prerequisite changed.' }
+  const before = structuredClone(operation)
+
+  const draft = createConflictPrivateDraft(queuedOperation, reason, 'draft-1')
+
+  assert.equal(draft.draftId, 'draft-1')
+  assert.equal(draft.entityId, operation.entityId)
+  assert.deepEqual(draft.payload, { kind: 'offline-conflict', operation, reason })
+  assert.notStrictEqual(draft.payload.operation, operation)
+  assert.deepEqual(operation, before)
 })

@@ -141,6 +141,29 @@ async function clickSelector(sessionId, selector) {
   assert.equal(clicked.clicked, true, `Expected an enabled element matching ${selector}; found ${JSON.stringify(clicked)}`);
 }
 
+async function selectValue(sessionId, selector, value) {
+  const changed = await evaluate(sessionId, `(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    if (!target) return false;
+    target.value = ${JSON.stringify(value)};
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  assert.equal(changed, true, `Expected a select matching ${selector}`);
+}
+
+async function clickRecoveryAction(sessionId, actionId, buttonText) {
+  const clicked = await evaluate(sessionId, `(() => {
+    const section = [...document.querySelectorAll('section[aria-labelledby="conflict-recovery-title"]')]
+      .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)})));
+    const button = [...(section?.querySelectorAll('button') || [])]
+      .find(item => item.textContent.trim() === ${JSON.stringify(buttonText)});
+    if (!button || button.disabled) return false;
+    button.click(); return true;
+  })()`);
+  assert.equal(clicked, true, `Expected ${buttonText} for ${actionId}`);
+}
+
 async function chooseRole(sessionId, role) {
   await evaluate(sessionId, `(() => {
     const selector = document.querySelector('.topbar-right select');
@@ -300,8 +323,7 @@ try {
   assert.ok(cache.snapshots.every(row => !row.secretNote), 'cached player projection omits the GM-only field');
   assert.equal(cache.snapshots.some(row => row.entityId === actorA) && memberBState.value.actors.some(actor => actor.id === actorA), false, 'member B remains outside member A actor projection');
 
-  await stop(host);
-  await waitForHostDown();
+  await cdp('Network.setBlockedURLs', { urls: [`*127.0.0.1:${hostPort}*`] }, memberAClient);
   const beforeOfflineReload = await evaluate(memberAClient, 'performance.timeOrigin');
   await cdp('Page.reload', { ignoreCache: true }, memberAClient);
   await waitForExpression(memberAClient, `performance.timeOrigin !== ${beforeOfflineReload} && document.readyState === 'complete'`, 'offline page reload completion');
@@ -310,36 +332,50 @@ try {
   await waitForExpression(memberAClient, `document.querySelector('.character-list')?.innerText.includes('Mira Vell')`, 'offline character list');
   assert.equal(await evaluate(memberAClient, `document.querySelector('.character-list')?.innerText.includes('Mira Vell')`), true, 'offline reload renders the cached authorized actor in Characters');
 
+  await clickSelector(gm, 'nav[aria-label="Applications"] button:nth-child(2)');
+  await clickText(gm, 'Mira Vell', '.character-list button');
+  await clickText(gm, 'Spend 1 Mana', '.full-character .action-grid button');
+  const gmChangedDeadline = Date.now() + 15000;
+  let changedDependency;
+  while (Date.now() < gmChangedDeadline) {
+    const current = await hostState(gmToken);
+    changedDependency = current.actors.find(actor => actor.id === actorA);
+    if (changedDependency?.revision === 2 && changedDependency.data.resources.mana.current === 4) break;
+    await delay(150);
+  }
+  assert.equal(changedDependency?.revision, 2, 'GM changes Mira while member A is offline');
+  assert.equal(changedDependency?.data.resources.mana.current, 4, 'GM action commits before member A reconnects');
+
   await clickText(memberAClient, 'Mira Vell', '.character-list button');
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Mira Vell'", 'offline actor A view');
   await clickText(memberAClient, 'Spend 1 Mana', '.full-character .action-grid button');
-  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'self service operation queued offline');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-mana · queued')", 'stale actor action queued offline');
 
   await clickText(memberAClient, 'Tarin Vale', '.character-list button');
   await waitForExpression(memberAClient, "document.querySelector('.full-character .character-view h3')?.textContent === 'Tarin Vale'", 'offline dependency actor view');
+  await selectValue(memberAClient, '[aria-label="Dependency guard"]', actorA);
+  await clickText(memberAClient, 'Spend 1 Hope', '.full-character .action-grid button');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · queued')", 'offline action with a selected dependency guard');
+  await selectValue(memberAClient, '[aria-label="Dependency guard"]', '');
   await clickText(memberAClient, 'Request Stress Recovery', '.full-character .action-grid button');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('clear-stress · queued')", 'GM review operation queued offline');
-
-  const dependencyQueued = await evaluate(memberAClient, `(async () => {
-    const { openOfflineStorage } = await import('/src/offline/storage.ts');
-    const storage = await openOfflineStorage({ host: ${JSON.stringify(baseUrl)}, campaignId: 'foundation-demo', memberId: ${JSON.stringify(memberA.memberId)} });
-    try {
-      const operation = {
-        operationId: 'offline-dependency-conflict-${randomUUID()}', campaignId: 'foundation-demo',
-        memberId: ${JSON.stringify(memberA.memberId)}, entityId: '${actorDependency}', baseRevision: 1,
-        moduleId: 'example.system-b', moduleVersion: '0.1.0', schemaVersion: 1,
-        actionId: 'spend-hope', parameters: {}, dependencies: [{ entityId: '${actorA}', revision: 1 }],
-      };
-      await storage.enqueueOperation(operation);
-      return (await storage.listOperations()).length;
-    } finally { storage.close(); }
-  })()`);
-  assert.equal(dependencyQueued, 3, 'browser IndexedDB contains both UI edits and a stale dependency case');
+  assert.equal(await evaluate(memberAClient, `new Promise(resolve => {
+    const request = indexedDB.open('potomac-offline');
+    request.onsuccess = () => {
+      const database = request.result;
+      const tx = database.transaction('queuedOperations', 'readonly');
+      const rows = tx.objectStore('queuedOperations').getAll();
+      tx.oncomplete = () => { database.close(); resolve(rows.result.length); };
+    };
+  })`), 3, 'browser UI queues all three authored actions');
   cache = await readBrowserQueue(memberAClient);
   assert.equal(cache.operations.length, 3, 'three immutable offline operations persist in IndexedDB');
   assert.ok(cache.operations.every(row => row.state === 'queued'), 'all offline operations remain visibly pending before host acknowledgement');
+  const dependencyOperation = cache.operations.find(row => row.operation.actionId === 'spend-hope');
+  assert.deepEqual(dependencyOperation?.operation.dependencies, [{ entityId: actorA, revision: 1 }], 'dependency is captured from the cached authorized snapshot');
 
-  await cdp('Network.setBlockedURLs', { urls: [`*127.0.0.1:${hostPort}*`] }, memberAClient);
+  await stop(host);
+  await waitForHostDown();
   host = start(process.execPath, [join(root, 'server/host/index.mjs')], {
     env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: dbPath, POTOMAC_GM_TOKEN: gmToken, POTOMAC_PLAYER_TOKEN: legacyPlayerToken },
   });
@@ -357,10 +393,10 @@ try {
     await delay(150);
   }
   assert.equal(memberReceipts.length, 3, `host durably records all three queued operation receipts: ${JSON.stringify({ browser: await evaluate(memberAClient, "({status:document.querySelector('.status')?.textContent,error:document.querySelector('.error-banner')?.textContent,queue:document.querySelector('[aria-label=\"Your local operation status\"]')?.textContent})"), queue: await readBrowserQueue(memberAClient) })}`);
-  const selfReceipt = memberReceipts.find(receipt => receipt.entityId === actorA && receipt.status === 'applied');
+  const compatibleReceipt = memberReceipts.find(receipt => receipt.entityId === actorA && receipt.status === 'applied');
   const proposalReceipt = memberReceipts.find(receipt => receipt.entityId === actorDependency && receipt.status === 'awaitingReview');
-  const conflictReceipt = memberReceipts.find(receipt => receipt.status === 'conflicted');
-  assert.ok(selfReceipt, 'selfService action applies once');
+  const conflictReceipt = memberReceipts.find(receipt => receipt.reasonCode === 'dependency_revision_conflict');
+  assert.ok(compatibleReceipt, 'compatible commutative action applies automatically against the newer authorized revision');
   assert.ok(proposalReceipt?.proposalId, 'gmReview action becomes a proposal');
   assert.equal(conflictReceipt?.reasonCode, 'dependency_revision_conflict', 'stale dependency is rejected as a conflict');
 
@@ -376,24 +412,77 @@ try {
   const acceptedReceipt = finalReceipts.find(receipt => receipt.operationId === proposalReceipt.operationId);
   assert.equal(acceptedReceipt?.status, 'applied', 'GM decision updates the member receipt to applied');
 
+  await waitForExpression(memberAClient, "[...document.querySelectorAll('section[aria-labelledby=\"conflict-recovery-title\"]')].some(section => section.innerText.includes('Tarin Vale') && section.innerText.includes('revision 2') && section.innerText.includes('Mira Vell') && section.innerText.includes('revision 3'))", 'authorized current actor and changed dependency are shown before rebase');
+  await clickSelector(memberAClient, '[aria-label="Confirm dependency rebase"]');
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Create new operation from current revision');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · applied')", 'rebased operation applies from current actor and dependency revisions');
+  let recoveredQueue = await readBrowserQueue(memberAClient);
+  const originalHopeOperation = recoveredQueue.operations.find(row => row.operation.actionId === 'spend-hope');
+  const rebasedHopeOperation = recoveredQueue.operations.find(row => row.operation.actionId === 'spend-hope' && row.operation.operationId !== originalHopeOperation?.operation.operationId);
+  assert.ok(originalHopeOperation && rebasedHopeOperation, 'recovery UI retains the old operation and creates a separate replacement');
+  assert.notEqual(rebasedHopeOperation.operation.operationId, originalHopeOperation.operation.operationId, 'rebase uses a new operation ID');
+  assert.equal(rebasedHopeOperation.operation.baseRevision, 2, 'rebase uses the authorized current actor revision');
+  assert.deepEqual(rebasedHopeOperation.operation.dependencies, [{ entityId: actorA, revision: 3 }], 'rebase updates a dependency only after explicit review of the authorized current revision');
+
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Retain as private draft');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('spend-hope')", 'conflict retained as private draft');
+  const beforeConflictReload = await evaluate(memberAClient, 'performance.timeOrigin');
+  await cdp('Page.reload', { ignoreCache: true }, memberAClient);
+  await waitForExpression(memberAClient, `performance.timeOrigin !== ${beforeConflictReload} && document.readyState === 'complete'`, 'reload after conflict recovery');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('dependency_revision_conflict')", 'private conflict draft restored after reload');
+  await evaluate(memberAClient, 'window.confirm = () => true');
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Discard local conflict copy');
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Confirm discard');
+  await waitForExpression(memberAClient, "!document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · conflicted') && document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('dependency_revision_conflict')", 'discard removes only the terminal operation and keeps its private draft');
+
+  await clickText(memberAClient, 'Tarin Vale', '.character-list button');
+  await clickText(memberAClient, 'Request Stress Recovery', '.full-character .action-grid button');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('clear-stress · awaitingReview')", 'second review request reaches the host');
+  await waitForExpression(gm, "document.querySelector('.gm-admin summary')?.textContent.includes('1 pending')", 'rejection proposal reaches GM queue');
+  await clickText(gm, 'Review', '.gm-admin [aria-label="GM proposal review"] button');
+  await waitForExpression(gm, "document.querySelector('.gm-admin h2')?.textContent === 'Review clear-stress'", 'rejection proposal details');
+  await evaluate(gm, "window.prompt = () => 'Not approved in the offline review fixture.'");
+  await clickText(gm, 'Reject', '.gm-admin button');
+  await waitForExpression(gm, "document.querySelector('.gm-admin summary')?.textContent.includes('0 pending')", 'GM rejection decision');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('clear-stress · rejected · gm_rejected')", 'player receives rejection reason and status');
+  await clickRecoveryAction(memberAClient, 'clear-stress', 'Retain as private draft');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('clear-stress') && document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('gm_rejected')", 'rejected proposal retained as private draft');
+
+  await stop(host);
+  await waitForHostDown();
+  host = start(process.execPath, [join(root, 'server/host/index.mjs')], {
+    env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: dbPath, POTOMAC_GM_TOKEN: gmToken, POTOMAC_PLAYER_TOKEN: legacyPlayerToken },
+  });
+  await waitFor(`${baseUrl}/health`, 'host restart after rejection');
+  const afterRejectedRestart = await request('/api/proposals/mine', memberA.credential);
+  const durableRejected = afterRejectedRestart.value.receipts.find(receipt => receipt.status === 'rejected');
+  assert.equal(afterRejectedRestart.status, 200, 'member receipt remains authorized after host restart');
+  assert.equal(durableRejected?.reasonCode, 'gm_rejected', 'rejected proposal reason survives host restart');
+  const beforeRejectedReload = await evaluate(memberAClient, 'performance.timeOrigin');
+  await cdp('Network.setBlockedURLs', { urls: [`*127.0.0.1:${hostPort}*`] }, memberAClient);
+  await cdp('Page.reload', { ignoreCache: true }, memberAClient);
+  await waitForExpression(memberAClient, `performance.timeOrigin !== ${beforeRejectedReload} && document.readyState === 'complete'`, 'browser reload after host restart');
+  await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('gm_rejected')", 'rejected private draft remains visible after host restart and reload');
+  await cdp('Network.setBlockedURLs', { urls: [] }, memberAClient);
+
   const finalState = await hostState(gmToken);
   const mira = finalState.actors.find(actor => actor.id === actorA);
   const tarin = finalState.actors.find(actor => actor.id === actorDependency);
-  assert.equal(mira.revision, 2, 'selfService operation increments Mira exactly once');
-  assert.equal(mira.data.resources.mana.current, 4, 'selfService operation changes mana exactly once');
+  assert.equal(mira.revision, 3, 'GM change and rebased player operation produce two distinct revisions');
+  assert.equal(mira.data.resources.mana.current, 3, 'rebased player operation applies once after GM change');
   assert.equal(tarin.revision, 2, 'accepted review proposal increments Tarin exactly once');
   assert.equal(tarin.data.resources.stress.current, 0, 'accepted review proposal applies its effect');
 
   const queueBeforeRetry = await readBrowserQueue(memberAClient);
-  const selfOperation = queueBeforeRetry.operations.find(row => row.operation.operationId === selfReceipt.operationId)?.operation;
-  assert.ok(selfOperation, 'the original selfService request remains available in the local queue');
-  const duplicate = await request('/api/offline/operations', memberA.credential, 'POST', selfOperation);
+  const committedOperation = queueBeforeRetry.operations.find(row => row.operation.operationId === rebasedHopeOperation.operation.operationId)?.operation;
+  assert.ok(committedOperation, 'replacement operation remains available in the local queue');
+  const duplicate = await request('/api/offline/operations', memberA.credential, 'POST', committedOperation);
   assert.equal(duplicate.status, 200, 'retry of the same operation ID returns the committed receipt');
   assert.equal(duplicate.value.status, 'applied', 'duplicate operation returns its original outcome');
   const afterRetry = await hostState(gmToken);
-  const miraAfterRetry = afterRetry.actors.find(actor => actor.id === actorA);
-  assert.equal(miraAfterRetry.revision, 2, 'idempotent retry does not increment actor revision again');
-  assert.equal(miraAfterRetry.data.resources.mana.current, 4, 'idempotent retry does not repeat the resource effect');
+  const tarinAfterRetry = afterRetry.actors.find(actor => actor.id === actorDependency);
+  assert.equal(tarinAfterRetry.revision, 3, 'idempotent retry does not increment actor revision again');
+  assert.equal(tarinAfterRetry.data.resources.hope.current, 3, 'idempotent retry does not repeat the resource effect');
 
   await waitForExpression(memberAClient, `new Promise(resolve => {
     const request = indexedDB.open('potomac-offline');
@@ -401,15 +490,16 @@ try {
       const database = request.result;
       const tx = database.transaction('queuedOperations', 'readonly');
       const rows = tx.objectStore('queuedOperations').getAll();
-      tx.oncomplete = () => { database.close(); resolve(rows.result.length === 3 && rows.result.every(row => ['applied', 'conflicted'].includes(row.state))); };
+      tx.oncomplete = () => { database.close(); resolve(rows.result.length === 4 && rows.result.every(row => ['applied', 'conflicted', 'rejected'].includes(row.state))); };
     };
   })`, 'host receipts persisted back to IndexedDB');
   const persisted = await readBrowserQueue(memberAClient);
-  assert.equal(persisted.operations.length, 3, 'operation queue history remains in IndexedDB after reconciliation');
-  assert.equal(persisted.operations.filter(row => row.state === 'applied').length, 2, 'applied receipts persist for selfService and reviewed operations');
-  assert.equal(persisted.operations.filter(row => row.state === 'conflicted').length, 1, 'dependency conflict receipt persists locally');
+  assert.equal(persisted.operations.length, 4, 'operation queue history remains in IndexedDB after reconciliation');
+  assert.equal(persisted.operations.filter(row => row.state === 'applied').length, 3, 'applied receipts persist for compatible, rebased and reviewed operations');
+  assert.equal(persisted.operations.filter(row => row.state === 'conflicted').length, 0, 'player can discard the retained terminal conflict copy');
+  assert.equal(persisted.operations.filter(row => row.state === 'rejected').length, 1, 'rejection status persists locally with the rejected draft');
 
-  console.log('PASS: isolated loopback host; GM and two enrolled members; member-scoped actor visibility; authorized IndexedDB cache; offline reload and stale view; durable selfService, gmReview, and stale-dependency operations; one-time host application; GM proposal decision; authorized receipts persist in host and browser storage.');
+  console.log('PASS: isolated loopback host; GM changes an authorized dependency while a player is offline; browser-UI queued stale actor and dependency edits; host restart and reconciliation; explicit rebase with a new operation ID; conflict retain/discard; GM rejection reason and private draft survive browser reload and host restart; acceptance/rejection receipts remain member-scoped and idempotent.');
   console.log('Temporary host database and browser profile are removed when the runner exits.');
 } catch (error) {
   console.error(`FAIL: ${error.stack || error.message}`);
