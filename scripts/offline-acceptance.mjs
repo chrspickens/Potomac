@@ -117,7 +117,8 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 15000
     try { if (await evaluate(sessionId, expression)) return; } catch {}
     await delay(120);
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  const detail = await evaluate(sessionId, "({role:document.querySelector('.topbar-right select')?.value, status:document.querySelector('.status')?.textContent, error:document.querySelector('.error-banner')?.textContent, campaign:document.querySelector('.campaign-select strong')?.textContent, body:document.body.innerText.slice(0,500)})").catch(() => undefined);
+  throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(detail)}`);
 }
 
 async function clickText(sessionId, text, selector = 'button') {
@@ -144,6 +145,7 @@ async function chooseRole(sessionId, role) {
   await evaluate(sessionId, `(() => {
     const selector = document.querySelector('.topbar-right select');
     if (!selector) throw new Error('role selector unavailable');
+    if (selector.value === ${JSON.stringify(role)}) return;
     selector.value = ${JSON.stringify(role)};
     selector.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);

@@ -179,10 +179,16 @@ try {
   const gmCtx = await cdp('Target.createBrowserContext');
   const playerCtx = await cdp('Target.createBrowserContext');
   const gm = await openContext(gmCtx.browserContextId, 'gm', `workspace-acceptance-gm-${process.pid}`, webUrl);
+  const fixtureDeadline = Date.now() + 12000;
+  while (Date.now() < fixtureDeadline) {
+    const state = await (await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } })).json();
+    if (state.actors.length >= 2) break;
+    await delay(100);
+  }
   const gmProjectionResponse = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } });
   const gmProjection = await gmProjectionResponse.json();
   assert.equal(gmProjectionResponse.status, 200);
-  assert.ok(gmProjection.actors.length >= 2, 'GM seeded the fixture actors');
+  assert.ok(gmProjection.actors.length >= 2, `GM seeded the fixture actors: ${JSON.stringify({ actors: gmProjection.actors, network: gm.secrets.filter(item => item.url.includes('/api/actors')), ui: await evaluate(gm.sessionId, "({role:document.querySelector('.topbar-right select')?.value, status:document.querySelector('.status')?.textContent, error:document.querySelector('.error-banner')?.textContent, body:document.body.innerText.slice(0,500)})") })}`);
   for (const actor of gmProjection.actors) {
     const grant = await fetch(`${baseUrl}/api/actors/${encodeURIComponent(actor.id)}/grants`, { method: 'POST', headers: { authorization: `Bearer ${gmToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ memberId: playerMemberId, permissions: ['read', 'act'] }) });
     assert.equal(grant.status, 201, `GM grants player access to ${actor.id}`);

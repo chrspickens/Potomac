@@ -29,6 +29,7 @@ let demo: Snapshot = {
   role: 'gm', memberId: null, actors: structuredClone(initialActors), encounters: demoEncounters,
   context: { campaignId: 'foundation-demo', activeEncounter: demoEncounters[0], cursor: 1 }, activity: [],
 }
+let fixtureBootstrap: Promise<void> | undefined
 
 function tokenFor(role: Role) {
   return role === 'gm' ? (import.meta.env.VITE_POTOMAC_GM_TOKEN || 'local-gm') : (baseUrl && loadRememberedIdentity(baseUrl)?.credential || import.meta.env.VITE_POTOMAC_PLAYER_TOKEN || 'local-player')
@@ -115,11 +116,22 @@ function fromHost(body: HostState, role: Role): Snapshot {
 async function loadHost(role: Role) {
   const body = await http<HostState>('/api/state', role)
   const snapshot = fromHost(body, role)
-  if (snapshot.actors.length || role !== 'gm') return snapshot
-  for (const fixture of initialActors) {
-    const data = structuredClone({ ...fixture.data, name: fixture.name, epithet: fixture.epithet })
-    await http('/api/actors', role, { method: 'POST', body: JSON.stringify({ id: fixture.entityId, moduleId: fixture.module.manifest.id, moduleVersion: fixture.module.manifest.version, data, visibility: { gmOnly: fixture.secretNote ? ['secretNote'] : [] } }) })
-  }
+  if (role !== 'gm' || snapshot.actors.length && !snapshot.actors.some(actor => initialActors.some(fixture => fixture.entityId === actor.entityId))) return snapshot
+  if (initialActors.every(fixture => snapshot.actors.some(actor => actor.entityId === fixture.entityId))) return snapshot
+  if (!fixtureBootstrap) fixtureBootstrap = (async () => {
+    for (const fixture of initialActors) {
+      const current = await http<HostState>('/api/state', 'gm')
+      if (current.actors?.some(actor => actor.id === fixture.entityId)) continue
+      const data = structuredClone({ ...fixture.data, name: fixture.name, epithet: fixture.epithet })
+      try {
+        await http('/api/actors', role, { method: 'POST', body: JSON.stringify({ id: fixture.entityId, moduleId: fixture.module.manifest.id, moduleVersion: fixture.module.manifest.version, data, visibility: { gmOnly: fixture.secretNote ? ['secretNote'] : [] } }) })
+      } catch (error) {
+        const after = await http<HostState>('/api/state', 'gm')
+        if (!after.actors?.some(actor => actor.id === fixture.entityId)) throw error
+      }
+    }
+  })().finally(() => { fixtureBootstrap = undefined })
+  await fixtureBootstrap
   return fromHost(await http<HostState>('/api/state', role), role)
 }
 
