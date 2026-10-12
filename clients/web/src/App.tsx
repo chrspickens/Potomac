@@ -1,5 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { configuredHost, connectPlayerCredential, host, submitOfflineOperation, type ConnectionStatus, type Role, type Snapshot } from './api'
+import { configuredHost, connectPlayerCredential, enrollLocalPlayer, grantActorToMember, host, submitOfflineOperation, type ConnectionStatus, type Role, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import { openOfflineStorage, type OfflineOperation, type QueuedOperation } from './offline/storage'
@@ -50,6 +50,7 @@ export default function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
   const [identityRevision, setIdentityRevision] = useState(0)
   const [queued, setQueued] = useState<QueuedOperation[]>([])
+  const [issuedCredential, setIssuedCredential] = useState<{ memberId: string; credential: string } | null>(null)
   const syncInFlight = useRef(false)
   const [section, setSection] = useState<'dashboard' | 'characters'>('dashboard')
   const [selectedActorId, setSelectedActorId] = useState('')
@@ -240,12 +241,29 @@ export default function App() {
       setSnapshot(null); setLastSyncedAt(null); setIdentityRevision(value => value + 1)
     } catch (cause) { setError(`Could not clear local data: ${displayError(cause)}`) }
   }
+  const enrollPlayer = async () => {
+    const displayName = window.prompt('Player display name')?.trim()
+    if (!displayName) return
+    try {
+      const enrolled = await enrollLocalPlayer(displayName)
+      setIssuedCredential({ memberId: enrolled.memberId, credential: enrolled.credential })
+      setActionState(`Player ${enrolled.displayName} enrolled. Share the credential privately; it is shown here only until dismissed.`)
+    } catch (cause) { setError(displayError(cause)) }
+  }
+  const grantSelectedActor = async () => {
+    if (!selectedActor) return
+    const memberId = window.prompt(`Member ID to grant read/action access to ${selectedActor.name}`, issuedCredential?.memberId || '')?.trim()
+    if (!memberId) return
+    try { await grantActorToMember(selectedActor.entityId, memberId); setActionState(`${selectedActor.name} granted to member ${memberId}.`) }
+    catch (cause) { setError(displayError(cause)) }
+  }
 
   return <div className="app-shell">
     <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{snapshot?.context.campaignId || 'Connecting…'}</strong></div><nav aria-label="Applications"><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▦ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><div className="rail-future">Encounters <small>Coming later</small></div><div className="rail-future">Maps <small>Coming later</small></div><div className="rail-future">Lore <small>Coming later</small></div></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
     <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : 'Characters'}</strong></div><div className="topbar-right"><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId('') }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
+    {role === 'gm' && configuredHost && <div className="action-status"><button onClick={() => void enrollPlayer()}>Enroll player</button><button disabled={!selectedActor} onClick={() => void grantSelectedActor()}>Grant selected character</button>{issuedCredential && <p>Member ID: <code>{issuedCredential.memberId}</code> · One-time credential: <code>{issuedCredential.credential}</code> <button onClick={() => setIssuedCredential(null)}>Hide credential</button></p>}</div>}
     {role === 'player' && queued.length > 0 && <section className="action-status" aria-label="Your local operation status"><strong>Local edits</strong>{queued.slice(-8).map(row => <p key={row.operation.operationId}>{row.operation.actionId} · {row.state}{row.receipt?.reasonCode ? ` · ${row.receipt.reasonCode}` : ''} · {row.operation.operationId.slice(0, 8)}</p>)}</section>}
     {section === 'dashboard' ? <main className="dashboard-page">
       <div className="page-intro"><div><p className="eyebrow">YOUR CAMPAIGN, YOUR LAYOUT</p><h1>{dashboard?.name || 'Start a dashboard'}</h1><p>Personal panels follow shared play, while your arrangement stays yours.</p></div><div className="intro-actions"><button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>

@@ -56,6 +56,16 @@ export async function submitOfflineOperation(operation: OfflineOperation): Promi
   return http<OfflineReceipt>('/api/offline/operations', 'player', { method: 'POST', body: JSON.stringify(operation) })
 }
 
+export async function enrollLocalPlayer(displayName: string): Promise<{ memberId: string; displayName: string; credential: string }> {
+  if (!baseUrl) throw new Error('A local host is required to enroll players')
+  return http('/api/members/enroll', 'gm', { method: 'POST', body: JSON.stringify({ displayName }) })
+}
+
+export async function grantActorToMember(actorId: string, memberId: string): Promise<void> {
+  if (!baseUrl) throw new Error('A local host is required to grant access')
+  await http(`/api/actors/${encodeURIComponent(actorId)}/grants`, 'gm', { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) })
+}
+
 type HostState = {
   campaignId: string; role?: Role; memberId?: string | null; revision: number; context?: { activeEncounter?: string | null }; encounters?: Encounter[]
   modules?: Array<Record<string, unknown>>
