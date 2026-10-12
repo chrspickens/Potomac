@@ -690,3 +690,31 @@ test('grant and revoke send only an opaque refresh event to the affected live me
     assert.equal(replay.some(event => event.kind === 'actor.granted' || event.kind === 'actor.grant_revoked'), false);
   });
 });
+
+test('0.4 character field edit is revisioned, host-validated, idempotent and GM-only', async () => {
+  await withHost(async ({ request }) => {
+    const member = await offlineFixture(request, 'editable-actor');
+    const edit = { operationId: 'character-edit-1', baseRevision: 1, changes: { resources: { focus: 2 } } };
+    assert.equal((await request('/api/actors/editable-actor', member.credential, { method: 'PUT', body: JSON.stringify(edit) })).status, 403);
+    const first = await request('/api/actors/editable-actor', 'gm', { method: 'PUT', body: JSON.stringify(edit) });
+    assert.equal(first.status, 200);
+    const accepted = await first.json();
+    assert.deepEqual(accepted, { operationId: edit.operationId, entityId: 'editable-actor', status: 'applied', revision: 2 });
+    const retried = await request('/api/actors/editable-actor', 'gm', { method: 'PUT', body: JSON.stringify(edit) });
+    assert.equal(retried.status, 200);
+    assert.deepEqual(await retried.json(), accepted);
+    const changed = await request('/api/actors/editable-actor', 'gm', { method: 'PUT', body: JSON.stringify({ ...edit, changes: { resources: { focus: 1 } } }) });
+    assert.equal(changed.status, 409, 'reusing operation ID with new payload is denied');
+    const stale = await request('/api/actors/editable-actor', 'gm', { method: 'PUT', body: JSON.stringify({ ...edit, operationId: 'stale-character', changes: { resources: { focus: 1 } } }) });
+    assert.equal(stale.status, 409);
+    const forged = await request('/api/actors/editable-actor', 'gm', { method: 'PUT', body: JSON.stringify({ ...edit, operationId: 'forged-character', baseRevision: 2, changes: { ownerMemberId: member.memberId } }) });
+    assert.equal(forged.status, 400, 'undeclared / privilege fields cannot be overposted');
+    const malformed = await request('/api/actors/editable-actor', 'gm', { method: 'PUT', body: JSON.stringify({ ...edit, operationId: 'malformed-character', baseRevision: 2, changes: { resources: { focus: -5 } } }) });
+    assert.equal(malformed.status, 400, 'invalid module data is rejected');
+    const actor = await (await request('/api/actors/editable-actor', member.credential)).json();
+    assert.equal(actor.revision, 2);
+    assert.equal(actor.data.resources.focus, 2);
+    const activity = (await (await request('/api/state', member.credential)).json()).events;
+    assert.equal(activity.filter(event => event.kind === 'actor.edited' && event.payload.operationId === edit.operationId).length, 1);
+  });
+});
