@@ -1,5 +1,5 @@
 import { createContext, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { addLoreLink, createLore, fetchLoreAsset, getLoreLinks, HostRequestError, listLore, listLoreAssets, removeLoreAsset, removeLoreLink, setLoreArchived, setLorePublication, updateLore, uploadLoreAsset, type ConnectionStatus, type LoreArticle, type LoreAsset, type LoreInput, type LoreKind, type LoreLink, type LoreTargetKind, type Role, type Encounter } from './api.ts'
+import { addLoreLink, createLore, fetchLoreAsset, getLoreLinks, HostRequestError, listLore, listLoreAssets, readLore, removeLoreAsset, removeLoreLink, setLoreArchived, setLorePublication, updateLore, uploadLoreAsset, type ConnectionStatus, type LoreArticle, type LoreAsset, type LoreInput, type LoreKind, type LoreLink, type LoreTargetKind, type Role, type Encounter } from './api.ts'
 import { filterLore, LORE_KINDS, projectCachedPlayerLore, safeLorePreview, validateLoreImage } from './lore.ts'
 import { loadRememberedIdentity } from './identity.ts'
 import type { Actor } from './modules.ts'
@@ -134,7 +134,10 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
     if (!selected || !canEdit || selected.archived) return
     setBusy(true); setError('')
     try {
-      const publication = await setLorePublication(selected.id, selected.revision, selected.visibility !== 'shared')
+      // Link/create operations can advance a revision before an SSE-driven list
+      // catches up. Resolve the current GM-authorized revision at click time.
+      const latest = await readLore('gm', selected.id)
+      const publication = await setLorePublication(selected.id, latest.article.revision, selected.visibility !== 'shared')
       setArticles(current => { const next = current.map(item => item.id === selected.id ? { ...item, ...publication } : item); onArticlesChange?.(next); return next })
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not change article sharing') }
     finally { setBusy(false) }
