@@ -213,31 +213,41 @@ try {
   await waitForExpression(gmBrowser.sessionId, "Boolean(document.querySelector('.lore-page form'))", 'GM Lore editor');
   const uiCreated = await evaluate(gmBrowser.sessionId, `(() => {
     const set = (label, value) => { const control = [...document.querySelectorAll('label')].find(item => item.textContent.trim().startsWith(label))?.querySelector('input,textarea'); if (!control) return false; const setter = Object.getOwnPropertyDescriptor(control.__proto__, 'value')?.set; setter?.call(control, value); control.dispatchEvent(new Event('input', { bubbles: true })); control.dispatchEvent(new Event('change', { bubbles: true })); return true };
-    return set('Title', 'UI Created Atlas') && set('Article body', 'Created through the Lore editor.');
+    return set('Title', 'UI Created Atlas') && set('Article body', 'Created through the Lore editor.') && set('GM notes', 'UI_ONLY_GM_SECRET');
   })()`);
   assert.equal(uiCreated, true, 'Lore editor fields are available');
   await clickText(gmBrowser.sessionId, 'Save on host', '.lore-page button');
   await waitForExpression(gmBrowser.sessionId, "document.body.innerText.includes('UI Created Atlas')", 'UI-created Lore article');
-  const browserArticle = await json(await request('/api/lore', gmToken, { method: 'POST', body: JSON.stringify({ id: 'lore-browser-shared', operationId: 'lore-browser-shared-create', baseRevision: 0, type: 'location', title: 'Browser Shared Atlas', body: 'A **shared** passage with a safe preview.', gmNotes: 'UI_ONLY_GM_SECRET', tags: ['browser', 'acceptance'] }) }));
-  assert.equal(browserArticle.status, 201);
-  const browserPublished = await json(await request('/api/lore/lore-browser-shared/publication', gmToken, { method: 'PUT', body: JSON.stringify({ operationId: 'lore-browser-shared-publish', baseRevision: 1, published: true }) }));
-  assert.equal(browserPublished.status, 200);
-  await waitForExpression(gmBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('Browser Shared Atlas'))", 'GM Lore list');
-  await waitForExpression(playerBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('Browser Shared Atlas'))", 'player A receives shared article');
-  await waitForExpression(secondPlayerBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('Browser Shared Atlas'))", 'player B receives shared article');
-  await clickText(gmBrowser.sessionId, 'Browser Shared Atlas', '.lore-list button');
-  await clickText(playerBrowser.sessionId, 'Browser Shared Atlas', '.lore-list button');
-  await clickText(secondPlayerBrowser.sessionId, 'Browser Shared Atlas', '.lore-list button');
+  // Publish via the actual GM UI, not a direct test-only host command.
+  const uiEntries = await json(await request('/api/lore', gmToken));
+  const uiCreatedArticle = uiEntries.body.articles.find(article => article.title === 'UI Created Atlas');
+  assert.ok(uiCreatedArticle, 'GM UI create commits to the authoritative host');
+  assert.equal(uiCreatedArticle.visibility, 'gm', 'GM UI creates a private draft by default');
+  await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-article .action-grid button')?.textContent === 'Edit'", 'GM-created article detail');
+  await clickText(gmBrowser.sessionId, 'Publish to players', '.lore-article .action-grid button');
+  await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-article .action-grid')?.innerText.includes('Revoke from players')", 'GM publish command completes');
+  const browserPublished = await json(await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}`, gmToken));
+  assert.equal(browserPublished.body.article.visibility, 'shared', 'GM publish via UI commits host visibility');
+  await waitForExpression(gmBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('UI Created Atlas'))", 'GM Lore list');
+  await waitForExpression(playerBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('UI Created Atlas'))", 'player A receives shared article');
+  await waitForExpression(secondPlayerBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('UI Created Atlas'))", 'player B receives shared article');
+  await clickText(gmBrowser.sessionId, 'UI Created Atlas', '.lore-list button');
+  await clickText(playerBrowser.sessionId, 'UI Created Atlas', '.lore-list button');
+  await clickText(secondPlayerBrowser.sessionId, 'UI Created Atlas', '.lore-list button');
   assert.equal(await evaluate(gmBrowser.sessionId, "document.querySelector('.lore-article .gm-note')?.textContent.includes('UI_ONLY_GM_SECRET')"), true, 'GM UI shows GM notes');
   for (const browser of [playerBrowser, secondPlayerBrowser]) {
     const visible = await evaluate(browser.sessionId, 'document.body.innerText');
-    assert.ok(visible.includes('A shared passage'), 'player UI renders the shared article');
+    assert.ok(visible.includes('Created through the Lore editor.'), 'player UI renders the shared article');
     assert.ok(!visible.includes('UI_ONLY_GM_SECRET'), 'GM-only note is absent from both player DOMs');
   }
-  const playerPayload = await request('/api/lore/lore-browser-shared', playerToken);
+  const playerPayload = await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}`, playerToken);
   const playerPayloadBytes = await playerPayload.text();
   assert.equal(playerPayload.status, 200);
   assert.ok(!playerPayloadBytes.includes('UI_ONLY_GM_SECRET'), 'GM notes are absent from actual player HTTP response bytes');
+
+  await clickText(gmBrowser.sessionId, 'Revoke from players', '.lore-article .action-grid button');
+  await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-article .action-grid')?.innerText.includes('Publish to players')", 'GM revoke command completes');
+  assert.equal((await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}`, playerToken)).status, 404, 'UI revocation denies player HTTP retrieval');
 
   console.log('PASS: Lore HTTP authorization/projection/event privacy plus real GM, player A and player B browser contexts; GM creation and all three shared-article views render correctly, and GM notes remain private.');
 } catch (error) {
