@@ -259,7 +259,7 @@ try {
   })()`);
   assert.equal(selectedLink, 'lore-ui-secret-target');
   await clickText(gmBrowser.sessionId, 'Add relationship', '.lore-relations button');
-  await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-relations')?.innerText.includes('Unrevealed Link Target')", 'GM relationship shown after save');
+  await waitForExpression(gmBrowser.sessionId, "[...document.querySelectorAll('.lore-relations > p')].some(item => item.textContent.includes('Unrevealed Link Target'))", 'GM relationship persisted and rendered after save');
   const gmRelations = await json(await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}/links`, gmToken));
   assert.ok(gmRelations.body.links.some(link => link.targetId === 'lore-ui-secret-target'));
 
