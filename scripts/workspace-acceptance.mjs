@@ -487,6 +487,7 @@ try {
   assert.ok((await (await request('/api/encounters', gmToken)).json()).encounters.some(e=>e.name==='The Orchard Ruins'), 'encounter creation via GM app persisted to host');
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Encounters application switches shared active context');
+  await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Set active'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'Edited Acceptance Encounter'", 'Encounters application activates the selected encounter');
   const uiEncounterActivation = await (await request('/api/state', gmToken)).json();
