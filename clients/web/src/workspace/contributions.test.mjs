@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAuthorizedBrickAdapter, resolveTableParticipants } from './authorized-adapter.ts';
+import { createAuthorizedBrickAdapter, resolveMapSceneBinding, resolveTableParticipants } from './authorized-adapter.ts';
 
 const actor = (entityId, name) => ({ entityId, name });
 const encounter = (id, participants) => ({ id, name: id, summary: '', participants });
@@ -41,4 +41,19 @@ test('Lore brick adapters expose only active, explicitly linked Lore IDs', async
   assert.equal(adapter.getLore(archived.id), undefined);
   assert.deepEqual(adapter.getRelatedLore(), [article]);
   assert.equal(adapter.getLore('forged-id'), undefined);
+});
+
+test('map brick follow resolves the active encounter authorized scene while pinned selection ignores encounter changes', () => {
+  const world = { id: 'world-1', name: 'World', kind: 'world', encounterId: 'encounter-1', archived: false, pieces: [] };
+  const battle = { id: 'battle-1', name: 'Battle', kind: 'battle', encounterId: 'encounter-2', archived: false, pieces: [] };
+  const first = encounter('encounter-1', []);
+  const second = encounter('encounter-2', []);
+  const adapter = createAuthorizedBrickAdapter([], [first, second], first, [], undefined, 'player', [], [world, battle]);
+  assert.equal(resolveMapSceneBinding({ mode: 'follow', contextKey: 'session.activeEncounter' }, adapter), world);
+  assert.equal(resolveMapSceneBinding({ mode: 'pinned', entityId: battle.id }, adapter), battle);
+  const switched = createAuthorizedBrickAdapter([], [first, second], second, [], undefined, 'player', [], [world, battle]);
+  assert.equal(resolveMapSceneBinding({ mode: 'follow', contextKey: 'session.activeEncounter' }, switched), battle);
+  assert.equal(resolveMapSceneBinding({ mode: 'pinned', entityId: world.id }, switched), world);
+  assert.equal(resolveMapSceneBinding({ mode: 'pinned', entityId: 'revoked-map' }, switched), undefined);
+  assert.equal(resolveMapSceneBinding({ mode: 'follow', contextKey: 'session.activeEncounter' }, createAuthorizedBrickAdapter([], [], null, [], undefined, 'player', [], [world])), undefined);
 });

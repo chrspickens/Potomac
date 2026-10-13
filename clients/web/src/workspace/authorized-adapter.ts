@@ -10,6 +10,13 @@ export function resolveTableParticipants(binding: BrickBinding, adapter: Authori
     ?? (encounter.id === adapter.getActiveEncounter()?.id ? adapter.getParticipants() : []);
 }
 
+export function resolveMapSceneBinding(binding: BrickBinding, adapter: AuthorizedBrickDataAdapter): MapSceneView | undefined {
+  if (binding.mode === 'pinned') return adapter.getMap?.(binding.entityId)
+  if (binding.mode !== 'follow') return undefined
+  const encounter = adapter.getActiveEncounter()
+  return encounter ? adapter.getMapForEncounter?.(encounter.id) : undefined
+}
+
 export function createAuthorizedBrickAdapter(
   actors: Actor[], encounters: Encounter[], activeEncounter: Encounter | null, activity: Activity[], session?: SessionSnapshot, role: Role = 'player', lore: LoreArticle[] = [], maps: MapSceneView[] = [],
 ): AuthorizedBrickDataAdapter & { getEncounterOptions: () => Array<{ id: string; label: string }> } {
@@ -38,6 +45,7 @@ export function createAuthorizedBrickAdapter(
       return article && !article.archived ? [article] : [];
     }),
     getMap: id => mapById.get(id),
+    getMapForEncounter: id => maps.find(scene => !scene.archived && scene.encounterId === id),
     getMapPiece: (sceneId, pieceId) => mapById.get(sceneId)?.pieces.find(piece => piece.id === pieceId),
     getMapOptions: () => maps.map(({ id, name }) => ({ id, label: name })),
     getEncounterOptions: () => encounters.map(({ id, name }) => ({ id, label: name })),

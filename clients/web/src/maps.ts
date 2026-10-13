@@ -2,6 +2,11 @@ import type { MapGrid, MapPiece, MapSceneView } from './api.ts'
 
 export type Point = { x: number; y: number }
 
+export function viewportToScene(point: Point, pan: Point, zoom: number): Point {
+  if (!Number.isFinite(zoom) || zoom <= 0) throw new Error('Zoom must be a positive finite number')
+  return { x: (point.x - pan.x) / zoom, y: (point.y - pan.y) / zoom }
+}
+
 export function gridPoints(width: number, height: number, grid: MapGrid): Point[] {
   if (grid.type === 'none' || !Number.isFinite(grid.size) || grid.size <= 0) return []
   const points: Point[] = []

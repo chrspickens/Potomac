@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canReplaceSessionMetadata, isSessionMetadata, nextOperationState, offlineScopeKey } from './storage.ts';
+import { canReplaceSessionMetadata, isSessionMetadata, MAP_CACHE_MAX_IMAGE_BYTES, MAP_CACHE_MAX_SCENES, nextOperationState, offlineScopeKey, validateAuthorizedMapCache } from './storage.ts';
+
+test('offline map cache enforces a finite, bounded scene and image budget', () => {
+  assert.equal(MAP_CACHE_MAX_SCENES, 20);
+  assert.equal(MAP_CACHE_MAX_IMAGE_BYTES, 20 * 1024 * 1024);
+  const scene = { id: 'map-a', campaignId: 'campaign-a', name: 'Map', kind: 'world', revision: 1, width: 100, height: 80, grid: { type: 'none', size: 0 }, visibility: 'shared', archived: false, pieces: [] };
+  validateAuthorizedMapCache([{ scene, cachedAt: 1, background: new Blob(['image']) }], 'campaign-a');
+  assert.throws(() => validateAuthorizedMapCache([{ scene, cachedAt: 1, background: new Blob([new Uint8Array(10 * 1024 * 1024 + 1)]) }], 'campaign-a'), /per-image/);
+  assert.throws(() => validateAuthorizedMapCache([0, 1, 2].map(index => ({ scene: { ...scene, id: `image-map-${index}` }, cachedAt: 1, background: new Blob([new Uint8Array(10 * 1024 * 1024)]) })), 'campaign-a'), /20 MiB/);
+  assert.throws(() => validateAuthorizedMapCache(Array.from({ length: 21 }, (_, index) => ({ scene: { ...scene, id: `map-${index}` }, cachedAt: 1 })), 'campaign-a'), /20 scenes/);
+  assert.throws(() => validateAuthorizedMapCache([{ scene, cachedAt: -1 }], 'campaign-a'), /timestamp/);
+  assert.throws(() => validateAuthorizedMapCache([{ scene, cachedAt: 1 }, { scene, cachedAt: 2 }], 'campaign-a'), /Duplicate/);
+});
 
 test('offline scope key keeps host, campaign, and member identities distinct', () => {
   const base = { host: 'https://host.example', campaignId: 'campaign-1', memberId: 'member-1' };

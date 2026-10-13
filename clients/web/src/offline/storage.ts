@@ -114,7 +114,13 @@ export type OfflineStorage = {
   listAuthorizedLore(): Promise<AuthorizedLoreEntry[]>;
   replaceAuthorizedMaps(scenes: MapSceneView[]): Promise<void>;
   listAuthorizedMaps(): Promise<MapSceneView[]>;
+  replaceAuthorizedMapCache(entries: CachedMapScene[]): Promise<void>;
+  listAuthorizedMapCache(): Promise<CachedMapScene[]>;
 };
+
+export type CachedMapScene = { scene: MapSceneView; cachedAt: number; background?: Blob };
+export const MAP_CACHE_MAX_SCENES = 20;
+export const MAP_CACHE_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export type AuthorizedLoreEntry = { id: string; revision: number; article: Record<string, unknown>; links: Array<Record<string, unknown>>; cachedAt?: number };
 
@@ -458,23 +464,45 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
       return rows.map(row => row.entry);
     },
     async replaceAuthorizedMaps(scenes) {
-      for (const scene of scenes) validateMapScene(scene, scope.campaignId);
-      if (new Set(scenes.map(scene => scene.id)).size !== scenes.length) throw new Error('Duplicate authorized map ID');
+      return this.replaceAuthorizedMapCache(scenes.map(scene => ({ scene, cachedAt: Date.now() })));
+    },
+    async replaceAuthorizedMapCache(entries) {
+      validateAuthorizedMapCache(entries, scope.campaignId);
       const tx = db.transaction(MAPS, 'readwrite');
       const store = tx.objectStore(MAPS);
       const existing = store.index('scopeKey').getAllKeys(scopedKey);
       existing.onsuccess = () => {
         for (const key of existing.result) store.delete(key);
-        for (const scene of scenes) store.put(scoped({ scene: structuredClone(scene) }, scene.id));
+        for (const entry of entries) store.put(scoped({ scene: structuredClone(entry.scene), cachedAt: entry.cachedAt, ...(entry.background ? { background: entry.background } : {}) }, entry.scene.id));
       };
       await transactionResult(tx);
     },
     async listAuthorizedMaps() {
-      const rows = await listScoped(db, MAPS, scopedKey) as Array<Stored<{ scene: MapSceneView }>>;
+      return (await this.listAuthorizedMapCache()).map(entry => entry.scene);
+    },
+    async listAuthorizedMapCache() {
+      const rows = await listScoped(db, MAPS, scopedKey) as Array<Stored<CachedMapScene>>;
+      if (rows.length > MAP_CACHE_MAX_SCENES) throw new OfflineStorageCorruptionError(MAPS, rows.length);
       for (const row of rows) if (!isMapRecord(row, scope)) throw new OfflineStorageCorruptionError(MAPS, 1);
-      return rows.map(row => row.scene);
+      if (rows.reduce((total, row) => total + (row.background instanceof Blob ? row.background.size : 0), 0) > MAP_CACHE_MAX_IMAGE_BYTES) throw new OfflineStorageCorruptionError(MAPS, rows.length);
+      return rows.map(({ scene, cachedAt, background }) => ({ scene, cachedAt: Number.isFinite(cachedAt) ? cachedAt : 0, ...(background ? { background } : {}) }));
     },
   };
+}
+
+export function validateAuthorizedMapCache(entries: CachedMapScene[], campaignId: string): void {
+  if (entries.length > MAP_CACHE_MAX_SCENES) throw new Error(`Offline map cache is limited to ${MAP_CACHE_MAX_SCENES} scenes`);
+  let imageBytes = 0;
+  for (const entry of entries) {
+    validateMapScene(entry.scene, campaignId);
+    if (!Number.isFinite(entry.cachedAt) || entry.cachedAt < 0) throw new Error('Invalid map cache timestamp');
+    if (entry.background !== undefined) {
+      if (!(entry.background instanceof Blob) || entry.background.size > 10 * 1024 * 1024) throw new Error('Offline map image exceeds the 10 MiB per-image cache limit');
+      imageBytes += entry.background.size;
+    }
+  }
+  if (imageBytes > MAP_CACHE_MAX_IMAGE_BYTES) throw new Error('Offline map images exceed the 20 MiB device cache limit');
+  if (new Set(entries.map(entry => entry.scene.id)).size !== entries.length) throw new Error('Duplicate authorized map ID');
 }
 
 function validateMapScene(scene: MapSceneView, campaignId: string): void {
@@ -482,11 +510,13 @@ function validateMapScene(scene: MapSceneView, campaignId: string): void {
   for (const piece of scene.pieces) if (!isRecord(piece) || !isNonEmptyString(piece.id) || piece.sceneId !== scene.id || !['actor', 'pin'].includes(piece.kind) || !Number.isFinite(piece.x) || !Number.isFinite(piece.y) || piece.x < 0 || piece.y < 0 || piece.x > scene.width || piece.y > scene.height || !Number.isSafeInteger(piece.revision) || piece.revision < 1) throw new Error('Invalid authorized map piece');
   assertJson(scene);
 }
-function isMapRecord(value: unknown, scope: OfflineScope): value is Stored<{ scene: MapSceneView }> {
+function isMapRecord(value: unknown, scope: OfflineScope): value is Stored<CachedMapScene> {
   const scopeKey = offlineScopeKey(scope);
   if (!isRecord(value) || value.scopeKey !== scopeKey || value.host !== scope.host || value.campaignId !== scope.campaignId || value.memberId !== scope.memberId || !isRecord(value.scene)) return false;
   try { validateMapScene(value.scene as MapSceneView, scope.campaignId) } catch { return false }
-  return value.key === JSON.stringify([scopeKey, value.scene.id]);
+  if (value.key !== JSON.stringify([scopeKey, value.scene.id]) || (value.cachedAt !== undefined && (!Number.isFinite(value.cachedAt) || Number(value.cachedAt) < 0))) return false;
+  if (value.background !== undefined && (!(value.background instanceof Blob) || value.background.size > 10 * 1024 * 1024)) return false;
+  return true;
 }
 
 function validateLoreEntry(entry: AuthorizedLoreEntry): void {

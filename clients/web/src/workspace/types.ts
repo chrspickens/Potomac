@@ -49,6 +49,7 @@ export type AuthorizedBrickDataAdapter = {
   getLoreOptions?(): Array<{ id: string; label: string }>;
   getRelatedLore?(): LoreArticle[];
   getMap?(sceneId: string): MapSceneView | undefined;
+  getMapForEncounter?(encounterId: string): MapSceneView | undefined;
   getMapPiece?(sceneId: string, pieceId: string): MapPieceView | undefined;
   getMapOptions?(): Array<{ id: string; label: string }>;
 };

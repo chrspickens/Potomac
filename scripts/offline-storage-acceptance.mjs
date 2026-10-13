@@ -155,6 +155,9 @@ try {
     const scope = ${JSON.stringify(playerScope)};
     const legacyOperation = {...${JSON.stringify(operation)},operationId:'operation-before-createdAt'};
     await new Promise((resolve,reject) => {
+      const remove = indexedDB.deleteDatabase('potomac-offline');
+      remove.onerror = () => reject(remove.error);
+      remove.onsuccess = () => {
       const open = indexedDB.open('potomac-offline', 2);
       open.onerror = () => reject(open.error);
       open.onupgradeneeded = () => {
@@ -166,6 +169,7 @@ try {
         open.transaction.objectStore('queuedOperations').put({key,scopeKey:storageModule.offlineScopeKey(scope),host:scope.host,campaignId:scope.campaignId,memberId:scope.memberId,operation:legacyOperation,state:'queued',updatedAt:123});
       };
       open.onsuccess = () => {open.result.close();resolve();};
+      };
     });
     const actor = {entityId:'actor-a',revision:4,module:{manifest:{id:'fictional.core',version:'1.0.0'},view:{layout:[],brick:[]}},data:{schemaVersion:1,visible:'player'},name:'A'};
     await snapshotsModule.cachePlayerSnapshot(scope.host,{role:'player',memberId:scope.memberId,actors:[actor],encounters:[],context:{campaignId:scope.campaignId,activeEncounter:null,cursor:23},activity:[],session:{revision:0,current:null,history:[]}});

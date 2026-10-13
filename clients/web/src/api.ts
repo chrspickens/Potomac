@@ -6,7 +6,7 @@ import type { MapScene, MapPiece, MapSceneCreate } from '@potomac/contracts'
 export type { MapScene, MapPiece, MapGrid, MapSceneKind } from '@potomac/contracts'
 export type MapPieceView = MapPiece & { destination?: { sceneId: string; name: string; label: string } }
 export type MapSceneView = MapScene & { pieces: MapPieceView[]; encounterId?: string | null }
-export type MapCommand = { operationId: string; baseRevision: number; command: 'update' | 'archive' | 'restore' | 'piece.put' | 'piece.delete' | 'link.put' | 'link.delete' | 'encounter.set'; name?: string; kind?: MapScene['kind']; width?: number; height?: number; grid?: MapScene['grid']; visibility?: MapScene['visibility']; gmNotes?: string; piece?: Omit<MapPiece, 'revision'>; pieceId?: string; targetSceneId?: string; label?: string; encounterId?: string | null }
+export type MapCommand = { operationId: string; baseRevision: number; command: 'update' | 'archive' | 'restore' | 'publish' | 'revoke' | 'piece.put' | 'piece.delete' | 'link.put' | 'link.delete' | 'encounter.set'; name?: string; kind?: MapScene['kind']; width?: number; height?: number; grid?: MapScene['grid']; visibility?: MapScene['visibility']; gmNotes?: string; piece?: Omit<MapPiece, 'revision'>; pieceId?: string; targetSceneId?: string; label?: string; encounterId?: string | null }
 
 export async function listMaps(role: Role): Promise<MapSceneView[]> {
   if (!baseUrl) return []
@@ -24,6 +24,21 @@ export async function createMap(role: Role, scene: Omit<MapSceneCreate, 'operati
 
 export async function commandMap(role: Role, id: string, command: MapCommand): Promise<{ operationId: string; status: 'applied'; sceneId: string; revision: number }> {
   return http(`/api/maps/${encodeURIComponent(id)}/commands`, role, { method: 'POST', body: JSON.stringify(command) })
+}
+
+export async function uploadMapBackground(id: string, file: File, baseRevision: number): Promise<{ assetId: string; revision: number }> {
+  if (!baseUrl) throw new Error('Map backgrounds require a configured host')
+  const response = await fetch(`${baseUrl}/api/maps/${encodeURIComponent(id)}/background`, { method: 'POST', headers: { authorization: `Bearer ${tokenFor('gm')}`, 'content-type': file.type, 'x-file-name': file.name, 'x-operation-id': crypto.randomUUID(), 'x-base-revision': String(baseRevision) }, body: file })
+  const body = await response.json().catch(() => ({})) as { error?: string; assetId?: string; revision?: number }
+  if (!response.ok || !body.assetId || !Number.isSafeInteger(body.revision)) throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status)
+  return { assetId: body.assetId, revision: body.revision! }
+}
+
+export async function fetchMapBackground(role: Role, id: string): Promise<Blob> {
+  if (!baseUrl) throw new Error('Map backgrounds require a configured host')
+  const response = await fetch(`${baseUrl}/api/maps/${encodeURIComponent(id)}/background/content`, { headers: { authorization: `Bearer ${tokenFor(role)}` } })
+  if (!response.ok) { const body = await response.json().catch(() => ({})); throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status) }
+  return response.blob()
 }
 
 export type Role = 'gm' | 'player'

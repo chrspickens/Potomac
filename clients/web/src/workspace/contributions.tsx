@@ -2,7 +2,7 @@ import type { Activity, Encounter, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 import type { LoreArticle } from '../api.ts';
 import type { BrickBinding, BrickDefinition, BrickRenderProps, AuthorizedBrickDataAdapter } from './types.ts';
-import { resolveTableParticipants } from './authorized-adapter.ts';
+import { resolveMapSceneBinding, resolveTableParticipants } from './authorized-adapter.ts';
 import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
 import { MapCanvas } from '../maps-app.tsx';
 import type { MapSceneView } from '../api.ts';
@@ -55,9 +55,9 @@ function ActivityBrick({ data }: BrickRenderProps<Activity[]>) {
   return <div className="activity-list">{data?.length ? data.slice(-12).reverse().map(item => <div className="activity-item" key={item.id}><span className="activity-dot" /><div><strong>{item.action}</strong><p>{item.detail || 'Campaign event'}</p><small>{item.actor} · {item.time}{item.visibility === 'gm' ? ' · GM only' : ''}</small></div></div>) : <p className="brick-message">Actions and encounter changes will appear here.</p>}</div>;
 }
 
-function MapSceneBrick({ data, adapter, onOpenApp, onMoveMapPiece }: BrickRenderProps<MapSceneView>) {
+function MapSceneBrick({ data, adapter, onOpenApp, offline }: BrickRenderProps<MapSceneView>) {
   if (!data) return <p className="brick-message">This map is unavailable to your current host authorization.</p>;
-  return <div className="map-brick"><button type="button" onClick={() => onOpenApp?.('maps', data.id)}>Open Maps app · {data.name}</button><MapCanvas scene={data} actors={adapter.getActorOptions().map(item => adapter.getActor(item.id)).filter((actor): actor is Actor => Boolean(actor))} onDropPiece={(piece, point) => onMoveMapPiece?.(data.id, piece, point)} /><small>{data.kind} scene · host revision {data.revision}</small></div>;
+  return <div className="map-brick"><button type="button" onClick={() => onOpenApp?.('maps', data.id)}>Open Maps app · {data.name}</button><MapCanvas scene={data} actors={adapter.getActorOptions().map(item => adapter.getActor(item.id)).filter((actor): actor is Actor => Boolean(actor))} showPrivate={adapter.getRole() === 'gm'} /><small>{data.kind} scene · {offline ? 'cached and read only' : `host revision ${data.revision}`}</small></div>;
 }
 
 function TableSessionBrick({ data, adapter, onSessionCommand, onOpenApp, busy, offline }: BrickRenderProps<SessionSnapshot>) {
@@ -138,7 +138,9 @@ const loreRelatedDefinition: BrickDefinition<LoreArticle[]> = {
 
 const mapSceneDefinition: BrickDefinition<MapSceneView> = {
   ...declaredBrickDefinition('maps.scene'),
-  resolve: (binding, adapter) => binding.mode === 'pinned' ? adapter.getMap?.(binding.entityId) : undefined,
+  supportedBindings: ['pinned', 'follow'],
+  defaultBinding: { mode: 'follow', contextKey: 'session.activeEncounter' },
+  resolve: resolveMapSceneBinding,
   render: MapSceneBrick,
 };
 
