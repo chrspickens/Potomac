@@ -31,12 +31,19 @@ function start(command, args, options = {}) {
   return children.at(-1);
 }
 
-async function freePort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  return port;
+async function reservePorts(count) {
+  const servers = [];
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = createServer();
+      await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+      servers.push(server);
+    }
+    return servers.map(server => server.address().port);
+  } finally {
+    await Promise.all(servers.map(server => new Promise((resolve, reject) =>
+      server.close(error => error ? reject(error) : resolve()))));
+  }
 }
 
 async function waitFor(url, label, timeoutMs = 30000) {
@@ -188,7 +195,7 @@ try {
   assert.equal(archiveEvent.visibility, 'gm', 'archive event visibility is explicit');
 
   // Drive the actual Lore app in three isolated Chromium browser contexts.
-  const ports = await Promise.all([freePort(), freePort(), freePort(), freePort()]);
+  const ports = await reservePorts(4);
   const [gmPort, playerPort, secondPlayerPort, debugPort] = ports;
   for (const [port, playerCredential] of [[gmPort, 'unused-gm-player'], [playerPort, playerToken], [secondPlayerPort, enrolledSecond.body.credential]]) {
     start(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
