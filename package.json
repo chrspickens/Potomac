@@ -19,6 +19,7 @@
     "acceptance:offline-storage": "node scripts/offline-storage-acceptance.mjs",
     "acceptance:lore": "node scripts/lore-acceptance.mjs",
     "acceptance:maps": "node scripts/maps-acceptance.mjs",
+    "acceptance:maps-browser": "node scripts/maps-browser-acceptance.mjs",
     "check": "pnpm build && node --test packages/rules-engine/src/index.test.mjs server/host/index.test.mjs server/host/security.test.mjs server/host/backup.test.mjs server/host/lore.test.mjs clients/web/src/schema-form.test.mjs clients/web/src/identity.test.mjs clients/web/src/lore.test.mjs clients/web/src/maps.test.mjs clients/web/src/offline/storage.test.mjs clients/web/src/offline/reconcile.test.mjs clients/web/src/offline/conflict-recovery.test.mjs clients/web/src/workspace/workspace.test.mjs clients/web/src/workspace/layout.test.mjs clients/web/src/workspace/registry.test.mjs clients/web/src/workspace/contributions.test.mjs && pnpm debug:smoke && pnpm acceptance:campaign && pnpm acceptance:system-b-table && pnpm acceptance:offline && pnpm acceptance:offline-storage && pnpm acceptance:table && pnpm acceptance:lore && pnpm acceptance:maps"
   }
 }
