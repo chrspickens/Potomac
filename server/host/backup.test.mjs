@@ -114,7 +114,7 @@ test('v5 export deduplicates an asset shared by Lore and a map and rejects damag
     writeFileSync(`${sourcePath}.assets/${hash}`, bytes);
     host.db.prepare("INSERT INTO lore_entries(id,campaign_id,title,created_at,updated_at) VALUES('lore-map','foundation-demo','Shared image','now','now')").run();
     host.db.prepare("INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES('lore-image','foundation-demo','lore-map','world.png','image/png',?,?, 'gm','now')").run(bytes.length,hash);
-    host.db.prepare("INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,background_id,created_at,updated_at) VALUES('world','foundation-demo','World','world',1,100,80,'{\\\"type\\\":\\\"none\\\",\\\"size\\\":0}','shared','map-image','now','now')").run();
+    host.db.prepare("INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,background_id,created_at,updated_at) VALUES('world','foundation-demo','World','world',1,100,80,'{\"type\":\"none\",\"size\":0}','shared','map-image','now','now')").run();
     host.db.prepare("INSERT INTO map_assets(id,campaign_id,scene_id,original_name,media_type,byte_size,sha256,created_at) VALUES('map-image','foundation-demo','world','world.png','image/png',?,?, 'now')").run(bytes.length,hash);
     exportCampaignBackup(sourcePath, archivePath);
     const archive = JSON.parse(readFileSync(archivePath, 'utf8'));
