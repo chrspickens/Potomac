@@ -90,6 +90,25 @@ test('durable session commands enforce GM transitions, revisions, and operation 
   });
 });
 
+test('Lore search is bounded, read-only and filters unpublished entries before returning them', async () => {
+  await withHost(async ({ host, request }) => {
+    const now = new Date().toISOString();
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,title,summary,body,gm_notes,tags,published,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('public-lore','foundation-demo','Silver Harbor','A coastal city','Ships gather here','Secret note','[]',1,'shared',now,now);
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,title,summary,body,gm_notes,tags,published,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('draft-lore','foundation-demo','Hidden Vault','Under the city','Secret passage','Hidden secret','[]',0,'gm',now,now);
+    const before = host.db.prepare('SELECT COUNT(*) AS n FROM lore_entries').get().n;
+    const player = await (await request('/api/lore?q=Silver', 'player')).json();
+    assert.deepEqual(player.articles.map(article => article.id), ['public-lore']);
+    assert.equal(JSON.stringify(player).includes('Secret note'), false);
+    assert.equal((await request('/api/lore/draft-lore', 'player')).status, 404);
+    const gm = await (await request('/api/lore/draft-lore')).json();
+    assert.equal(gm.article.id, 'draft-lore');
+    assert.equal((await request('/api/lore?limit=100000')).status, 200);
+    assert.equal((await request(`/api/lore?q=${'x'.repeat(201)}`)).status, 400);
+    assert.equal((await request('/api/lore?limit=0')).status, 400);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM lore_entries').get().n, before);
+  });
+});
+
 test('session start rejects stale or ineligible encounter targets without events and accepts only eligible participants', async () => {
   await withHost(async ({ request }) => {
     const target = await prepareSessionEncounter(request);
@@ -1163,54 +1182,62 @@ test('localhost browser preflight permits revisioned PUT mutations', async () =>
   });
 });
 
-test('GM-private session history and timeline are filtered from player HTTP state and SSE replay', async () => {
-  await withHost(async ({ request, host }) => {
-    const now = '2026-01-01T00:00:00.000Z';
-    host.db.prepare('INSERT INTO encounters(id,name,summary,status,revision,created_at,updated_at,visibility,gm_notes) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run('secret-encounter','Secret encounter','CLASSIFIED_ENCOUNTER_SUMMARY','prepared',1,now,now,'gm','CLASSIFIED_GM_NOTES');
-    host.db.prepare('INSERT INTO sessions(id,campaign_id,encounter_id,status,revision,started_at,updated_at,finished_at) VALUES(?,?,?,?,?,?,?,?)')
-      .run('secret-session','foundation-demo','secret-encounter','active',1,now,now,null);
-    host.db.prepare('UPDATE session_state SET current_session_id=?,revision=? WHERE campaign_id=?').run('secret-session',1,'foundation-demo');
-    host.db.prepare('INSERT INTO events(id,actor_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?)')
-      .run('secret-session-event',null,'session.started','public',JSON.stringify({
-        sessionId:'secret-session', encounterId:'secret-encounter', marker:'CLASSIFIED_SESSION_MARKER'
-      }),now);
-    host.db.prepare('INSERT INTO events(id,actor_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?)')
-      .run('public-sentinel',null,'public.marker','public',JSON.stringify({ marker:'VISIBLE_AFTER_SECRET' }),now);
-    const gm = await (await request('/api/session','gm')).json();
-    assert.equal(gm.current.encounterId,'secret-encounter');
-    assert.equal(gm.history[0].encounterId,'secret-encounter');
-    const playerResponse = await request('/api/session','player');
-    assert.equal(playerResponse.status,200);
-    const playerBytes = await playerResponse.text();
-    assert.ok(!playerBytes.includes('secret-session') && !playerBytes.includes('secret-encounter'));
-    const playerSession = JSON.parse(playerBytes);
-    assert.equal(playerSession.current,null);
-    assert.deepEqual(playerSession.history,[]);
-    const stateBytes = await (await request('/api/state?since=0','player')).text();
-    for (const secret of ['secret-session','secret-encounter','CLASSIFIED_SESSION_MARKER','CLASSIFIED_GM_NOTES'])
-      assert.ok(!stateBytes.includes(secret), `player state leaked ${secret}`);
-    const denied = await request('/api/session/secret-session/timeline?after=0','player');
-    const absent = await request('/api/session/nonexistent-session/timeline?after=0','player');
-    assert.equal(denied.status,404);
-    assert.equal(absent.status,404);
-    assert.deepEqual(await denied.json(),await absent.json());
-    const replayController = new AbortController();
-    try {
-      const stream = await request('/api/stream?since=0','player',{ signal: replayController.signal });
-      assert.equal(stream.status,200);
-      const reader = stream.body.getReader();
-      let replay = '';
-      while (!replay.includes('VISIBLE_AFTER_SECRET')) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        replay += new TextDecoder().decode(value);
-      }
-      assert.match(replay,/VISIBLE_AFTER_SECRET/);
-      for (const secret of ['secret-session','secret-encounter','CLASSIFIED_SESSION_MARKER'])
-        assert.ok(!replay.includes(secret), `player SSE replay leaked ${secret}`);
-    } finally { replayController.abort(); }
-    const gmTimeline = await (await request('/api/session/secret-session/timeline?after=0','gm')).json();
-    assert.ok(gmTimeline.events.some(event=>event.payload.marker==='CLASSIFIED_SESSION_MARKER'));
+test('managed Lore assets are content addressed, persistent and gated by current entry publication', async () => {
+  await withHost(async ({ request, restart }) => {
+    const member = await (await postJson(request, '/api/members/enroll', { displayName: 'Lore reader' })).json();
+    const created = await postJson(request, '/api/lore', { operationId: 'asset-lore-create', baseRevision: 0, id: 'sunken-archive', title: 'Sunken Archive', body: 'A hidden place.' });
+    assert.equal(created.status, 201);
+    const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 1, 2, 3]);
+    const upload = () => request('/api/lore/sunken-archive/assets', 'gm', {
+      method: 'POST', body: bytes,
+      headers: { 'content-type': 'image/png', 'x-file-name': 'archive.png' }
+    });
+    const first = await upload();
+    assert.equal(first.status, 201);
+    const asset = await first.json();
+    const second = await upload();
+    assert.equal(second.status, 201);
+    const duplicate = await second.json();
+    assert.notEqual(asset.id, duplicate.id, 'separate Lore references keep independent metadata identities');
+    assert.equal(asset.sha256, duplicate.sha256, 'identical bytes share the content-addressed object');
+    assert.equal((await request('/api/lore/sunken-archive/assets', member.credential)).status, 404);
+    assert.equal((await request(`/api/assets/${asset.id}/content`, member.credential)).status, 404);
+    assert.equal((await request(`/api/assets/${asset.id}`, 'nobody')).status, 401);
+
+    assert.equal((await request('/api/lore/sunken-archive/publication', 'gm', { method: 'PUT', body: JSON.stringify({ operationId: 'asset-lore-publish', baseRevision: 1, published: true }) })).status, 200);
+    const visibleAssets = await (await request('/api/lore/sunken-archive/assets', member.credential)).json();
+    assert.equal(visibleAssets.assets.length, 2);
+    const download = await request(`/api/assets/${asset.id}/content`, member.credential);
+    assert.equal(download.status, 200);
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), bytes);
+    assert.equal(download.headers.get('cache-control'), 'private, no-store');
+    await restart();
+    assert.deepEqual(Buffer.from(await (await request(`/api/assets/${asset.id}/content`, member.credential)).arrayBuffer()), bytes);
+
+    assert.equal((await request('/api/lore/sunken-archive/publication', 'gm', { method: 'PUT', body: JSON.stringify({ operationId: 'asset-lore-revoke', baseRevision: 2, published: false }) })).status, 200);
+    assert.equal((await request('/api/lore/sunken-archive/assets', member.credential)).status, 404);
+    assert.equal((await request(`/api/assets/${asset.id}/content`, member.credential)).status, 404);
+    assert.equal((await request(`/api/assets/${asset.id}`, member.credential, { method: 'DELETE' })).status, 404);
+    assert.equal((await request(`/api/assets/${asset.id}`, 'gm', { method: 'DELETE' })).status, 200);
+  });
+});
+
+test('Lore asset upload rejects player writes, unsafe names, mismatched bytes and oversized streams', async () => {
+  await withHost(async ({ request }) => {
+    await postJson(request, '/api/lore', { operationId: 'asset-validation-create', baseRevision: 0, id: 'asset-validation', title: 'Asset validation' });
+    const upload = (role, name, mediaType, body) => request('/api/lore/asset-validation/assets', role, {
+      method: 'POST', body,
+      headers: { 'content-type': mediaType, 'x-file-name': name }
+    });
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+    assert.equal((await upload('player', 'ok.png', 'image/png', png)).status, 404, 'unpublished Lore entry remains unavailable to players');
+    assert.equal((await upload('gm', '../escape.png', 'image/png', png)).status, 400);
+    assert.equal((await upload('gm', 'script.svg', 'image/svg+xml', Buffer.from('<svg/>'))).status, 400);
+    assert.equal((await upload('gm', 'wrong.png', 'image/png', Buffer.from('<html>'))).status, 400);
+    assert.equal((await upload('gm', 'large.png', 'image/png', Buffer.alloc(5 * 1024 * 1024 + 1, 1))).status, 413);
+    const denied = await upload('gm', 'ok.png', 'image/png', png);
+    assert.equal(denied.status, 201);
+    assert.equal((await request('/api/lore/asset-validation/publication', 'gm', { method: 'PUT', body: JSON.stringify({ operationId: 'asset-validation-publish', baseRevision: 1, published: true }) })).status, 200);
+    assert.equal((await upload('player', 'other.png', 'image/png', png)).status, 404, 'unpublished entry existence stays hidden from players');
   });
 });

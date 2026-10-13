@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, lstatSync, existsSync, writeFileSync, linkSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, executeAction, getActionPolicy, getRequiredRollCount } from '../../packages/rules-engine/src/index.ts';
@@ -25,7 +25,32 @@ CREATE TABLE IF NOT EXISTS session_operations (operation_id TEXT PRIMARY KEY, re
 CREATE TABLE IF NOT EXISTS encounter_participants (encounter_id TEXT NOT NULL REFERENCES encounters(id) ON DELETE CASCADE, actor_id TEXT NOT NULL REFERENCES actors(id), initiative INTEGER, status TEXT NOT NULL DEFAULT 'active', activation_order INTEGER, PRIMARY KEY(encounter_id,actor_id));
 CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, credential_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);
 CREATE TABLE IF NOT EXISTS actor_grants (actor_id TEXT NOT NULL, member_id TEXT NOT NULL, can_read INTEGER NOT NULL, can_act INTEGER NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY(actor_id, member_id));
+CREATE TABLE IF NOT EXISTS lore_entries (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'note', title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', gm_notes TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]', revision INTEGER NOT NULL DEFAULT 1, archived INTEGER NOT NULL DEFAULT 0, published INTEGER NOT NULL DEFAULT 0, visibility TEXT NOT NULL DEFAULT 'gm', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS lore_operations (operation_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL, request_hash TEXT NOT NULL, response TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS lore_links (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES lore_entries(id), target_kind TEXT NOT NULL CHECK(target_kind IN ('lore','actor','encounter')), target_id TEXT NOT NULL, label TEXT, created_at TEXT NOT NULL, UNIQUE(source_id,target_kind,target_id,label));
+CREATE TABLE IF NOT EXISTS lore_assets (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, entry_id TEXT NOT NULL REFERENCES lore_entries(id), original_name TEXT NOT NULL, media_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS lore_assets_entry ON lore_assets(campaign_id,entry_id,created_at);
 `;
+
+const MAX_ASSET_BYTES = 5 * 1024 * 1024;
+const MAX_CAMPAIGN_ASSET_BYTES = 100 * 1024 * 1024;
+const ASSET_TYPES = {
+  'image/png': { extension: '.png', signature: bytes => bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) },
+  'image/jpeg': { extension: '.jpg', signature: bytes => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
+  'image/gif': { extension: '.gif', signature: bytes => bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6)) },
+  'image/webp': { extension: '.webp', signature: bytes => bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' }
+};
+
+const readRawBody = (req, limit) => new Promise((resolveBody, reject) => {
+  const chunks = []; let size = 0; let tooLarge = false;
+  req.on('data', chunk => {
+    size += chunk.length;
+    if (size > limit) { tooLarge = true; chunks.length = 0; return; }
+    if (!tooLarge) chunks.push(chunk);
+  });
+  req.on('end', () => tooLarge ? reject(Object.assign(new Error('Asset exceeds the 5 MiB limit'), { statusCode: 413 })) : resolveBody(Buffer.concat(chunks)));
+  req.on('error', reject);
+});
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -123,8 +148,28 @@ function applyRuleAction(action, state, parameters) {
 // These fixed role tokens are development fixtures; authentication accepts them only on loopback listeners.
 export function createHost({ databasePath = './data/potomac.sqlite', gmToken = 'local-gm', playerToken = 'local-player', campaignId = 'foundation-demo', seedDemo = false } = {}) {
   mkdirSync(dirname(resolve(databasePath)), { recursive: true });
+  const assetDirectory = `${resolve(databasePath)}.assets`;
+  mkdirSync(assetDirectory, { recursive: true });
+  if (!lstatSync(assetDirectory).isDirectory() || lstatSync(assetDirectory).isSymbolicLink()) throw new Error('Asset storage path must be a real directory');
   const db = new DatabaseSync(databasePath);
   db.exec(schema);
+  const loreColumns = new Set(db.prepare('PRAGMA table_info(lore_entries)').all().map(column => column.name));
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    if (!loreColumns.has('type')) db.exec("ALTER TABLE lore_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'note'");
+    if (!loreColumns.has('visibility')) {
+      db.exec("ALTER TABLE lore_entries ADD COLUMN visibility TEXT NOT NULL DEFAULT 'gm'");
+      db.exec("UPDATE lore_entries SET visibility=CASE WHEN published=1 THEN 'shared' ELSE 'gm' END");
+    }
+    db.exec('DROP INDEX IF EXISTS lore_entries_campaign');
+    db.exec('CREATE INDEX lore_entries_campaign ON lore_entries(campaign_id, archived, visibility)');
+    db.exec('COMMIT;');
+  } catch (error) {
+    try { db.exec('ROLLBACK;'); } catch { /* transaction may not be active */ }
+    throw error;
+  }
+  // These tables are additive: opening a pre-Lore 0.5 database preserves all
+  // existing host records and starts the new campaign-scoped collection empty.
   const actorColumns = new Set(db.prepare('PRAGMA table_info(actors)').all().map(column => column.name));
   if (!actorColumns.has('archived')) db.exec('ALTER TABLE actors ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
   const encounterColumns = new Set(db.prepare('PRAGMA table_info(encounters)').all().map(column => column.name));
@@ -170,6 +215,9 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const clients = new Set();
   const moduleRow = db.prepare('SELECT manifest FROM modules WHERE id=? AND version=?');
   const actorRow = db.prepare('SELECT * FROM actors WHERE id=?');
+  const loreRow = db.prepare('SELECT * FROM lore_entries WHERE id=? AND campaign_id=?');
+  const assetPath = hash => resolve(assetDirectory, hash);
+  const loreAssetRow = db.prepare('SELECT * FROM lore_assets WHERE id=? AND campaign_id=?');
   const latest = () => Number(db.prepare('SELECT COALESCE(MAX(cursor),0) AS n FROM events').get().n);
   const loopbackOnly = () => {
     const address = server.address()?.address;
@@ -220,24 +268,47 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const canActOnActor = (row, auth) => auth.role === 'gm'
     || auth.memberId !== null && memberIsActive(auth.memberId) && (isOwner(row, auth) || hasGrant(row, auth, 'act'))
     || auth.legacy && row.legacy_shared === 1 && row.owner_member_id === null && row.owner_role === 'player';
+  const canReadLore = (row, auth) => Boolean(row && row.campaign_id === campaignId && !row.archived && (auth.role === 'gm' || row.visibility === 'shared' && memberIsActive(auth.memberId)));
+  const loreProjection = (row, auth) => ({
+    id: row.id, campaignId: row.campaign_id, type: row.type || 'note', title: row.title, summary: row.summary, bodyMarkdown: row.body,
+    revision: row.revision, archived: Boolean(row.archived), visibility: row.visibility || (row.published ? 'shared' : 'gm'),
+    // Legacy aliases remain available while clients migrate to the 0.6 contract.
+    body: row.body, published: (row.visibility || (row.published ? 'shared' : 'gm')) === 'shared',
+    createdAt: row.created_at, updatedAt: row.updated_at,
+    ...(auth.role === 'gm' ? { gmNotes: row.gm_notes } : {}),
+    ...((auth.role === 'gm' || row.visibility === 'shared' || row.published === 1) ? { tags: JSON.parse(row.tags) } : {})
+  });
+  const linkTargetReadable = (kind, id, auth) => {
+    if (kind === 'lore') return canReadLore(loreRow.get(id, campaignId), auth);
+    if (kind === 'actor') { const actor = actorRow.get(id); return Boolean(actor && !actor.archived && canReadActor(actor, auth)); }
+    if (kind === 'encounter') { const encounter = db.prepare('SELECT * FROM encounters WHERE id=?').get(id); return Boolean(encounter && (auth.role === 'gm' || encounter.visibility === 'public')); }
+    return false;
+  };
+  const loreLinks = (sourceId, auth) => db.prepare('SELECT * FROM lore_links WHERE campaign_id=? AND source_id=? ORDER BY id').all(campaignId, sourceId)
+    .filter(link => linkTargetReadable(link.target_kind, link.target_id, auth))
+    .map(link => {
+      const target = link.target_kind === 'lore' ? loreRow.get(link.target_id, campaignId)
+        : link.target_kind === 'actor' ? actorRow.get(link.target_id)
+          : db.prepare('SELECT * FROM encounters WHERE id=?').get(link.target_id);
+      const title = link.target_kind === 'lore' ? target.title : link.target_kind === 'actor' ? projectActor(target, auth).data.name || target.id : target.name;
+      return { id: link.id, targetKind: link.target_kind, targetId: link.target_id, targetTitle: title, ...(link.label ? { label: link.label } : {}) };
+    });
   const actionUsesHiddenFields = (action, actor) => {
     const hiddenPaths = JSON.parse(actor.visibility).gmOnly || [];
     const expressions = [action.requires, action.resolution?.modifier, ...(action.effects || []).map(effect => effect.amount)];
     return hiddenPaths.some(hidden => referencedFields(expressions).some(ref => ref === hidden || ref.startsWith(`${hidden}.`) || hidden.startsWith(`${ref}.`)));
   };
-  const visibleEncounter = (encounterId, auth) => !encounterId || auth.role === 'gm'
-    || Boolean(db.prepare("SELECT 1 FROM encounters WHERE id=? AND visibility='public'").get(encounterId));
   const visibleEvent = (event, auth) => {
     if (auth.role === 'gm') return true;
-    if (event.visibility !== 'public') return false;
-    // A public-looking session event must not reveal a GM-private encounter
-    // through timeline replay or SSE, even if its payload omits the encounter ID.
-    let payload;
-    try { payload = JSON.parse(event.payload); } catch { return false; }
-    if (payload.sessionId) {
-      const session = db.prepare('SELECT encounter_id FROM sessions WHERE id=?').get(payload.sessionId);
-      if (!session || !visibleEncounter(session.encounter_id, auth)) return false;
+    if (event.kind.startsWith('lore.')) {
+      const payload = JSON.parse(event.payload);
+      const entry = payload.entryId ? loreRow.get(payload.entryId, campaignId) : null;
+      if (event.kind === 'lore.link.created' || event.kind === 'lore.link.removed') {
+        return Boolean(entry && canReadLore(entry, auth) && linkTargetReadable(payload.targetKind, payload.targetId, auth));
+      }
+      return Boolean(entry && canReadLore(entry, auth));
     }
+    if (event.visibility !== 'public') return false;
     if (event.actor_id) {
       const actor = actorRow.get(event.actor_id);
       if (!actor || actor.archived || !canReadActor(actor, auth)) return false;
@@ -289,14 +360,13 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }).map(({ actor_id, initiative, status, activation_order }) => ({ actorId: actor_id, initiative, status, activationOrder: activation_order }))
   });
   const publicEncounters = (auth) => db.prepare('SELECT * FROM encounters ORDER BY id').all().filter(row => auth.role === 'gm' || row.visibility === 'public').map(row => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, revision: row.revision, ...(auth.role === 'gm' ? { gmNotes: row.gm_notes || '' } : {}) }));
-  const sessionJson = (auth) => {
+  const sessionJson = () => {
     const state = db.prepare('SELECT current_session_id,revision FROM session_state WHERE campaign_id=?').get(campaignId);
     const project = row => row && ({ id: row.id, encounterId: row.encounter_id ?? null, status: row.status, revision: row.revision, startedAt: row.started_at, updatedAt: row.updated_at, finishedAt: row.finished_at });
     const current = state.current_session_id ? db.prepare('SELECT * FROM sessions WHERE id=?').get(state.current_session_id) : null;
     const history = db.prepare('SELECT * FROM sessions WHERE campaign_id=? ORDER BY started_at,id').all(campaignId)
-      .filter(row => visibleEncounter(row.encounter_id, auth))
-      .map(project);
-    return { revision: state.revision, current: current && visibleEncounter(current.encounter_id, auth) ? project(current) : null, history };
+      .map(row => project(row));
+    return { revision: state.revision, current: project(current), history };
   };
   const transaction = (work) => {
     db.exec('BEGIN IMMEDIATE');
@@ -364,11 +434,103 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('vary', 'origin');
     }
-    if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-headers': 'authorization,content-type', 'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS' }); return res.end(); }
+    if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-headers': 'authorization,content-type,x-file-name', 'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS' }); return res.end(); }
     const auth = authFor(req);
     if (url.pathname === '/health') return json(res, 200, { ok: true });
     if (!auth) return json(res, 401, { error: 'Bearer token required' });
     try {
+      const loreAssetsMatch = url.pathname.match(/^\/api\/lore\/([^/]+)\/assets$/);
+      if (loreAssetsMatch && ['GET', 'POST'].includes(req.method)) {
+        const entryId = decodeURIComponent(loreAssetsMatch[1]);
+        const entry = loreRow.get(entryId, campaignId);
+        if (!entry || !canReadLore(entry, auth)) return json(res, 404, { error: 'Lore entry not found' });
+        if (req.method === 'GET') {
+          const assets = db.prepare('SELECT id,entry_id,original_name,media_type,byte_size,sha256,created_at FROM lore_assets WHERE campaign_id=? AND entry_id=? ORDER BY created_at,id').all(campaignId, entryId);
+          return json(res, 200, { assets: assets.map(asset => ({ id: asset.id, entryId: asset.entry_id, name: asset.original_name, mediaType: asset.media_type, byteSize: asset.byte_size, sha256: asset.sha256, createdAt: asset.created_at })) });
+        }
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+        const mediaType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+        const type = ASSET_TYPES[mediaType];
+        const name = req.headers['x-file-name'];
+        if (!type || typeof name !== 'string' || name.length < 1 || name.length > 160 || name === '.' || name === '..'
+          || /[\\/\u0000-\u001f\u007f]/.test(name) || name.trim() !== name || !name.toLowerCase().endsWith(type.extension))
+          return json(res, 400, { error: 'A safe filename and supported image content type are required', reasonCode: 'invalid_asset' });
+        const announcedSize = Number(req.headers['content-length']);
+        if (Number.isFinite(announcedSize) && announcedSize > MAX_ASSET_BYTES) return json(res, 413, { error: 'Asset exceeds the 5 MiB limit', reasonCode: 'asset_too_large' });
+        const bytes = await readRawBody(req, MAX_ASSET_BYTES);
+        if (!bytes.length || !type.signature(bytes)) return json(res, 400, { error: 'Asset bytes do not match the declared image type', reasonCode: 'invalid_asset' });
+        const currentEntry = loreRow.get(entryId, campaignId);
+        if (!currentEntry || !canReadLore(currentEntry, auth)) return json(res, 404, { error: 'Lore entry not found' });
+        const usedBytes = Number(db.prepare('SELECT COALESCE(SUM(size),0) AS total FROM (SELECT MAX(byte_size) AS size FROM lore_assets WHERE campaign_id=? GROUP BY sha256)').get(campaignId).total);
+        if (usedBytes + bytes.length > MAX_CAMPAIGN_ASSET_BYTES) return json(res, 413, { error: 'Campaign asset storage exceeds the 100 MiB limit', reasonCode: 'campaign_asset_limit' });
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const destination = assetPath(sha256);
+        const temporary = resolve(assetDirectory, `.upload-${randomUUID()}.tmp`);
+        let createdObject = false;
+        try {
+          if (existsSync(destination)) {
+            const existingStat = lstatSync(destination);
+            if (!existingStat.isFile() || existingStat.isSymbolicLink() || createHash('sha256').update(readFileSync(destination)).digest('hex') !== sha256)
+              return json(res, 500, { error: 'Stored asset integrity check failed', reasonCode: 'asset_storage_error' });
+          } else {
+            writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600 });
+            try { linkSync(temporary, destination); createdObject = true; }
+            catch (error) {
+              if (error.code !== 'EEXIST') throw error;
+              const existingStat = lstatSync(destination);
+              if (!existingStat.isFile() || existingStat.isSymbolicLink() || createHash('sha256').update(readFileSync(destination)).digest('hex') !== sha256) throw new Error('Stored asset integrity check failed');
+            }
+          }
+          if (existsSync(temporary)) unlinkSync(temporary);
+          const id = randomUUID(); const now = new Date().toISOString();
+          try {
+            db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+              .run(id, campaignId, entryId, name, mediaType, bytes.length, sha256, auth.principalId, now);
+          } catch (error) {
+            if (createdObject) { try { unlinkSync(destination); } catch {} }
+            throw error;
+          }
+          const asset = { id, entryId, name, mediaType, byteSize: bytes.length, sha256, createdAt: now };
+          return json(res, 201, asset);
+        } catch (error) {
+          try { if (existsSync(temporary)) unlinkSync(temporary); } catch {}
+          if (createdObject) { try { if (existsSync(destination)) unlinkSync(destination); } catch {} }
+          throw Object.assign(new Error('Asset storage failed'), { statusCode: 500 });
+        }
+      }
+      const assetContentMatch = url.pathname.match(/^\/api\/assets\/([^/]+)\/content$/);
+      if (req.method === 'GET' && assetContentMatch) {
+        const asset = loreAssetRow.get(decodeURIComponent(assetContentMatch[1]), campaignId);
+        const entry = asset && loreRow.get(asset.entry_id, campaignId);
+        if (!asset || !entry || !canReadLore(entry, auth)) return json(res, 404, { error: 'Asset not found' });
+        const path = assetPath(asset.sha256);
+        let bytes;
+        try {
+          const stat = lstatSync(path);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== asset.byte_size) throw new Error('Invalid asset object');
+          bytes = readFileSync(path);
+          if (createHash('sha256').update(bytes).digest('hex') !== asset.sha256) throw new Error('Asset hash mismatch');
+        } catch { return json(res, 404, { error: 'Asset bytes unavailable', reasonCode: 'asset_unavailable' }); }
+        const fallbackName = asset.original_name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+        res.writeHead(200, { 'content-type': asset.media_type, 'content-length': bytes.length, 'content-disposition': `inline; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(asset.original_name)}`, 'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store' });
+        return res.end(bytes);
+      }
+      const assetMatch = url.pathname.match(/^\/api\/assets\/([^/]+)$/);
+      if (assetMatch && ['GET', 'DELETE'].includes(req.method)) {
+        const asset = loreAssetRow.get(decodeURIComponent(assetMatch[1]), campaignId);
+        const entry = asset && loreRow.get(asset.entry_id, campaignId);
+        if (!asset || !entry || !canReadLore(entry, auth)) return json(res, 404, { error: 'Asset not found' });
+        if (req.method === 'DELETE') {
+          if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+          db.prepare('DELETE FROM lore_assets WHERE id=? AND campaign_id=?').run(asset.id, campaignId);
+          if (!db.prepare('SELECT 1 FROM lore_assets WHERE sha256=? LIMIT 1').get(asset.sha256)) {
+            const path = assetPath(asset.sha256);
+            try { const stat = lstatSync(path); if (stat.isFile() && !stat.isSymbolicLink()) unlinkSync(path); } catch {}
+          }
+          return json(res, 200, { id: asset.id, removed: true });
+        }
+        return json(res, 200, { id: asset.id, entryId: asset.entry_id, name: asset.original_name, mediaType: asset.media_type, byteSize: asset.byte_size, sha256: asset.sha256, createdAt: asset.created_at });
+      }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const actors = db.prepare('SELECT * FROM actors WHERE archived=0 ORDER BY id').all().filter(row => canReadActor(row, auth)).map(row => projectActor(row, auth));
         const modules = db.prepare('SELECT manifest FROM modules ORDER BY id,version').all().map(row => JSON.parse(row.manifest));
@@ -380,14 +542,149 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const firstCursor = Number(db.prepare('SELECT COALESCE(MIN(cursor),?) AS n FROM events').get(currentCursor + 1).n);
         const recoveryReason = since > currentCursor ? 'cursor_ahead' : since < firstCursor - 1 ? 'cursor_expired' : null;
         const events = recoveryReason ? [] : db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(since).filter(e => visibleEvent(e, auth)).map(event => eventJson(event, auth));
-        return json(res, 200, { campaignId, role: auth.role, memberId: auth.memberId, revision: currentCursor, context, session: sessionJson(auth), encounters: publicEncounters(auth), modules, actors, events, ...(recoveryReason ? { recovery: { reason: recoveryReason, cursor: currentCursor } } : {}) });
+        return json(res, 200, { campaignId, role: auth.role, memberId: auth.memberId, revision: currentCursor, context, session: sessionJson(), encounters: publicEncounters(auth), modules, actors, events, ...(recoveryReason ? { recovery: { reason: recoveryReason, cursor: currentCursor } } : {}) });
       }
-      if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, sessionJson(auth));
+      const loreEntryMatch = url.pathname.match(/^\/api\/lore\/([^/]+)$/);
+      const loreLinksMatch = url.pathname.match(/^\/api\/lore\/([^/]+)\/links$/);
+      const loreLinkMatch = url.pathname.match(/^\/api\/lore\/([^/]+)\/links\/([^/]+)$/);
+      const loreActionMatch = url.pathname.match(/^\/api\/lore\/([^/]+)\/(archive|restore|publish|revoke|publication)$/);
+      if (req.method === 'GET' && loreLinksMatch) {
+        const id = decodeURIComponent(loreLinksMatch[1]);
+        const row = loreRow.get(id, campaignId);
+        if (!canReadLore(row, auth)) return json(res, 404, { error: 'Lore entry not found' });
+        const backlinks = db.prepare("SELECT l.*,e.title AS source_title FROM lore_links l JOIN lore_entries e ON e.id=l.source_id WHERE l.campaign_id=? AND l.target_kind='lore' AND l.target_id=? ORDER BY l.id").all(campaignId, id)
+          .filter(link => canReadLore(loreRow.get(link.source_id, campaignId), auth))
+          .map(link => ({ id: link.id, sourceId: link.source_id, sourceTitle: link.source_title, ...(link.label ? { label: link.label } : {}) }));
+        return json(res, 200, { links: loreLinks(id, auth), backlinks });
+      }
+      if ((req.method === 'POST' && url.pathname === '/api/lore') || (req.method === 'PUT' && (loreEntryMatch || loreActionMatch || loreLinksMatch || loreLinkMatch))) {
+        const body = await readBody(req);
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+        const id = loreEntryMatch ? decodeURIComponent(loreEntryMatch[1]) : loreActionMatch ? decodeURIComponent(loreActionMatch[1]) : loreLinksMatch ? decodeURIComponent(loreLinksMatch[1]) : loreLinkMatch ? decodeURIComponent(loreLinkMatch[1]) : null;
+        const requestedMode = req.method === 'POST' ? 'create' : loreEntryMatch ? 'update' : loreActionMatch?.[2] || (loreLinksMatch ? 'link.create' : 'link.remove');
+        const mode = requestedMode === 'publication' ? (body.published === true ? 'publish' : 'revoke') : requestedMode;
+        const allowed = requestedMode === 'publication' ? ['operationId','baseRevision','published']
+          : mode === 'create' ? ['operationId','baseRevision','id','type','title','summary','body','bodyMarkdown','gmNotes','tags']
+          : mode === 'update' ? ['operationId','baseRevision','type','title','summary','body','bodyMarkdown','gmNotes','tags']
+            : mode.startsWith('link.') ? mode === 'link.create' ? ['operationId','baseRevision','targetKind','targetId','label'] : ['operationId','baseRevision']
+              : ['operationId','baseRevision'];
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !allowed.includes(key))
+          || typeof body.operationId !== 'string' || !body.operationId.trim() || body.operationId.length > 128
+          || !Number.isInteger(body.baseRevision) || body.baseRevision < 0)
+          return json(res, 400, { error: 'Valid operationId, baseRevision and command fields are required', reasonCode: 'invalid_command' });
+        const payload = Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'operationId'));
+        const requestHash = createHash('sha256').update(canonicalJson({ campaignId, mode, id, linkId: loreLinkMatch ? decodeURIComponent(loreLinkMatch[2]) : null, payload })).digest('hex');
+        const cached = db.prepare('SELECT * FROM lore_operations WHERE operation_id=?').get(body.operationId);
+        if (cached) {
+          if (cached.principal_id !== auth.principalId || cached.request_hash !== requestHash) return json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_id_collision' });
+          return json(res, 200, JSON.parse(cached.response));
+        }
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId, body.operationId))
+          return json(res, 409, { error: 'Operation ID was already used', reasonCode: 'operation_id_collision' });
+        const current = id ? loreRow.get(id, campaignId) : null;
+        if (mode !== 'create' && !current) return json(res, 404, { error: 'Lore entry not found' });
+        if (mode === 'update' && current.archived) return json(res, 409, { error: 'Archived Lore entries must be restored before editing', reasonCode: 'entry_archived', currentRevision: current.revision });
+        if (mode === 'create' && body.baseRevision !== 0) return json(res, 409, { error: 'New entries require baseRevision 0', reasonCode: 'revision_conflict', currentRevision: 0 });
+        if (mode !== 'create' && body.baseRevision !== current.revision) return json(res, 409, { error: 'Lore revision conflict', reasonCode: 'revision_conflict', currentRevision: current.revision });
+        const textValid = (value, maximum, required = false) => typeof value === 'string' && value.length <= maximum && (!required || Boolean(value.trim())) && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value);
+        if (mode === 'create' || mode === 'update') {
+          const values = mode === 'create'
+            ? { type: Object.hasOwn(body, 'type') ? body.type : 'note', title: body.title, summary: body.summary ?? '', body: body.bodyMarkdown ?? body.body ?? '', gmNotes: body.gmNotes ?? '', tags: body.tags ?? [] }
+            : { type: Object.hasOwn(body, 'type') ? body.type : current.type ?? 'note', title: body.title ?? current.title, summary: body.summary ?? current.summary, body: body.bodyMarkdown ?? body.body ?? current.body, gmNotes: body.gmNotes ?? current.gm_notes, tags: body.tags ?? JSON.parse(current.tags) };
+          if (!['location','person','faction','quest','item','handout','note'].includes(values.type)
+            || body.bodyMarkdown !== undefined && body.body !== undefined
+            || !textValid(values.title, 200, true) || !textValid(values.summary, 4000) || !textValid(values.body, 100000) || !textValid(values.gmNotes ?? '', 50000)
+            || !Array.isArray(values.tags ?? []) || (values.tags ?? []).length > 50 || (values.tags ?? []).some(tag => !textValid(tag, 48, true))
+            || new Set((values.tags ?? []).map(tag => tag.trim().toLocaleLowerCase())).size !== (values.tags ?? []).length)
+            return json(res, 400, { error: 'Lore title, Markdown, notes or tags are invalid or exceed their limits', reasonCode: 'invalid_lore' });
+          if (mode === 'create' && body.id !== undefined && (typeof body.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.id)))
+            return json(res, 400, { error: 'Lore ID must be a stable opaque identifier', reasonCode: 'invalid_lore' });
+          const now = new Date().toISOString(), entryId = mode === 'create' ? body.id || randomUUID() : id;
+          const revision = mode === 'create' ? 1 : current.revision + 1;
+          const visibility = mode === 'create' ? 'gm' : current.visibility || (current.published ? 'shared' : 'gm');
+          const result = { id: entryId, campaignId, type: values.type, title: values.title.trim(), summary: values.summary || '', bodyMarkdown: values.body || '', revision,
+            archived: false, visibility, createdAt: mode === 'create' ? now : current.created_at, updatedAt: now,
+            body: values.body || '', published: visibility === 'shared',
+            gmNotes: values.gmNotes || '', tags: (values.tags || []).map(tag => tag.trim()) };
+          transaction(() => {
+            if (mode === 'create') db.prepare('INSERT INTO lore_entries(id,campaign_id,type,title,summary,body,gm_notes,tags,revision,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,1,?,?,?)')
+              .run(entryId, campaignId, values.type, result.title, result.summary, result.body, result.gmNotes, JSON.stringify(result.tags), visibility, now, now);
+            else db.prepare('UPDATE lore_entries SET type=?,title=?,summary=?,body=?,gm_notes=?,tags=?,revision=?,visibility=?,published=?,updated_at=? WHERE id=? AND revision=?')
+              .run(values.type, result.title, result.summary, result.body, result.gmNotes, JSON.stringify(result.tags), revision, visibility, visibility === 'shared' ? 1 : 0, now, id, body.baseRevision);
+            const event = insertEvent({ operationId: body.operationId, kind: mode === 'create' ? 'lore.created' : 'lore.updated', visibility: 'gm', payload: { entryId, revision } });
+            result.eventCursor = Number(event.lastInsertRowid);
+            db.prepare('INSERT INTO lore_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId, auth.principalId, requestHash, JSON.stringify(result));
+          });
+          notify();
+          return json(res, mode === 'create' ? 201 : 200, result);
+        }
+        if (mode.startsWith('link.')) {
+          if (current.archived) return json(res, 409, { error: 'Archived Lore entries cannot change links', reasonCode: 'entry_archived', currentRevision: current.revision });
+          if (mode === 'link.create' && (!['lore','actor','encounter'].includes(body.targetKind) || typeof body.targetId !== 'string' || !body.targetId || body.targetId.length > 128 || body.label !== undefined && !textValid(body.label, 64, true)))
+            return json(res, 400, { error: 'Supported targetKind, targetId and optional label are required', reasonCode: 'invalid_link' });
+          const linkId = mode === 'link.create' ? randomUUID() : decodeURIComponent(loreLinkMatch[2]);
+          if (mode === 'link.create' && !linkTargetReadable(body.targetKind, body.targetId, { role: 'gm', memberId: null })) return json(res, 404, { error: 'Link target not found', reasonCode: 'invalid_link_target' });
+          if (mode === 'link.remove' && !db.prepare('SELECT 1 FROM lore_links WHERE id=? AND source_id=? AND campaign_id=?').get(linkId, id, campaignId)) return json(res, 404, { error: 'Lore link not found' });
+          const existingLink = mode === 'link.remove' ? db.prepare('SELECT target_kind,target_id FROM lore_links WHERE id=? AND source_id=?').get(linkId, id) : null;
+          const now = new Date().toISOString(), revision = current.revision + 1;
+          const result = { id, revision, linkId, ...(mode === 'link.create' ? { targetKind: body.targetKind, targetId: body.targetId, label: body.label || null } : { removed: true }) };
+          transaction(() => {
+            if (mode === 'link.create') db.prepare('INSERT INTO lore_links(id,campaign_id,source_id,target_kind,target_id,label,created_at) VALUES(?,?,?,?,?,?,?)').run(linkId, campaignId, id, body.targetKind, body.targetId, body.label?.trim() || null, now);
+            else db.prepare('DELETE FROM lore_links WHERE id=? AND source_id=?').run(linkId, id);
+            db.prepare('UPDATE lore_entries SET revision=?,updated_at=? WHERE id=? AND revision=?').run(revision, now, id, body.baseRevision);
+            const event = insertEvent({ operationId: body.operationId, kind: mode === 'link.create' ? 'lore.link.created' : 'lore.link.removed', visibility: 'gm', payload: { entryId: id, linkId, targetKind: mode === 'link.create' ? body.targetKind : existingLink.target_kind, targetId: mode === 'link.create' ? body.targetId : existingLink.target_id, revision } });
+            result.eventCursor = Number(event.lastInsertRowid);
+            db.prepare('INSERT INTO lore_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId, auth.principalId, requestHash, JSON.stringify(result));
+          });
+          notify(); return json(res, 200, result);
+        }
+        const states = { archive: 1, restore: 0, publish: 'shared', revoke: 'gm' };
+        const isArchive = mode === 'archive' || mode === 'restore';
+        if (mode === 'archive' && current.archived || mode === 'restore' && !current.archived
+          || mode === 'publish' && (current.visibility === 'shared' || current.published || current.archived) || mode === 'revoke' && current.visibility !== 'shared' && !current.published)
+          return json(res, 409, { error: 'Lore command does not match the current entry state', reasonCode: 'invalid_transition', currentRevision: current.revision });
+        const revision = current.revision + 1, now = new Date().toISOString();
+        const visibility = isArchive ? (current.visibility || (current.published ? 'shared' : 'gm')) : states[mode];
+        const result = { id, revision, archived: isArchive ? Boolean(states[mode]) : Boolean(current.archived), visibility, published: visibility === 'shared', updatedAt: now };
+        transaction(() => {
+          if (isArchive) db.prepare('UPDATE lore_entries SET archived=?,revision=?,updated_at=? WHERE id=? AND revision=?').run(states[mode], revision, now, id, body.baseRevision);
+          else db.prepare('UPDATE lore_entries SET visibility=?,published=?,revision=?,updated_at=? WHERE id=? AND revision=?').run(visibility, visibility === 'shared' ? 1 : 0, revision, now, id, body.baseRevision);
+          const event = insertEvent({ operationId: body.operationId, kind: `lore.${mode === 'restore' ? 'restored' : mode === 'revoke' ? 'revoked' : mode === 'publish' ? 'published' : 'archived'}`, visibility: 'gm', payload: { entryId: id, revision } });
+          result.eventCursor = Number(event.lastInsertRowid);
+          db.prepare('INSERT INTO lore_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId, auth.principalId, requestHash, JSON.stringify(result));
+        });
+        notify(); return json(res, 200, result);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, sessionJson());
+      if (req.method === 'GET' && url.pathname === '/api/lore') {
+        const query = (url.searchParams.get('q') || '').trim();
+        if (query.length > 200) return json(res, 400, { error: 'Lore search query is too long', reasonCode: 'invalid_lore_query' });
+        const after = url.searchParams.get('after') || '';
+        const requestedLimit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 50;
+        if (!Number.isInteger(requestedLimit) || requestedLimit < 1) return json(res, 400, { error: 'Lore limit must be a positive integer', reasonCode: 'invalid_lore_limit' });
+        const limit = Math.min(requestedLimit, 100);
+        const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+        const visibility = auth.role === 'gm' ? '1=1' : "archived=0 AND visibility='shared'";
+        const searchable = auth.role === 'gm' ? '(title LIKE ? ESCAPE \'\\\' OR tags LIKE ? ESCAPE \'\\\' OR summary LIKE ? ESCAPE \'\\\' OR body LIKE ? ESCAPE \'\\\' OR gm_notes LIKE ? ESCAPE \'\\\')'
+          : '(title LIKE ? ESCAPE \'\\\' OR tags LIKE ? ESCAPE \'\\\')';
+        const params = query ? [campaignId, after, ...Array(auth.role === 'gm' ? 5 : 2).fill(pattern), limit + 1] : [campaignId, after, limit + 1];
+        const rows = query
+          ? db.prepare(`SELECT * FROM lore_entries WHERE campaign_id=? AND ${visibility} AND id>? AND ${searchable} ORDER BY id LIMIT ?`).all(...params)
+          : db.prepare(`SELECT * FROM lore_entries WHERE campaign_id=? AND ${visibility} AND id>? ORDER BY id LIMIT ?`).all(...params);
+        const page = rows.slice(0, limit);
+        return json(res, 200, { articles: page.map(row => loreProjection(row, auth)), next: rows.length > limit ? page.at(-1).id : null, hasMore: rows.length > limit });
+      }
+      const loreItemMatch = req.method === 'GET' && url.pathname.match(/^\/api\/lore\/([^/]+)$/);
+      if (loreItemMatch) {
+        const row = loreRow.get(decodeURIComponent(loreItemMatch[1]), campaignId);
+        if (!canReadLore(row, auth)) return json(res, 404, { error: 'Lore entry not found' });
+        return json(res, 200, { article: loreProjection(row, auth), links: loreLinks(row.id, auth) });
+      }
       const sessionTimelineMatch = req.method === 'GET' && url.pathname.match(/^\/api\/session\/([^/]+)\/timeline$/);
       if (sessionTimelineMatch) {
         const sessionId = decodeURIComponent(sessionTimelineMatch[1]);
-        const session = db.prepare('SELECT id,encounter_id FROM sessions WHERE id=? AND campaign_id=?').get(sessionId, campaignId);
-        if (!session || !visibleEncounter(session.encounter_id, auth)) return json(res, 404, { error: 'Session not found' });
+        const session = db.prepare('SELECT id FROM sessions WHERE id=? AND campaign_id=?').get(sessionId, campaignId);
+        if (!session) return json(res, 404, { error: 'Session not found' });
         const after = url.searchParams.has('after') ? Number(url.searchParams.get('after')) : 0;
         const requestedLimit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 100;
         if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(requestedLimit) || requestedLimit < 1)
@@ -458,7 +755,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
             db.prepare('UPDATE session_state SET revision=? WHERE campaign_id=? AND revision=?').run(revision, campaignId, state.revision);
           }
           insertEvent({ operationId: body.operationId, kind: eventKind, visibility: 'public', payload: { operationId: body.operationId, sessionId: body.sessionId, sessionRevision, revision } });
-          const response = { operationId: body.operationId, status: 'applied', ...sessionJson(auth) };
+          const response = { operationId: body.operationId, status: 'applied', ...sessionJson() };
           db.prepare('INSERT INTO session_operations(operation_id,request_hash,principal_id,response) VALUES(?,?,?,?)').run(body.operationId, requestHash, auth.principalId, JSON.stringify(response));
           return response;
         });
@@ -985,7 +1282,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       return json(res, 404, { error: 'Not found' });
     } catch (error) {
       if (error.message?.includes('UNIQUE')) return json(res, 409, { error: 'Resource already exists' });
-      return json(res, 400, { error: error.message || 'Request failed' });
+      return json(res, error.statusCode || 400, { error: error.message || 'Request failed', ...(error.statusCode === 413 ? { reasonCode: 'asset_too_large' } : {}) });
     }
   });
   function notifyClient(client) {
