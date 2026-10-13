@@ -83,9 +83,14 @@ test('v5 backup round-trips World and Battle scenes, pieces, map links and manag
     host.db.prepare("INSERT INTO map_pieces(id,scene_id,kind,label,x,y) VALUES('pin','world','pin','stairs',4,5)").run();
     host.db.prepare("INSERT INTO map_links(id,campaign_id,source_scene_id,target_scene_id,piece_id,label) VALUES('link','foundation-demo','world','battle','pin','down')").run();
     host.db.prepare("INSERT INTO map_assets(id,campaign_id,scene_id,original_name,media_type,byte_size,sha256,created_at) VALUES('map-image','foundation-demo','world','world.png','image/png',?,?, 'now')").run(bytes.length, hash);
+    // A safely named orphan must not enter the archive.
+    const orphanBytes = Buffer.from('unreferenced map image');
+    const orphanHash = createHashHex(orphanBytes);
+    writeFileSync(`${sourcePath}.assets/${orphanHash}`, orphanBytes);
     exportCampaignBackup(sourcePath, backupPath);
   } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  assert.deepEqual(archive.data.assets.map(asset => asset.sha256), [hash]);
   assert.equal(archive.schemaVersion, 5);
   restoreCampaignBackup(backupPath, restoredPath);
   const restored = createHost({ databasePath: restoredPath });
@@ -95,6 +100,31 @@ test('v5 backup round-trips World and Battle scenes, pieces, map links and manag
     assert.equal(restored.db.prepare('SELECT sha256 FROM map_assets WHERE id=?').get('map-image').sha256, hash);
   } finally { restored.close(); }
   assert.deepEqual(readFileSync(`${restoredPath}.assets/${hash}`), bytes);
+}));
+
+test('v5 export deduplicates an asset shared by Lore and a map and rejects damaged map bytes', async () => withDirectory(async directory => {
+  const sourcePath = join(directory, 'source.sqlite'), archivePath = join(directory, 'shared.json');
+  const host = createHost({ databasePath: sourcePath });
+  const bytes = Buffer.alloc(24);
+  Buffer.from([137,80,78,71,13,10,26,10]).copy(bytes);
+  bytes.writeUInt32BE(2,16); bytes.writeUInt32BE(3,20);
+  const hash = createHashHex(bytes);
+  try {
+    mkdirSync(`${sourcePath}.assets`, { recursive: true });
+    writeFileSync(`${sourcePath}.assets/${hash}`, bytes);
+    host.db.prepare("INSERT INTO lore_entries(id,campaign_id,title,created_at,updated_at) VALUES('lore-map','foundation-demo','Shared image','now','now')").run();
+    host.db.prepare("INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES('lore-image','foundation-demo','lore-map','world.png','image/png',?,?, 'gm','now')").run(bytes.length,hash);
+    host.db.prepare("INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,background_id,created_at,updated_at) VALUES('world','foundation-demo','World','world',1,100,80,'{\\\"type\\\":\\\"none\\\",\\\"size\\\":0}','shared','map-image','now','now')").run();
+    host.db.prepare("INSERT INTO map_assets(id,campaign_id,scene_id,original_name,media_type,byte_size,sha256,created_at) VALUES('map-image','foundation-demo','world','world.png','image/png',?,?, 'now')").run(bytes.length,hash);
+    exportCampaignBackup(sourcePath, archivePath);
+    const archive = JSON.parse(readFileSync(archivePath, 'utf8'));
+    assert.deepEqual(archive.data.assets.map(asset => asset.sha256), [hash]);
+    writeFileSync(`${sourcePath}.assets/${hash}`, Buffer.from('corrupt'));
+    assert.throws(() => exportCampaignBackup(sourcePath, join(directory,'corrupt.json')), /asset .*failed validation/);
+    assert.equal(existsSync(join(directory,'corrupt.json')), false);
+    rmSync(`${sourcePath}.assets/${hash}`);
+    assert.throws(() => exportCampaignBackup(sourcePath, join(directory,'missing.json')), /referenced asset .*missing/);
+  } finally { host.close(); }
 }));
 
 test('PR #45 v3 archives retain sessions and privacy fields on restore', async () => withDirectory(async directory => {
@@ -295,7 +325,7 @@ test('backup rejects missing participants and pinned modules even after an integ
   assert.equal(exists(dest), false);
 }));
 
-test('v4 export includes only Lore-referenced asset bytes, ignores safe orphan objects', async () => withDirectory(async directory => {
+test('v5 export includes only referenced Lore asset bytes and ignores safe orphan objects', async () => withDirectory(async directory => {
   const dbPath = join(directory, 'host.sqlite'), archivePath = join(directory, 'archive.json');
   const host = createHost({ databasePath: dbPath });
   try {
@@ -311,14 +341,14 @@ test('v4 export includes only Lore-referenced asset bytes, ignores safe orphan o
     host.db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
       .run('asset-1','foundation-demo','article','reference.png','image/png',bytes.length,hash,'gm','now');
     const manifest = exportCampaignBackup(dbPath, archivePath);
-    assert.equal(manifest.potomacDataVersion, 4);
+    assert.equal(manifest.potomacDataVersion, 5);
     const archive = JSON.parse(readFileSync(archivePath, 'utf8'));
     assert.deepEqual(archive.data.assets.map(asset => asset.sha256), [hash]);
     assert.equal(archive.data.assets[0].bytes, bytes.toString('base64'));
   } finally { host.close(); }
 }));
 
-test('v4 export fails rather than omitting a referenced missing or modified asset', async () => withDirectory(async directory => {
+test('v5 export fails rather than omitting a referenced missing or modified Lore asset', async () => withDirectory(async directory => {
   const dbPath = join(directory, 'host.sqlite'), archivePath = join(directory, 'archive.json');
   const host = createHost({ databasePath: dbPath });
   try {
