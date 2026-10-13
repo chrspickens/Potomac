@@ -19,22 +19,27 @@ const chromePath = [
 ].filter(Boolean).find(existsSync);
 if (!chromePath) throw new Error('Chrome/Edge not found. Set POTOMAC_CHROME to its executable path.');
 
-async function freePort() {
-  const server = await import('node:net').then(({ createServer }) => createServer());
-  await new Promise((ok, fail) => server.once('error', fail).listen(0, '127.0.0.1', ok));
-  const { port } = server.address();
-  await new Promise((ok, fail) => server.close(error => error ? fail(error) : ok()));
-  return port;
+async function reservePorts(count) {
+  // Keep all ephemeral sockets bound while discovering ports. Closing each
+  // immediately allows the OS to hand out the same port again.
+  const { createServer } = await import('node:net');
+  const servers = [];
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = createServer();
+      await new Promise((ok, fail) => server.once('error', fail).listen(0, '127.0.0.1', ok));
+      servers.push(server);
+    }
+    return servers.map(server => server.address().port);
+  } finally {
+    await Promise.all(servers.map(server => new Promise((ok, fail) => server.close(error => error ? fail(error) : ok()))));
+  }
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'potomac-workspace-acceptance-'));
 const dbPath = join(scratch, 'host.sqlite');
 const chromeProfile = join(scratch, 'chrome');
-const hostPort = await freePort();
-const webPort = await freePort();
-const playerWebPort = await freePort();
-const secondPlayerWebPort = await freePort();
-const debugPort = await freePort();
+const [hostPort, webPort, playerWebPort, secondPlayerWebPort, debugPort] = await reservePorts(5);
 const gmToken = `workspace-acceptance-gm-${process.pid}`;
 const legacyPlayerToken = `workspace-acceptance-legacy-player-${process.pid}`;
 let playerToken;
