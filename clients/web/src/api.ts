@@ -1,4 +1,5 @@
 import { initialActors, type Actor, type GameModule } from './modules'
+import { fixturesForCampaign } from './fixture-bootstrap'
 import { loadRememberedIdentity, rememberIdentity } from './identity'
 import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 import type { MapScene, MapPiece, MapSceneCreate } from '@potomac/contracts'
@@ -382,7 +383,7 @@ async function loadHostSnapshot(role: Role) {
     subscriptionLog('loadHost.success', { role, cursor: snapshot.context.cursor })
     return snapshot
   }
-  const campaignFixtures = initialActors.filter(fixture => fixture.module.manifest.id === campaign.systemModuleId && fixture.module.manifest.version === campaign.systemModuleVersion)
+  const campaignFixtures = fixturesForCampaign(initialActors, campaign)
   if (campaignFixtures.every(fixture => snapshot.actors.some(actor => actor.entityId === fixture.entityId))) {
     subscriptionLog('loadHost.success', { role, cursor: snapshot.context.cursor })
     return snapshot

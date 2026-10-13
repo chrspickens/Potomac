@@ -155,4 +155,5 @@ export function resolveDefaultBinding<TData>(definition: BrickDefinition<TData>,
   return { mode: 'none' };
 }
 
+
 export type { BrickBinding };
