@@ -176,7 +176,7 @@ export function exportCampaignBackup(databasePath, outputPath, { modulesDirector
     snapshot = new DatabaseSync(snapshotPath, { readOnly: true });
     const data = Object.fromEntries(TABLE_COLLECTIONS.map(table => [table, snapshot.prepare(`SELECT ${TABLES[table].join(',')} FROM ${table} ORDER BY rowid`).all()]));
     data.assets = [];
-    const requiredHashes = [...new Set(data.lore_assets.map(asset => asset.sha256))].sort();
+    const requiredHashes = [...new Set([...data.lore_assets, ...data.map_assets].map(asset => asset.sha256))].sort();
     if (existsSync(assetsDirectory)) {
       if (!lstatSync(assetsDirectory).isDirectory()) fail('asset directory is not a regular directory');
       for (const name of readdirSync(assetsDirectory)) {
