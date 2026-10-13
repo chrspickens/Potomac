@@ -1241,3 +1241,48 @@ test('Lore asset upload rejects player writes, unsafe names, mismatched bytes an
     assert.equal((await upload('player', 'other.png', 'image/png', png)).status, 404, 'unpublished entry existence stays hidden from players');
   });
 });
+
+test('GM-private session history and timeline are filtered from player HTTP state and SSE replay', async () => {
+  await withHost(async ({ request, host }) => {
+    const now = '2026-01-01T00:00:00.000Z';
+    host.db.prepare('INSERT INTO encounters(id,name,summary,status,revision,created_at,updated_at,visibility,gm_notes) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run('secret-encounter','Secret encounter','CLASSIFIED_ENCOUNTER_SUMMARY','prepared',1,now,now,'gm','CLASSIFIED_GM_NOTES');
+    host.db.prepare('INSERT INTO sessions(id,campaign_id,encounter_id,status,revision,started_at,updated_at,finished_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run('secret-session','foundation-demo','secret-encounter','active',1,now,now,null);
+    host.db.prepare('UPDATE session_state SET current_session_id=?,revision=? WHERE campaign_id=?').run('secret-session',1,'foundation-demo');
+    host.db.prepare('INSERT INTO events(id,actor_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?)')
+      .run('secret-session-event',null,'session.started','public',JSON.stringify({ sessionId:'secret-session', encounterId:'secret-encounter', marker:'CLASSIFIED_SESSION_MARKER' }),now);
+    host.db.prepare('INSERT INTO events(id,actor_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?)')
+      .run('public-sentinel',null,'public.marker','public',JSON.stringify({ marker:'VISIBLE_AFTER_SECRET' }),now);
+    const gm = await (await request('/api/session','gm')).json();
+    assert.equal(gm.current.encounterId,'secret-encounter');
+    assert.equal(gm.history[0].encounterId,'secret-encounter');
+    const playerResponse = await request('/api/session','player');
+    assert.equal(playerResponse.status,200);
+    const playerBytes = await playerResponse.text();
+    assert.ok(!playerBytes.includes('secret-session') && !playerBytes.includes('secret-encounter'));
+    assert.deepEqual(JSON.parse(playerBytes), { revision: 1, current: null, history: [] });
+    const stateBytes = await (await request('/api/state?since=0','player')).text();
+    for (const secret of ['secret-session','secret-encounter','CLASSIFIED_SESSION_MARKER','CLASSIFIED_GM_NOTES']) assert.ok(!stateBytes.includes(secret));
+    const denied = await request('/api/session/secret-session/timeline?after=0','player');
+    const absent = await request('/api/session/nonexistent-session/timeline?after=0','player');
+    assert.equal(denied.status,404);
+    assert.equal(absent.status,404);
+    assert.deepEqual(await denied.json(),await absent.json());
+    const controller = new AbortController();
+    try {
+      const stream = await request('/api/stream?since=0','player',{ signal: controller.signal });
+      const reader = stream.body.getReader();
+      let replay = '';
+      while (!replay.includes('VISIBLE_AFTER_SECRET')) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        replay += new TextDecoder().decode(value);
+      }
+      assert.ok(replay.includes('VISIBLE_AFTER_SECRET'));
+      for (const secret of ['secret-session','secret-encounter','CLASSIFIED_SESSION_MARKER']) assert.ok(!replay.includes(secret));
+    } finally { controller.abort(); }
+    const gmTimeline = await (await request('/api/session/secret-session/timeline?after=0','gm')).json();
+    assert.ok(gmTimeline.events.some(event => event.payload.marker === 'CLASSIFIED_SESSION_MARKER'));
+  });
+});

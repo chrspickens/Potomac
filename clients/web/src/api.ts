@@ -8,7 +8,9 @@ export type LoreKind = 'location' | 'person' | 'faction' | 'quest' | 'item' | 'h
 export type LoreVisibility = 'gm' | 'shared'
 export type LoreArticle = { id: string; campaignId?: string; title: string; summary?: string; kind: LoreKind; tags: string[]; body: string; revision: number; visibility: LoreVisibility; archived: boolean; updatedAt?: string; gmNotes?: string; linkedEncounterIds?: string[] }
 export type LoreInput = Pick<LoreArticle, 'title' | 'kind' | 'tags' | 'body' | 'visibility' | 'gmNotes'>
-type LoreLink = { id: string; targetKind: string; targetId: string; targetTitle?: string; label?: string }
+export type LoreLink = { id: string; linkId?: string; targetKind: string; targetId: string; targetTitle?: string; label?: string }
+export type LoreBacklink = { id: string; sourceId: string; sourceTitle: string; label?: string }
+export type LoreAsset = { id: string; entryId: string; name: string; mediaType: string; byteSize: number; sha256: string; createdAt: string }
 type LoreWireArticle = LoreArticle
 function loreCommand(input: LoreInput) { return { ...input, gmNotes: input.gmNotes ?? '' } }
 export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
@@ -76,6 +78,9 @@ const baseUrl = import.meta.env.VITE_POTOMAC_HOST?.replace(/\/$/, '')
 export const configuredHost = baseUrl || null
 const hostConfigured = Boolean(baseUrl)
 const events = new EventTarget()
+export class HostRequestError extends Error {
+  constructor(message: string, readonly status: number) { super(message); this.name = 'HostRequestError' }
+}
 const demoEncounters: Encounter[] = [
   { id: 'encounter-a', name: 'The Glass Bridge', summary: 'The party crosses a flooded causeway beneath the old watchtower.' },
   { id: 'encounter-b', name: 'The Ashen Gate', summary: 'A sealed gate waits beyond the ridge; distant lights mark the approach.' },
@@ -103,7 +108,7 @@ export async function connectPlayerCredential(credential: string): Promise<Snaps
 async function http<T>(path: string, role: Role, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenFor(role)}`, ...init?.headers } })
   const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.error || `Host request failed (${response.status})`)
+  if (!response.ok) throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status)
   return body as T
 }
 
@@ -187,6 +192,31 @@ export async function setLoreArchived(id: string, baseRevision: number, archived
 }
 export async function readLore(role: Role, id: string): Promise<{ article: LoreArticle; links: LoreLink[] }> {
   return http(`/api/lore/${encodeURIComponent(id)}`, role)
+}
+export async function getLoreLinks(role: Role, id: string): Promise<{ links: LoreLink[]; backlinks: LoreBacklink[] }> {
+  return http(`/api/lore/${encodeURIComponent(id)}/links`, role)
+}
+export async function addLoreLink(id: string, baseRevision: number, targetKind: 'lore' | 'encounter', targetId: string, label = ''): Promise<unknown> {
+  return http(`/api/lore/${encodeURIComponent(id)}/links`, 'gm', { method: 'PUT', body: JSON.stringify({ operationId: crypto.randomUUID(), baseRevision, targetKind, targetId, ...(label.trim() ? { label: label.trim() } : {}) }) })
+}
+export async function removeLoreLink(id: string, linkId: string, baseRevision: number): Promise<unknown> {
+  return http(`/api/lore/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, 'gm', { method: 'PUT', body: JSON.stringify({ operationId: crypto.randomUUID(), baseRevision }) })
+}
+export async function listLoreAssets(role: Role, id: string): Promise<LoreAsset[]> {
+  return (await http<{ assets: LoreAsset[] }>(`/api/lore/${encodeURIComponent(id)}/assets`, role)).assets
+}
+export async function uploadLoreAsset(id: string, file: File): Promise<LoreAsset> {
+  if (!baseUrl) throw new Error('Lore attachments require a configured host')
+  const response = await fetch(`${baseUrl}/api/lore/${encodeURIComponent(id)}/assets`, { method: 'POST', headers: { authorization: `Bearer ${tokenFor('gm')}`, 'content-type': file.type, 'x-file-name': file.name }, body: file })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status)
+  return body as LoreAsset
+}
+export async function fetchLoreAsset(role: Role, id: string): Promise<Blob> {
+  if (!baseUrl) throw new Error('Lore attachments require a configured host')
+  const response = await fetch(`${baseUrl}/api/assets/${encodeURIComponent(id)}/content`, { headers: { authorization: `Bearer ${tokenFor(role)}` } })
+  if (!response.ok) { const body = await response.json().catch(() => ({})); throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status) }
+  return response.blob()
 }
 export async function listLoreLinkedToEncounter(role: Role, encounterId: string): Promise<LoreArticle[]> {
   if (!baseUrl) return []

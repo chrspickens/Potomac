@@ -1,4 +1,5 @@
 import type { LoreArticle, LoreKind } from './api.ts'
+import type { AuthorizedLoreEntry } from './offline/storage.ts'
 
 export const LORE_KINDS: LoreKind[] = ['location', 'person', 'faction', 'quest', 'item', 'handout', 'note']
 
@@ -33,4 +34,23 @@ export function resolveRelatedLore(encounterLoreIds: string[] | undefined, artic
     const article = byId.get(id)
     return article ? [article] : []
   })
+}
+
+/** Cached player views accept only correctly scoped, shared article records. */
+export function projectCachedPlayerLore(entries: AuthorizedLoreEntry[]): LoreArticle[] {
+  return entries.flatMap(entry => {
+    const article = entry.article as Partial<LoreArticle>
+    if (article.id !== entry.id || article.revision !== entry.revision || article.visibility !== 'shared'
+      || typeof article.title !== 'string' || !Array.isArray(article.tags) || typeof article.body !== 'string'
+      || article.archived !== false || !['location', 'person', 'faction', 'quest', 'item', 'handout', 'note'].includes(String(article.kind))) return []
+    return [article as LoreArticle]
+  })
+}
+
+export function validateLoreImage(file: Pick<File, 'name' | 'type' | 'size'>): string | null {
+  const extensions: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp' }
+  const extension = extensions[file.type]
+  if (!extension || !file.name.toLowerCase().endsWith(extension)) return 'Choose a PNG, JPEG, GIF, or WebP image with a matching file extension.'
+  if (file.size < 1 || file.size > 5 * 1024 * 1024) return 'Image attachments must be between 1 byte and 5 MiB.'
+  return null
 }

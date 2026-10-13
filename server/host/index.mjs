@@ -298,6 +298,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     const expressions = [action.requires, action.resolution?.modifier, ...(action.effects || []).map(effect => effect.amount)];
     return hiddenPaths.some(hidden => referencedFields(expressions).some(ref => ref === hidden || ref.startsWith(`${hidden}.`) || hidden.startsWith(`${ref}.`)));
   };
+  const visibleEncounter = (encounterId, auth) => !encounterId || auth.role === 'gm'
+    || Boolean(db.prepare("SELECT 1 FROM encounters WHERE id=? AND visibility='public'").get(encounterId));
   const visibleEvent = (event, auth) => {
     if (auth.role === 'gm') return true;
     if (event.kind.startsWith('lore.')) {
@@ -309,6 +311,12 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       return Boolean(entry && canReadLore(entry, auth));
     }
     if (event.visibility !== 'public') return false;
+    let payload;
+    try { payload = JSON.parse(event.payload); } catch { return false; }
+    if (payload.sessionId) {
+      const session = db.prepare('SELECT encounter_id FROM sessions WHERE id=? AND campaign_id=?').get(payload.sessionId, campaignId);
+      if (!session || !visibleEncounter(session.encounter_id, auth)) return false;
+    }
     if (event.actor_id) {
       const actor = actorRow.get(event.actor_id);
       if (!actor || actor.archived || !canReadActor(actor, auth)) return false;
@@ -360,13 +368,13 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }).map(({ actor_id, initiative, status, activation_order }) => ({ actorId: actor_id, initiative, status, activationOrder: activation_order }))
   });
   const publicEncounters = (auth) => db.prepare('SELECT * FROM encounters ORDER BY id').all().filter(row => auth.role === 'gm' || row.visibility === 'public').map(row => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, revision: row.revision, ...(auth.role === 'gm' ? { gmNotes: row.gm_notes || '' } : {}) }));
-  const sessionJson = () => {
+  const sessionJson = (auth) => {
     const state = db.prepare('SELECT current_session_id,revision FROM session_state WHERE campaign_id=?').get(campaignId);
     const project = row => row && ({ id: row.id, encounterId: row.encounter_id ?? null, status: row.status, revision: row.revision, startedAt: row.started_at, updatedAt: row.updated_at, finishedAt: row.finished_at });
     const current = state.current_session_id ? db.prepare('SELECT * FROM sessions WHERE id=?').get(state.current_session_id) : null;
     const history = db.prepare('SELECT * FROM sessions WHERE campaign_id=? ORDER BY started_at,id').all(campaignId)
-      .map(row => project(row));
-    return { revision: state.revision, current: project(current), history };
+      .filter(row => visibleEncounter(row.encounter_id, auth)).map(row => project(row));
+    return { revision: state.revision, current: current && visibleEncounter(current.encounter_id, auth) ? project(current) : null, history };
   };
   const transaction = (work) => {
     db.exec('BEGIN IMMEDIATE');
@@ -542,7 +550,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const firstCursor = Number(db.prepare('SELECT COALESCE(MIN(cursor),?) AS n FROM events').get(currentCursor + 1).n);
         const recoveryReason = since > currentCursor ? 'cursor_ahead' : since < firstCursor - 1 ? 'cursor_expired' : null;
         const events = recoveryReason ? [] : db.prepare('SELECT * FROM events WHERE cursor>? ORDER BY cursor').all(since).filter(e => visibleEvent(e, auth)).map(event => eventJson(event, auth));
-        return json(res, 200, { campaignId, role: auth.role, memberId: auth.memberId, revision: currentCursor, context, session: sessionJson(), encounters: publicEncounters(auth), modules, actors, events, ...(recoveryReason ? { recovery: { reason: recoveryReason, cursor: currentCursor } } : {}) });
+        return json(res, 200, { campaignId, role: auth.role, memberId: auth.memberId, revision: currentCursor, context, session: sessionJson(auth), encounters: publicEncounters(auth), modules, actors, events, ...(recoveryReason ? { recovery: { reason: recoveryReason, cursor: currentCursor } } : {}) });
       }
       const loreEntryMatch = url.pathname.match(/^\/api\/lore\/([^/]+)$/);
       const loreLinksMatch = url.pathname.match(/^\/api\/lore\/([^/]+)\/links$/);
@@ -655,7 +663,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         });
         notify(); return json(res, 200, result);
       }
-      if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, sessionJson());
+      if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, sessionJson(auth));
       if (req.method === 'GET' && url.pathname === '/api/lore') {
         const query = (url.searchParams.get('q') || '').trim();
         if (query.length > 200) return json(res, 400, { error: 'Lore search query is too long', reasonCode: 'invalid_lore_query' });
@@ -683,8 +691,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       const sessionTimelineMatch = req.method === 'GET' && url.pathname.match(/^\/api\/session\/([^/]+)\/timeline$/);
       if (sessionTimelineMatch) {
         const sessionId = decodeURIComponent(sessionTimelineMatch[1]);
-        const session = db.prepare('SELECT id FROM sessions WHERE id=? AND campaign_id=?').get(sessionId, campaignId);
-        if (!session) return json(res, 404, { error: 'Session not found' });
+        const session = db.prepare('SELECT * FROM sessions WHERE id=? AND campaign_id=?').get(sessionId, campaignId);
+        if (!session || !visibleEncounter(session.encounter_id, auth)) return json(res, 404, { error: 'Session not found' });
         const after = url.searchParams.has('after') ? Number(url.searchParams.get('after')) : 0;
         const requestedLimit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 100;
         if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(requestedLimit) || requestedLimit < 1)
@@ -755,7 +763,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
             db.prepare('UPDATE session_state SET revision=? WHERE campaign_id=? AND revision=?').run(revision, campaignId, state.revision);
           }
           insertEvent({ operationId: body.operationId, kind: eventKind, visibility: 'public', payload: { operationId: body.operationId, sessionId: body.sessionId, sessionRevision, revision } });
-          const response = { operationId: body.operationId, status: 'applied', ...sessionJson() };
+          const response = { operationId: body.operationId, status: 'applied', ...sessionJson(auth) };
           db.prepare('INSERT INTO session_operations(operation_id,request_hash,principal_id,response) VALUES(?,?,?,?)').run(body.operationId, requestHash, auth.principalId, JSON.stringify(response));
           return response;
         });
