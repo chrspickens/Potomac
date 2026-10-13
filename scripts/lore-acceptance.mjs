@@ -74,6 +74,7 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 15000
 }
 
 async function clickText(sessionId, text, selector = 'button') {
+  await waitForExpression(sessionId, `(() => { const el=[...document.querySelectorAll(${JSON.stringify(selector)})].find(item=>item.textContent.trim().includes(${JSON.stringify(text)})); return Boolean(el && !el.disabled); })()`, `enabled ${text} control`);
   const clicked = await evaluate(sessionId, `(() => { const el=[...document.querySelectorAll(${JSON.stringify(selector)})].find(item=>item.textContent.trim().includes(${JSON.stringify(text)})); if(!el || el.disabled) return false; el.click(); return true })()`);
   assert.equal(clicked, true, `Enabled ${selector} containing “${text}” exists`);
 }
@@ -263,5 +264,7 @@ try {
     const timer = setTimeout(() => { child.kill('SIGKILL'); resolvePromise(); }, 2500);
     child.once('exit', () => { clearTimeout(timer); resolvePromise(); });
   })));
-  rmSync(directory, { recursive: true, force: true });
+  // Chrome's renderer processes may briefly still be closing their profile
+  // after the browser socket and main process exit. Retry ENOTEMPTY cleanup.
+  rmSync(directory, { recursive: true, force: true, maxRetries: 12, retryDelay: 200 });
 }
