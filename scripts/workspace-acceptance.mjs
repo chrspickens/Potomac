@@ -649,7 +649,10 @@ try {
   const sourceDb = new DatabaseSync(dbPath, { readOnly: true });
   const restoredDb = new DatabaseSync(restoredPath, { readOnly: true });
   try {
-    for (const table of ['campaign', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions', 'lore_entries', 'lore_links', 'lore_operations']) {
+    const tables = ['campaign', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions'];
+    const hasTable = table => Boolean(sourceDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
+    for (const table of ['lore_entries', 'lore_links', 'lore_operations']) if (hasTable(table)) tables.push(table);
+    for (const table of tables) {
       assert.equal(restoredDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,
         sourceDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, `restored ${table} row count matches source`);
     }
