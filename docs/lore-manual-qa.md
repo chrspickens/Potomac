@@ -37,6 +37,12 @@ Record the environment and actual commands below when running acceptance. Automa
 
 | Date / environment | Command | Result |
 | --- | --- | --- |
-| 2026-10-12 · Windows · Node 24.13.1 · pnpm 11.25.0 · Chrome 154.0.8037.98 · `caed166` | `pnpm acceptance:lore` | PASS for HTTP auth/projections/events plus three isolated browser contexts showing shared content and hiding GM notes. The direct UI create attempt returned `400 invalid_command` (`Valid operationId, baseRevision and command fields are required`); the current client sends `kind`/`visibility` fields that the host command does not accept. Create/edit through UI remains a known failure. |
+| 2026-10-12 · Windows · Node 24.13.1 · pnpm 11.25.0 · Chrome 154.0.8037.98 · `caed166` | `pnpm acceptance:lore` | PASS for HTTP auth/projections/events plus three isolated browser contexts showing shared content and hiding GM notes. At that historical commit, direct UI creation returned `400 invalid_command` because the client sent the wrong command shape. Draft PR #66 corrects the client payload and adds UI-driven create/publish/revoke acceptance; this earlier result remains recorded as a baseline rather than a current-status claim. |
 | 2026-10-12 · same environment | `pnpm check` | PASS on rerun: build, 107 Node tests, debug smoke, campaign, System B/Table, offline, offline storage, Table and Lore acceptance. The first run exposed a stale backup test's expected error wording; the current assertion accepts the host's actual fail-closed validation message. |
 | Pending execution | Manual GM + player visual QA | Not performed by automated runner |
+
+## 0.6 hardening follow-up (draft PR #66)
+
+The [review branch](https://github.com/chrspickens/Potomac/pull/66) includes revisioned GM publish/revoke in the Lore app, typed Lore/character/encounter links, image preview and removal, member-scoped stale offline snapshots, referenced-asset-only backup export and rollback coverage. The automated Lore journey now performs UI creation and publication, image upload/removal, filtered private linking and player asset access/revocation. [CI runs for PR #66](https://github.com/chrspickens/Potomac/actions?query=branch%3Afix%2F0.6-release-completion) provide execution evidence.
+
+**Human smoke pass remains unperformed.** Do not mark manual checklist items completed solely because automated acceptance passes. Verify publishing by both the editor's visibility dropdown and explicit Publish/Revoke buttons, check both player views, and test a disconnected/reconnected player profile before release signoff.

@@ -19,22 +19,27 @@ const chromePath = [
 ].filter(Boolean).find(existsSync);
 if (!chromePath) throw new Error('Chrome/Edge not found. Set POTOMAC_CHROME to its executable path.');
 
-async function freePort() {
-  const server = await import('node:net').then(({ createServer }) => createServer());
-  await new Promise((ok, fail) => server.once('error', fail).listen(0, '127.0.0.1', ok));
-  const { port } = server.address();
-  await new Promise((ok, fail) => server.close(error => error ? fail(error) : ok()));
-  return port;
+async function reservePorts(count) {
+  // Keep all ephemeral sockets bound while discovering ports. Closing each
+  // immediately allows the OS to hand out the same port again.
+  const { createServer } = await import('node:net');
+  const servers = [];
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = createServer();
+      await new Promise((ok, fail) => server.once('error', fail).listen(0, '127.0.0.1', ok));
+      servers.push(server);
+    }
+    return servers.map(server => server.address().port);
+  } finally {
+    await Promise.all(servers.map(server => new Promise((ok, fail) => server.close(error => error ? fail(error) : ok()))));
+  }
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'potomac-workspace-acceptance-'));
 const dbPath = join(scratch, 'host.sqlite');
 const chromeProfile = join(scratch, 'chrome');
-const hostPort = await freePort();
-const webPort = await freePort();
-const playerWebPort = await freePort();
-const secondPlayerWebPort = await freePort();
-const debugPort = await freePort();
+const [hostPort, webPort, playerWebPort, secondPlayerWebPort, debugPort] = await reservePorts(5);
 const gmToken = `workspace-acceptance-gm-${process.pid}`;
 const legacyPlayerToken = `workspace-acceptance-legacy-player-${process.pid}`;
 let playerToken;
@@ -103,8 +108,10 @@ async function click(sessionId, selector) {
 }
 
 async function clickText(sessionId, text, selector = 'button') {
-  const found = await evaluate(sessionId, `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.textContent.trim().includes(${JSON.stringify(text)})); if (!target) return false; target.click(); return true; })()`);
-  assert.equal(found, true, `Found clickable ${selector} containing “${text}”`);
+  const ready = `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.textContent.trim().includes(${JSON.stringify(text)})); return Boolean(target && !target.disabled); })()`;
+  await waitForExpression(sessionId, ready, `enabled ${text} control`);
+  const clicked = await evaluate(sessionId, `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.textContent.trim().includes(${JSON.stringify(text)})); if (!target || target.disabled) return false; target.click(); return true; })()`);
+  assert.equal(clicked, true, `Found enabled ${selector} containing “${text}”`);
 }
 
 async function waitForExpression(sessionId, expression, label, timeoutMs = 12000) {
@@ -485,6 +492,7 @@ try {
   await clickText(gm.sessionId, 'Create on host', '.encounters-page .schema-form button');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='The Orchard Ruins')", 'encounter created through app');
   assert.ok((await (await request('/api/encounters', gmToken)).json()).encounters.some(e=>e.name==='The Orchard Ruins'), 'encounter creation via GM app persisted to host');
+  await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Set active'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation control enabled');
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Encounters application switches shared active context');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Set active'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');

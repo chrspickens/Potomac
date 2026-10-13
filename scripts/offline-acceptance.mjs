@@ -122,6 +122,11 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 15000
 }
 
 async function clickText(sessionId, text, selector = 'button') {
+  await waitForExpression(sessionId, `(() => {
+    const target = [...document.querySelectorAll(${JSON.stringify(selector)})]
+      .find(element => element.textContent.trim().includes(${JSON.stringify(text)}));
+    return Boolean(target && !target.disabled);
+  })()`, `enabled ${text} control`);
   const result = await evaluate(sessionId, `(() => {
     const target = [...document.querySelectorAll(${JSON.stringify(selector)})]
       .find(element => element.textContent.trim().includes(${JSON.stringify(text)}));
@@ -132,6 +137,7 @@ async function clickText(sessionId, text, selector = 'button') {
 }
 
 async function clickSelector(sessionId, selector) {
+  await waitForExpression(sessionId, `(() => { const target=document.querySelector(${JSON.stringify(selector)}); return Boolean(target && !target.disabled); })()`, `enabled ${selector}`);
   const clicked = await evaluate(sessionId, `(() => {
     const target = document.querySelector(${JSON.stringify(selector)});
     if (!target) return { clicked: false, navLabel: document.querySelector('nav')?.getAttribute('aria-label') || null };
@@ -152,16 +158,29 @@ async function selectValue(sessionId, selector, value) {
   assert.equal(changed, true, `Expected a select matching ${selector}`);
 }
 
-async function clickRecoveryAction(sessionId, actionId, buttonText) {
+async function clickRecoveryAction(sessionId, actionId, buttonText, operationId = null) {
+  // More than one actor can have the same action, and queue persistence is
+  // asynchronous after creating a replacement. Identify the original receipt
+  // and wait for its controls to be re-enabled before clicking.
+  const expression = `(() => {
+    const section = [...document.querySelectorAll('section[aria-labelledby="conflict-recovery-title"]')]
+      .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)}))
+        && (!${JSON.stringify(operationId)} || [...item.querySelectorAll('code')].some(code => code.textContent.trim() === ${JSON.stringify(operationId)})));
+    const button = [...(section?.querySelectorAll('button') || [])]
+      .find(item => item.textContent.trim() === ${JSON.stringify(buttonText)});
+    return button && !button.disabled;
+  })()`;
+  await waitForExpression(sessionId, expression, `enabled ${buttonText} control for ${operationId || actionId}`);
   const clicked = await evaluate(sessionId, `(() => {
     const section = [...document.querySelectorAll('section[aria-labelledby="conflict-recovery-title"]')]
-      .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)})));
+      .find(item => [...item.querySelectorAll('p')].some(line => line.textContent.includes('Action:') && line.textContent.includes(${JSON.stringify(actionId)}))
+        && (!${JSON.stringify(operationId)} || [...item.querySelectorAll('code')].some(code => code.textContent.trim() === ${JSON.stringify(operationId)})));
     const button = [...(section?.querySelectorAll('button') || [])]
       .find(item => item.textContent.trim() === ${JSON.stringify(buttonText)});
     if (!button || button.disabled) return false;
     button.click(); return true;
   })()`);
-  assert.equal(clicked, true, `Expected ${buttonText} for ${actionId}`);
+  assert.equal(clicked, true, `Expected ${buttonText} for ${operationId || actionId}`);
 }
 
 async function clickDraftAction(sessionId, actionId, buttonText) {
@@ -440,7 +459,7 @@ try {
 
   await waitForExpression(memberAClient, "[...document.querySelectorAll('section[aria-labelledby=\"conflict-recovery-title\"]')].some(section => section.innerText.includes('Tarin Vale') && section.innerText.includes('revision 2') && section.innerText.includes('Mira Vell') && section.innerText.includes('revision 3'))", 'authorized current actor and changed dependency are shown before rebase');
   await clickSelector(memberAClient, '[aria-label="Confirm dependency rebase"]');
-  await clickRecoveryAction(memberAClient, 'spend-hope', 'Create new operation from current revision');
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Create new operation from current revision', conflictReceipt.operationId);
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · applied')", 'rebased operation applies from current actor and dependency revisions');
   let recoveredQueue = await readBrowserQueue(memberAClient);
   const originalHopeOperation = recoveredQueue.operations.find(row => row.operation.operationId === conflictReceipt.operationId);
@@ -452,15 +471,15 @@ try {
   assert.equal(rebasedHopeOperation.operation.baseRevision, 2, 'rebase uses the authorized current actor revision');
   assert.deepEqual(rebasedHopeOperation.operation.dependencies, [{ entityId: actorA, revision: 3 }], 'rebase updates a dependency only after explicit review of the authorized current revision');
 
-  await clickRecoveryAction(memberAClient, 'spend-hope', 'Retain as private draft');
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Retain as private draft', conflictReceipt.operationId);
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('spend-hope')", 'conflict retained as private draft');
   const beforeConflictReload = await evaluate(memberAClient, 'performance.timeOrigin');
   await cdp('Page.reload', { ignoreCache: true }, memberAClient);
   await waitForExpression(memberAClient, `performance.timeOrigin !== ${beforeConflictReload} && document.readyState === 'complete'`, 'reload after conflict recovery');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('dependency_revision_conflict')", 'private conflict draft restored after reload');
   await evaluate(memberAClient, 'window.confirm = () => true');
-  await clickRecoveryAction(memberAClient, 'spend-hope', 'Discard local conflict copy');
-  await clickRecoveryAction(memberAClient, 'spend-hope', 'Confirm discard');
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Discard local conflict copy', conflictReceipt.operationId);
+  await clickRecoveryAction(memberAClient, 'spend-hope', 'Confirm discard', conflictReceipt.operationId);
   await waitForExpression(memberAClient, "!document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('spend-hope · conflicted') && document.querySelector('[aria-label=\"Private local drafts\"]')?.innerText.includes('dependency_revision_conflict')", 'discard removes only the terminal operation and keeps its private draft');
 
   const freshReviewActorId = 'actor-review-reject-01';

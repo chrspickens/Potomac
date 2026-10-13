@@ -123,6 +123,7 @@ export default function App() {
   const [encounterStatusInput, setEncounterStatusInput] = useState<'prepared' | 'active' | 'completed'>('prepared')
   const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
   const [creatingEncounter, setCreatingEncounter] = useState(false)
+  const [openedLoreEncounterId, setOpenedLoreEncounterId] = useState('')
 
   useEffect(() => {
     let stopped = false
@@ -651,7 +652,17 @@ export default function App() {
           <SchemaFields schema={selectedActor.module.schema} value={editedCharacterData} onChange={setEditedCharacterData} />
           <button disabled={busy || connection !== 'connected'}>Save changes</button>
           <button type="button" onClick={() => setEditingCharacter(false)}>Cancel</button>
-        </form>}</> : <p className="brick-message">No authorized characters available.</p>}{creatingCharacter && <form className="schema-form" onSubmit={event => void createCharacter(event)}><h2>New character</h2><label>System<select value={selectedModule?.manifest.id || ''} onChange={event => { setCharacterModuleId(event.target.value); setNewCharacterData({}) }}>{availableModules.map(module => <option key={module.manifest.id} value={module.manifest.id}>{module.manifest.name} · {module.manifest.version}</option>)}</select></label>{selectedModule && <SchemaFields schema={selectedModule.schema} value={newCharacterData} onChange={setNewCharacterData} />}{selectedModule?.schema && <><label>Secret note (GM only)<textarea value={String(newCharacterData.secretNote || '')} onChange={event => setNewCharacterData(current => ({ ...current, secretNote: event.target.value }))} /></label><div><button className="primary" disabled={busy || connection !== 'connected'}>Create on host</button><button type="button" onClick={() => setCreatingCharacter(false)}>Cancel</button></div></>}</form>}</section><aside className="brick app-activity"><header className="brick-head"><strong>Activity Log</strong></header><ActivityLog snapshot={snapshot} /></aside></div></main> : section === 'lore' ? <LoreApp role={role} connection={connection} targetId={loreTargetId} initialArticles={loreArticles} onArticlesChange={setLoreArticles} hostAvailable={Boolean(configuredHost)} /> : <main className="encounters-page">
+        </form>}</> : <p className="brick-message">No authorized characters available.</p>}{creatingCharacter && <form className="schema-form" onSubmit={event => void createCharacter(event)}><h2>New character</h2><label>System<select value={selectedModule?.manifest.id || ''} onChange={event => { setCharacterModuleId(event.target.value); setNewCharacterData({}) }}>{availableModules.map(module => <option key={module.manifest.id} value={module.manifest.id}>{module.manifest.name} · {module.manifest.version}</option>)}</select></label>{selectedModule && <SchemaFields schema={selectedModule.schema} value={newCharacterData} onChange={setNewCharacterData} />}{selectedModule?.schema && <><label>Secret note (GM only)<textarea value={String(newCharacterData.secretNote || '')} onChange={event => setNewCharacterData(current => ({ ...current, secretNote: event.target.value }))} /></label><div><button className="primary" disabled={busy || connection !== 'connected'}>Create on host</button><button type="button" onClick={() => setCreatingCharacter(false)}>Cancel</button></div></>}</form>}</section><aside className="brick app-activity"><header className="brick-head"><strong>Activity Log</strong></header><ActivityLog snapshot={snapshot} /></aside></div></main> : section === 'lore' ? <LoreApp role={role} connection={connection} targetId={loreTargetId} initialArticles={loreArticles} onArticlesChange={setLoreArticles} hostAvailable={Boolean(configuredHost)}
+      availableActors={snapshot?.actors ?? []} availableEncounters={snapshot?.encounters ?? []}
+      onOpenTarget={(kind, id) => {
+        if (kind === 'actor') { setSelectedActorId(id); setSection('characters') }
+        else {
+          setOpenedLoreEncounterId(id)
+          setSection('encounters')
+          // Player navigation never calls the GM-only encounter detail endpoint.
+          if (role === 'gm') void chooseEncounter(id)
+        }
+      }} /> : <main className="encounters-page">
       <div className="page-intro">
         <div><p className="eyebrow">APPLICATION / ENCOUNTERS</p><h1>Encounters</h1>
           <p>Prepare encounter records, choose participants, and control the shared session.</p></div>
@@ -673,8 +684,8 @@ export default function App() {
         <button type="button" onClick={() => setCreatingEncounter(false)}>Cancel</button>
       </form>}
       <div className="encounter-list">
-        {snapshot?.encounters.map(encounter => <article className="encounter-card" key={encounter.id}>
-          <div><p className="eyebrow">ENCOUNTER · {encounter.id}</p><h2>{encounter.name}</h2><p>{encounter.summary}</p></div>
+        {snapshot?.encounters.map(encounter => <article className={`encounter-card${openedLoreEncounterId === encounter.id ? ' is-focused' : ''}`} key={encounter.id} aria-current={openedLoreEncounterId === encounter.id ? 'true' : undefined}>
+          <div><p className="eyebrow">ENCOUNTER · {encounter.id}</p><h2>{encounter.name}</h2><p>{encounter.summary}</p>{openedLoreEncounterId === encounter.id && <small role="status">Opened from Lore</small>}</div>
           <div>{role === 'gm' && <button disabled={busy || connection !== 'connected'}
             onClick={() => { setCreatingEncounter(false); void chooseEncounter(encounter.id) }}>Prepare / edit</button>}
             {role === 'gm' && <button disabled={busy || connection !== 'connected' || snapshot.context.activeEncounter?.id === encounter.id}

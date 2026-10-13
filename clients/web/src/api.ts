@@ -206,6 +206,12 @@ export async function createLore(input: LoreInput): Promise<LoreArticle> {
 export async function updateLore(id: string, baseRevision: number, input: LoreInput): Promise<LoreArticle> {
   return projectLoreArticle(await http<LoreWireArticle>(`/api/lore/${encodeURIComponent(id)}`, 'gm', { method: 'PUT', body: JSON.stringify({ ...loreCommand(input), baseRevision, operationId: crypto.randomUUID() }) }))
 }
+export async function setLorePublication(id: string, baseRevision: number, published: boolean): Promise<{ id: string; revision: number; visibility: LoreVisibility; published: boolean }> {
+  return http(`/api/lore/${encodeURIComponent(id)}/publication`, 'gm', {
+    method: 'PUT',
+    body: JSON.stringify({ operationId: crypto.randomUUID(), baseRevision, published })
+  })
+}
 export async function setLoreArchived(id: string, baseRevision: number, archived: boolean): Promise<{ id: string; revision: number; archived: boolean }> {
   return http(`/api/lore/${encodeURIComponent(id)}/${archived ? 'archive' : 'restore'}`, 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, operationId: crypto.randomUUID() }) })
 }

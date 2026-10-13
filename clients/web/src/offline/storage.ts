@@ -112,7 +112,7 @@ export type OfflineStorage = {
   listAuthorizedLore(): Promise<AuthorizedLoreEntry[]>;
 };
 
-export type AuthorizedLoreEntry = { id: string; revision: number; article: Record<string, unknown>; links: Array<Record<string, unknown>> };
+export type AuthorizedLoreEntry = { id: string; revision: number; article: Record<string, unknown>; links: Array<Record<string, unknown>>; cachedAt?: number };
 
 /** Opens storage scoped to one host, campaign, and member. Never put credentials in a draft payload. */
 export function openOfflineStorage(
@@ -458,6 +458,8 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
 
 function validateLoreEntry(entry: AuthorizedLoreEntry): void {
   if (!isRecord(entry) || !isNonEmptyString(entry.id) || !Number.isSafeInteger(entry.revision) || entry.revision < 1 || !isRecord(entry.article) || !Array.isArray(entry.links)) throw new Error('Invalid authorized Lore entry');
+  if (entry.cachedAt !== undefined && (!Number.isFinite(entry.cachedAt) || entry.cachedAt < 0))
+    throw new Error('Invalid authorized Lore cache timestamp');
   assertJson(entry);
 }
 function isLoreRecord(value: unknown, scope: OfflineScope): value is Stored<{ entry: AuthorizedLoreEntry }> {

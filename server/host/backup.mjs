@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -146,10 +146,20 @@ export function exportCampaignBackup(databasePath, outputPath, { modulesDirector
     snapshot = new DatabaseSync(snapshotPath, { readOnly: true });
     const data = Object.fromEntries(TABLE_COLLECTIONS.map(table => [table, snapshot.prepare(`SELECT ${TABLES[table].join(',')} FROM ${table} ORDER BY rowid`).all()]));
     data.assets = [];
-    if (existsSync(assetsDirectory)) for (const name of readdirSync(assetsDirectory).sort()) {
-      if (!/^[a-f0-9]{64}$/.test(name)) fail('asset store contains an invalid filename');
+    const requiredHashes = [...new Set(data.lore_assets.map(asset => asset.sha256))].sort();
+    if (existsSync(assetsDirectory)) {
+      if (!lstatSync(assetsDirectory).isDirectory()) fail('asset directory is not a regular directory');
+      for (const name of readdirSync(assetsDirectory)) {
+        if (!/^[a-f0-9]{64}$/.test(name) || !lstatSync(resolve(assetsDirectory, name)).isFile())
+          fail('asset store contains an unsafe file');
+      }
+    }
+    // The DB snapshot defines the portable asset set. Orphan files are not
+    // included, while missing, modified or symlinked referenced files fail
+    // the export rather than producing an incomplete backup.
+    for (const name of requiredHashes) {
       const path = resolve(assetsDirectory, name);
-      if (!statSync(path).isFile()) fail('asset store contains a non-file entry');
+      if (!existsSync(path) || !lstatSync(path).isFile()) fail(`referenced asset ${name} is missing or unsafe`);
       const bytes = readFileSync(path);
       if (checksumBytes(bytes) !== name) fail(`asset ${name} failed validation`);
       data.assets.push({ sha256: name, size: bytes.length, bytes: bytes.toString('base64') });
