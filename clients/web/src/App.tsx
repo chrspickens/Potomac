@@ -123,6 +123,7 @@ export default function App() {
   const [encounterStatusInput, setEncounterStatusInput] = useState<'prepared' | 'active' | 'completed'>('prepared')
   const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
   const [creatingEncounter, setCreatingEncounter] = useState(false)
+  const [openedLoreEncounterId, setOpenedLoreEncounterId] = useState('')
 
   useEffect(() => {
     let stopped = false
@@ -655,7 +656,12 @@ export default function App() {
       availableActors={snapshot?.actors ?? []} availableEncounters={snapshot?.encounters ?? []}
       onOpenTarget={(kind, id) => {
         if (kind === 'actor') { setSelectedActorId(id); setSection('characters') }
-        else { setSection('encounters'); void chooseEncounter(id) }
+        else {
+          setOpenedLoreEncounterId(id)
+          setSection('encounters')
+          // Player navigation never calls the GM-only encounter detail endpoint.
+          if (role === 'gm') void chooseEncounter(id)
+        }
       }} /> : <main className="encounters-page">
       <div className="page-intro">
         <div><p className="eyebrow">APPLICATION / ENCOUNTERS</p><h1>Encounters</h1>
@@ -678,8 +684,8 @@ export default function App() {
         <button type="button" onClick={() => setCreatingEncounter(false)}>Cancel</button>
       </form>}
       <div className="encounter-list">
-        {snapshot?.encounters.map(encounter => <article className="encounter-card" key={encounter.id}>
-          <div><p className="eyebrow">ENCOUNTER · {encounter.id}</p><h2>{encounter.name}</h2><p>{encounter.summary}</p></div>
+        {snapshot?.encounters.map(encounter => <article className={`encounter-card${openedLoreEncounterId === encounter.id ? ' is-focused' : ''}`} key={encounter.id} aria-current={openedLoreEncounterId === encounter.id ? 'true' : undefined}>
+          <div><p className="eyebrow">ENCOUNTER · {encounter.id}</p><h2>{encounter.name}</h2><p>{encounter.summary}</p>{openedLoreEncounterId === encounter.id && <small role="status">Opened from Lore</small>}</div>
           <div>{role === 'gm' && <button disabled={busy || connection !== 'connected'}
             onClick={() => { setCreatingEncounter(false); void chooseEncounter(encounter.id) }}>Prepare / edit</button>}
             {role === 'gm' && <button disabled={busy || connection !== 'connected' || snapshot.context.activeEncounter?.id === encounter.id}
