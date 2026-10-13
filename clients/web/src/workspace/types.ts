@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import type { Activity, Encounter, LoreArticle, Role, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
+import type { MapPieceView, MapSceneView } from '../api.ts';
 
 export type BrickSize = { w: number; h: number };
 
@@ -47,6 +48,9 @@ export type AuthorizedBrickDataAdapter = {
   getLore?(entityId: string): LoreArticle | undefined;
   getLoreOptions?(): Array<{ id: string; label: string }>;
   getRelatedLore?(): LoreArticle[];
+  getMap?(sceneId: string): MapSceneView | undefined;
+  getMapPiece?(sceneId: string, pieceId: string): MapPieceView | undefined;
+  getMapOptions?(): Array<{ id: string; label: string }>;
 };
 
 export type BrickRenderProps<TData = unknown> = {
@@ -57,7 +61,8 @@ export type BrickRenderProps<TData = unknown> = {
   offline?: boolean;
   onAction: (actor: Actor, actionId: string) => void;
   onSessionCommand?: (command: 'start' | 'pause' | 'resume' | 'finish', encounter?: { id: string; revision: number }) => void;
-  onOpenApp?: (appId: 'table' | 'characters' | 'encounters' | 'lore', entityId?: string) => void;
+  onMoveMapPiece?: (sceneId: string, piece: MapPieceView, point: { x: number; y: number }) => void;
+  onOpenApp?: (appId: 'table' | 'characters' | 'encounters' | 'lore' | 'maps', entityId?: string) => void;
 };
 
 export type BrickDefinition<TData = unknown> = {

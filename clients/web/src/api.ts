@@ -1,6 +1,30 @@
 import { initialActors, type Actor, type GameModule } from './modules'
 import { loadRememberedIdentity, rememberIdentity } from './identity'
 import type { OfflineOperation, OfflineReceipt } from './offline/storage'
+import type { MapScene, MapPiece, MapSceneCreate } from '@potomac/contracts'
+
+export type { MapScene, MapPiece, MapGrid, MapSceneKind } from '@potomac/contracts'
+export type MapPieceView = MapPiece & { destination?: { sceneId: string; name: string; label: string } }
+export type MapSceneView = MapScene & { pieces: MapPieceView[]; encounterId?: string | null }
+export type MapCommand = { operationId: string; baseRevision: number; command: 'update' | 'archive' | 'restore' | 'piece.put' | 'piece.delete' | 'link.put' | 'link.delete' | 'encounter.set'; name?: string; kind?: MapScene['kind']; width?: number; height?: number; grid?: MapScene['grid']; visibility?: MapScene['visibility']; gmNotes?: string; piece?: Omit<MapPiece, 'revision'>; pieceId?: string; targetSceneId?: string; label?: string; encounterId?: string | null }
+
+export async function listMaps(role: Role): Promise<MapSceneView[]> {
+  if (!baseUrl) return []
+  const result = await http<{ maps: MapSceneView[] }>('/api/maps', role)
+  return result.maps
+}
+
+export async function loadMap(role: Role, id: string): Promise<MapSceneView> {
+  return http<MapSceneView>(`/api/maps/${encodeURIComponent(id)}`, role)
+}
+
+export async function createMap(role: Role, scene: Omit<MapSceneCreate, 'operationId'> & { operationId?: string }): Promise<{ operationId: string; status: 'applied'; sceneId: string; revision: number }> {
+  return http('/api/maps', role, { method: 'POST', body: JSON.stringify({ ...scene, operationId: scene.operationId ?? crypto.randomUUID() }) })
+}
+
+export async function commandMap(role: Role, id: string, command: MapCommand): Promise<{ operationId: string; status: 'applied'; sceneId: string; revision: number }> {
+  return http(`/api/maps/${encodeURIComponent(id)}/commands`, role, { method: 'POST', body: JSON.stringify(command) })
+}
 
 export type Role = 'gm' | 'player'
 export type Encounter = { id: string; name: string; summary: string; status?: 'prepared' | 'active' | 'completed'; revision?: number; participants?: Array<{ actorId: string; initiative?: number | null; status?: string; activationOrder?: number | null }>; loreIds?: string[] }

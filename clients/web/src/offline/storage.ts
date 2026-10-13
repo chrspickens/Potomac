@@ -1,4 +1,5 @@
 import type { OfflineOperation, OfflineReceipt } from '@potomac/contracts';
+import type { MapSceneView } from '../api.ts';
 export type { OfflineOperation, OfflineReceipt } from '@potomac/contracts';
 
 export type OfflineScope = {
@@ -60,6 +61,7 @@ const OPERATIONS = 'queuedOperations';
 const DRAFTS = 'privateDrafts';
 const METADATA = 'sessionMetadata';
 const LORE = 'authorizedLore';
+const MAPS = 'authorizedMaps';
 
 type Stored<T> = T & {
   key: string;
@@ -110,6 +112,8 @@ export type OfflineStorage = {
   deletePrivateDraft(draftId: string): Promise<void>;
   replaceAuthorizedLore(entries: AuthorizedLoreEntry[]): Promise<void>;
   listAuthorizedLore(): Promise<AuthorizedLoreEntry[]>;
+  replaceAuthorizedMaps(scenes: MapSceneView[]): Promise<void>;
+  listAuthorizedMaps(): Promise<MapSceneView[]>;
 };
 
 export type AuthorizedLoreEntry = { id: string; revision: number; article: Record<string, unknown>; links: Array<Record<string, unknown>>; cachedAt?: number };
@@ -127,7 +131,7 @@ export function openOfflineStorage(
     request.onupgradeneeded = (event) => {
       const db = request.result;
       const transaction = request.transaction!;
-      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE]) {
+      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE, MAPS]) {
         const store = db.objectStoreNames.contains(storeName)
           ? transaction.objectStore(storeName)
           : db.createObjectStore(storeName, { keyPath: 'key' });
@@ -171,8 +175,8 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
     close: () => db.close(),
 
     async clearScope() {
-      const tx = db.transaction([SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE], 'readwrite');
-      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE]) {
+      const tx = db.transaction([SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE, MAPS], 'readwrite');
+      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE, MAPS]) {
         const store = tx.objectStore(storeName);
         const request = store.index('scopeKey').getAllKeys(scopedKey);
         request.onsuccess = () => { for (const key of request.result) store.delete(key); };
@@ -453,7 +457,36 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
       for (const row of rows) if (!isLoreRecord(row, scope)) throw new OfflineStorageCorruptionError(LORE, 1);
       return rows.map(row => row.entry);
     },
+    async replaceAuthorizedMaps(scenes) {
+      for (const scene of scenes) validateMapScene(scene, scope.campaignId);
+      if (new Set(scenes.map(scene => scene.id)).size !== scenes.length) throw new Error('Duplicate authorized map ID');
+      const tx = db.transaction(MAPS, 'readwrite');
+      const store = tx.objectStore(MAPS);
+      const existing = store.index('scopeKey').getAllKeys(scopedKey);
+      existing.onsuccess = () => {
+        for (const key of existing.result) store.delete(key);
+        for (const scene of scenes) store.put(scoped({ scene: structuredClone(scene) }, scene.id));
+      };
+      await transactionResult(tx);
+    },
+    async listAuthorizedMaps() {
+      const rows = await listScoped(db, MAPS, scopedKey) as Array<Stored<{ scene: MapSceneView }>>;
+      for (const row of rows) if (!isMapRecord(row, scope)) throw new OfflineStorageCorruptionError(MAPS, 1);
+      return rows.map(row => row.scene);
+    },
   };
+}
+
+function validateMapScene(scene: MapSceneView, campaignId: string): void {
+  if (!isRecord(scene) || !isNonEmptyString(scene.id) || scene.campaignId !== campaignId || !isNonEmptyString(scene.name) || !['world', 'battle'].includes(scene.kind) || !Number.isSafeInteger(scene.revision) || scene.revision < 1 || !Number.isFinite(scene.width) || scene.width < 1 || !Number.isFinite(scene.height) || scene.height < 1 || !isRecord(scene.grid) || !['none', 'square', 'hex'].includes(String(scene.grid.type)) || !Number.isFinite(scene.grid.size) || !['gm', 'shared'].includes(scene.visibility) || !Array.isArray(scene.pieces) || typeof scene.archived !== 'boolean') throw new Error('Invalid authorized map scene');
+  for (const piece of scene.pieces) if (!isRecord(piece) || !isNonEmptyString(piece.id) || piece.sceneId !== scene.id || !['actor', 'pin'].includes(piece.kind) || !Number.isFinite(piece.x) || !Number.isFinite(piece.y) || piece.x < 0 || piece.y < 0 || piece.x > scene.width || piece.y > scene.height || !Number.isSafeInteger(piece.revision) || piece.revision < 1) throw new Error('Invalid authorized map piece');
+  assertJson(scene);
+}
+function isMapRecord(value: unknown, scope: OfflineScope): value is Stored<{ scene: MapSceneView }> {
+  const scopeKey = offlineScopeKey(scope);
+  if (!isRecord(value) || value.scopeKey !== scopeKey || value.host !== scope.host || value.campaignId !== scope.campaignId || value.memberId !== scope.memberId || !isRecord(value.scene)) return false;
+  try { validateMapScene(value.scene as MapSceneView, scope.campaignId) } catch { return false }
+  return value.key === JSON.stringify([scopeKey, value.scene.id]);
 }
 
 function validateLoreEntry(entry: AuthorizedLoreEntry): void {

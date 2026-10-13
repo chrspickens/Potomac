@@ -650,9 +650,10 @@ try {
   const backupPath = join(scratch, 'campaign-backup.json');
   const restoredPath = join(scratch, 'campaign-restored.sqlite');
   const exportManifest = exportCampaignBackup(dbPath, backupPath);
-  assert.equal(exportManifest.potomacDataVersion, 4, 'campaign export format includes persistent encounters and Lore');
+  assert.equal(exportManifest.potomacDataVersion, 5, 'campaign export format includes persistent encounters, Lore and Maps');
   assert.ok(exportManifest.includedCollections.includes('encounters'));
   assert.ok(exportManifest.includedCollections.includes('encounter_participants'));
+  assert.ok(exportManifest.includedCollections.includes('map_scenes'));
   const restoredManifest = restoreCampaignBackup(backupPath, restoredPath);
   assert.equal(restoredManifest.campaignId, 'foundation-demo');
   const sourceDb = new DatabaseSync(dbPath, { readOnly: true });

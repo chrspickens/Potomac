@@ -1,5 +1,6 @@
 import type { Activity, Encounter, LoreArticle, Role, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
+import type { MapSceneView } from '../api.ts';
 import type { AuthorizedBrickDataAdapter, BrickBinding } from './types.ts';
 
 export function resolveTableParticipants(binding: BrickBinding, adapter: AuthorizedBrickDataAdapter): Array<{ actor: Actor; status?: string }> | undefined {
@@ -10,11 +11,12 @@ export function resolveTableParticipants(binding: BrickBinding, adapter: Authori
 }
 
 export function createAuthorizedBrickAdapter(
-  actors: Actor[], encounters: Encounter[], activeEncounter: Encounter | null, activity: Activity[], session?: SessionSnapshot, role: Role = 'player', lore: LoreArticle[] = [],
+  actors: Actor[], encounters: Encounter[], activeEncounter: Encounter | null, activity: Activity[], session?: SessionSnapshot, role: Role = 'player', lore: LoreArticle[] = [], maps: MapSceneView[] = [],
 ): AuthorizedBrickDataAdapter & { getEncounterOptions: () => Array<{ id: string; label: string }> } {
   const actorById = new Map(actors.map(actor => [actor.entityId, actor]));
   const encounterById = new Map(encounters.map(encounter => [encounter.id, encounter]));
   const loreById = new Map(lore.map(article => [article.id, article]));
+  const mapById = new Map(maps.map(scene => [scene.id, scene]));
   const participantsFor = (id: string) => (encounterById.get(id)?.participants || []).flatMap(item => {
     const actor = actorById.get(item.actorId);
     return actor ? [{ actor, status: item.status || undefined }] : [];
@@ -35,6 +37,9 @@ export function createAuthorizedBrickAdapter(
       const article = loreById.get(id);
       return article && !article.archived ? [article] : [];
     }),
+    getMap: id => mapById.get(id),
+    getMapPiece: (sceneId, pieceId) => mapById.get(sceneId)?.pieces.find(piece => piece.id === pieceId),
+    getMapOptions: () => maps.map(({ id, name }) => ({ id, label: name })),
     getEncounterOptions: () => encounters.map(({ id, name }) => ({ id, label: name })),
   };
 }

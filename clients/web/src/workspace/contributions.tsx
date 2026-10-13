@@ -4,6 +4,8 @@ import type { LoreArticle } from '../api.ts';
 import type { BrickBinding, BrickDefinition, BrickRenderProps, AuthorizedBrickDataAdapter } from './types.ts';
 import { resolveTableParticipants } from './authorized-adapter.ts';
 import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
+import { MapCanvas } from '../maps-app.tsx';
+import type { MapSceneView } from '../api.ts';
 
 function declaredBrickDefinition(typeId: string): BrickDefinition<unknown> {
   const definition = getBrickDefinition(typeId);
@@ -51,6 +53,11 @@ function EncounterBrick({ data, onOpenApp }: BrickRenderProps<{ encounter: Encou
 
 function ActivityBrick({ data }: BrickRenderProps<Activity[]>) {
   return <div className="activity-list">{data?.length ? data.slice(-12).reverse().map(item => <div className="activity-item" key={item.id}><span className="activity-dot" /><div><strong>{item.action}</strong><p>{item.detail || 'Campaign event'}</p><small>{item.actor} · {item.time}{item.visibility === 'gm' ? ' · GM only' : ''}</small></div></div>) : <p className="brick-message">Actions and encounter changes will appear here.</p>}</div>;
+}
+
+function MapSceneBrick({ data, adapter, onOpenApp, onMoveMapPiece }: BrickRenderProps<MapSceneView>) {
+  if (!data) return <p className="brick-message">This map is unavailable to your current host authorization.</p>;
+  return <div className="map-brick"><button type="button" onClick={() => onOpenApp?.('maps', data.id)}>Open Maps app · {data.name}</button><MapCanvas scene={data} actors={adapter.getActorOptions().map(item => adapter.getActor(item.id)).filter((actor): actor is Actor => Boolean(actor))} onDropPiece={(piece, point) => onMoveMapPiece?.(data.id, piece, point)} /><small>{data.kind} scene · host revision {data.revision}</small></div>;
 }
 
 function TableSessionBrick({ data, adapter, onSessionCommand, onOpenApp, busy, offline }: BrickRenderProps<SessionSnapshot>) {
@@ -129,7 +136,13 @@ const loreRelatedDefinition: BrickDefinition<LoreArticle[]> = {
   render: RelatedLoreBrick,
 };
 
-export const brickDefinitions: BrickDefinition<unknown>[] = [characterDefinition, encounterDefinition, activityDefinition, tableSessionDefinition, tableParticipantsDefinition, tableActivityDefinition, loreArticleDefinition, loreRelatedDefinition] as unknown as BrickDefinition<unknown>[];
+const mapSceneDefinition: BrickDefinition<MapSceneView> = {
+  ...declaredBrickDefinition('maps.scene'),
+  resolve: (binding, adapter) => binding.mode === 'pinned' ? adapter.getMap?.(binding.entityId) : undefined,
+  render: MapSceneBrick,
+};
+
+export const brickDefinitions: BrickDefinition<unknown>[] = [characterDefinition, encounterDefinition, activityDefinition, tableSessionDefinition, tableParticipantsDefinition, tableActivityDefinition, loreArticleDefinition, loreRelatedDefinition, mapSceneDefinition] as unknown as BrickDefinition<unknown>[];
 for (const definition of brickDefinitions) registerBrickDefinition(definition, true);
 
 export function resolveDefaultBinding<TData>(definition: BrickDefinition<TData>, adapter: AuthorizedBrickDataAdapter): BrickBinding {

@@ -43,9 +43,9 @@ test('campaign backup round-trips Lore and asset bytes along with host tables', 
 
   const manifest = restoreCampaignBackup(backupPath, restoredPath);
   assert.equal(manifest.campaignId, 'foundation-demo');
-  assert.equal(manifest.potomacDataVersion, 4);
+  assert.equal(manifest.potomacDataVersion, 5);
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
-  assert.equal(archive.schemaVersion, 4);
+  assert.equal(archive.schemaVersion, 5);
   assert.ok(manifest.includedCollections.includes('encounters'));
   assert.ok(manifest.includedCollections.includes('encounter_participants'));
   const restored = createHost({ databasePath: restoredPath });
@@ -72,6 +72,31 @@ test('campaign backup round-trips Lore and asset bytes along with host tables', 
   assert.equal(readFileSync(`${restoredPath}.assets/${createHashHex('image bytes')}`, 'utf8'), 'image bytes');
 }));
 
+test('v5 backup round-trips World and Battle scenes, pieces, map links and managed image bytes', async () => withDirectory(async directory => {
+  const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'maps.json'), restoredPath = join(directory, 'restored.sqlite');
+  const host = createHost({ databasePath: sourcePath });
+  const bytes = Buffer.alloc(24); Buffer.from([137,80,78,71,13,10,26,10]).copy(bytes); bytes.writeUInt32BE(2,16); bytes.writeUInt32BE(3,20); const hash = createHashHex(bytes);
+  try {
+    mkdirSync(`${sourcePath}.assets`, { recursive: true }); writeFileSync(`${sourcePath}.assets/${hash}`, bytes);
+    host.db.prepare("INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,background_id,created_at,updated_at) VALUES('world','foundation-demo','World','world',2,100,80,'{\"type\":\"none\",\"size\":0}','shared','map-image','now','now')").run();
+    host.db.prepare("INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,created_at,updated_at) VALUES('battle','foundation-demo','Battle','battle',1,30,20,'{\"type\":\"square\",\"size\":5}','gm','now','now')").run();
+    host.db.prepare("INSERT INTO map_pieces(id,scene_id,kind,label,x,y) VALUES('pin','world','pin','stairs',4,5)").run();
+    host.db.prepare("INSERT INTO map_links(id,campaign_id,source_scene_id,target_scene_id,piece_id,label) VALUES('link','foundation-demo','world','battle','pin','down')").run();
+    host.db.prepare("INSERT INTO map_assets(id,campaign_id,scene_id,original_name,media_type,byte_size,sha256,created_at) VALUES('map-image','foundation-demo','world','world.png','image/png',?,?, 'now')").run(bytes.length, hash);
+    exportCampaignBackup(sourcePath, backupPath);
+  } finally { host.close(); }
+  const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  assert.equal(archive.schemaVersion, 5);
+  restoreCampaignBackup(backupPath, restoredPath);
+  const restored = createHost({ databasePath: restoredPath });
+  try {
+    assert.deepEqual({ ...restored.db.prepare('SELECT kind,background_id FROM map_scenes WHERE id=?').get('world') }, { kind: 'world', background_id: 'map-image' });
+    assert.equal(restored.db.prepare('SELECT target_scene_id FROM map_links WHERE id=?').get('link').target_scene_id, 'battle');
+    assert.equal(restored.db.prepare('SELECT sha256 FROM map_assets WHERE id=?').get('map-image').sha256, hash);
+  } finally { restored.close(); }
+  assert.deepEqual(readFileSync(`${restoredPath}.assets/${hash}`), bytes);
+}));
+
 test('PR #45 v3 archives retain sessions and privacy fields on restore', async () => withDirectory(async directory => {
   const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'campaign.json'), destination = join(directory, 'restored.sqlite');
   const host = createHost({ databasePath: sourcePath });
@@ -85,6 +110,7 @@ test('PR #45 v3 archives retain sessions and privacy fields on restore', async (
   } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
   archive.schemaVersion = 3;
+  for (const key of ['map_scenes','map_pieces','map_links','map_encounter_scenes','map_assets','map_operations']) delete archive.data[key];
   archive.manifest.potomacDataVersion = 3;
   archive.manifest.includedCollections = ['campaign','modules','actors','encounters','encounter_participants','members','actor_grants','events','operations','offline_receipts','offline_proposals','offline_decisions','sessions','session_state','session_operations'];
   for (const table of ['lore_entries','lore_operations','lore_links','lore_assets','assets']) delete archive.data[table];
@@ -113,10 +139,11 @@ test('pre-Lore v2 campaign backups restore without synthesizing Lore records', a
   const host = createHost({ databasePath: sourcePath });
   try { exportCampaignBackup(sourcePath, backupPath); } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
-  for (const name of ['lore_entries', 'lore_operations', 'lore_links', 'lore_assets', 'sessions', 'session_state', 'session_operations', 'assets']) delete archive.data[name];
+  for (const name of ['lore_entries', 'lore_operations', 'lore_links', 'lore_assets', 'sessions', 'session_state', 'session_operations', 'assets','map_scenes','map_pieces','map_links','map_encounter_scenes','map_assets','map_operations']) delete archive.data[name];
   archive.schemaVersion = 2;
   archive.manifest.potomacDataVersion = 2;
-  archive.manifest.includedCollections = archive.manifest.includedCollections.filter(name => !['lore_entries', 'lore_operations', 'lore_links', 'lore_assets', 'sessions', 'session_state', 'session_operations', 'assets'].includes(name));
+  archive.manifest.includedCollections = archive.manifest.includedCollections.filter(name => !['lore_entries', 'lore_operations', 'lore_links', 'lore_assets', 'sessions', 'session_state', 'session_operations', 'assets','map_scenes','map_pieces','map_links','map_encounter_scenes','map_assets','map_operations'].includes(name));
+  for (const key of ['lore_entries','lore_operations','lore_links','lore_assets','sessions','session_state','session_operations','assets','map_scenes','map_pieces','map_links','map_encounter_scenes','map_assets','map_operations']) delete archive.data[key];
   delete archive.integrity;
   archive.integrity = { algorithm: 'sha256', sha256: archiveChecksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data }) };
   writeFileSync(backupPath, JSON.stringify(archive));
@@ -139,6 +166,7 @@ test('historical Lore v3 layout restores Lore records and attached assets', asyn
   } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
   archive.schemaVersion = 3; archive.manifest.potomacDataVersion = 3;
+  for (const key of ['map_scenes','map_pieces','map_links','map_encounter_scenes','map_assets','map_operations']) delete archive.data[key];
   archive.manifest.includedCollections = ['campaign','modules','actors','encounters','encounter_participants','members','actor_grants','events','operations','offline_receipts','offline_proposals','offline_decisions','lore_entries','lore_operations','lore_links','assets'];
   delete archive.data.lore_assets; delete archive.data.sessions; delete archive.data.session_state; delete archive.data.session_operations;
   delete archive.integrity;

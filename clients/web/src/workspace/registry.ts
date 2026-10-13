@@ -9,6 +9,7 @@ const definitions: BrickDefinition<unknown>[] = [
   { typeId: 'table.activity', version: 1, ownerAppId: 'table', title: 'Table Activity', supportedBindings: ['none'], defaultBinding: { mode: 'none' }, defaultSize: { w: 4, h: 3 }, resolve: (_binding, adapter) => adapter.getActivity(), render: () => null, validateOptions: isEmptyRecord },
   { typeId: 'lore.article', version: 1, ownerAppId: 'lore', title: 'Lore Article', supportedBindings: ['pinned'], defaultSize: { w: 4, h: 3 }, resolve: () => undefined, render: () => null, validateOptions: isEmptyRecord, getBindingOptions: adapter => adapter.getLoreOptions?.() ?? [] },
   { typeId: 'lore.related', version: 1, ownerAppId: 'lore', title: 'Related Lore', supportedBindings: ['follow'], defaultBinding: { mode: 'follow', contextKey: 'session.activeEncounter' }, defaultSize: { w: 4, h: 3 }, resolve: () => undefined, render: () => null, validateOptions: isEmptyRecord },
+  { typeId: 'maps.scene', version: 1, ownerAppId: 'maps', title: 'Map Scene', supportedBindings: ['pinned'], defaultBinding: { mode: 'pinned', entityId: 'unselected' }, defaultSize: { w: 6, h: 5 }, resolve: () => undefined, render: () => null, validateOptions: isEmptyRecord, getBindingOptions: adapter => adapter.getMapOptions?.() ?? [] },
 ];
 const contributions = new Map<string, BrickDefinition<unknown>>(definitions.map(definition => [definition.typeId, definition]));
 

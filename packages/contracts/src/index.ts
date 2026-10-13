@@ -81,3 +81,28 @@ export type OfflineReceipt = {
   reasonCode?: string;
   reason?: string | null;
 };
+
+/** Host-authoritative scene and piece DTOs shared by the Maps app and bricks. */
+export type MapSceneKind = "world" | "battle";
+export type MapGrid = { type: "square" | "hex" | "none"; size: number; units?: string };
+export type MapScene = {
+  id: string; campaignId: string; name: string; kind: MapSceneKind; revision: number;
+  width: number; height: number; grid: MapGrid; visibility: "gm" | "shared";
+  archived: boolean; createdAt: string; updatedAt: string;
+  gmNotes?: string;
+  encounterId?: string | null;
+  background?: { id: string; name: string; mediaType: string; byteSize: number; sha256: string } | null;
+};
+export type MapPiece = {
+  id: string; sceneId: string; kind: "actor" | "pin"; x: number; y: number;
+  visible: boolean; revision: number; actorId?: string; label?: string;
+  destination?: { sceneId: string; name: string; label: string };
+};
+export type MapSceneCommand = { operationId: string; baseRevision: number };
+export type MapSceneCreate = MapSceneCommand & Pick<MapScene, "id" | "name" | "kind" | "width" | "height"> & Partial<Pick<MapScene, "grid" | "gmNotes">> & { campaignId?: string; visibility?: "gm" };
+export type MapSceneOperation = "update" | "archive" | "restore" | "publish" | "revoke" | "piece.put" | "piece.delete" | "link.put" | "link.delete" | "encounter.set" | "background.remove";
+export type MapPieceCommand = MapSceneCommand & {
+  pieceId?: string; piece?: Omit<MapPiece, "revision">;
+};
+export type MapMutationResult = { operationId: string; status: "applied"; sceneId: string; revision: number };
+export type MapSceneQueryResult = MapScene & { pieces: MapPiece[] };
