@@ -266,3 +266,45 @@ test('backup rejects missing participants and pinned modules even after an integ
   assert.throws(() => restoreCampaignBackup(backupPath, dest), /integrity check failed/);
   assert.equal(exists(dest), false);
 }));
+
+test('v4 export includes only Lore-referenced asset bytes, ignores safe orphan objects', async () => withDirectory(async directory => {
+  const dbPath = join(directory, 'host.sqlite'), archivePath = join(directory, 'archive.json');
+  const host = createHost({ databasePath: dbPath });
+  try {
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
+      .run('article','foundation-demo','Article','now','now');
+    const bytes = Buffer.from('referenced bytes');
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const orphan = Buffer.from('orphaned but safely named bytes');
+    const orphanHash = createHash('sha256').update(orphan).digest('hex');
+    mkdirSync(`${dbPath}.assets`, { recursive: true });
+    writeFileSync(`${dbPath}.assets/${hash}`, bytes);
+    writeFileSync(`${dbPath}.assets/${orphanHash}`, orphan);
+    host.db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run('asset-1','foundation-demo','article','reference.png','image/png',bytes.length,hash,'gm','now');
+    const manifest = exportCampaignBackup(dbPath, archivePath);
+    assert.equal(manifest.potomacDataVersion, 4);
+    const archive = JSON.parse(readFileSync(archivePath, 'utf8'));
+    assert.deepEqual(archive.data.assets.map(asset => asset.sha256), [hash]);
+    assert.equal(archive.data.assets[0].bytes, bytes.toString('base64'));
+  } finally { host.close(); }
+}));
+
+test('v4 export fails rather than omitting a referenced missing or modified asset', async () => withDirectory(async directory => {
+  const dbPath = join(directory, 'host.sqlite'), archivePath = join(directory, 'archive.json');
+  const host = createHost({ databasePath: dbPath });
+  try {
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
+      .run('article','foundation-demo','Article','now','now');
+    const bytes = Buffer.from('correct bytes');
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    host.db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run('asset-1','foundation-demo','article','reference.png','image/png',bytes.length,hash,'gm','now');
+    assert.throws(() => exportCampaignBackup(dbPath, archivePath), /referenced asset .* missing or unsafe/);
+    assert.equal(exists(archivePath), false);
+    mkdirSync(`${dbPath}.assets`, { recursive: true });
+    writeFileSync(`${dbPath}.assets/${hash}`, 'tampered bytes');
+    assert.throws(() => exportCampaignBackup(dbPath, archivePath), /asset .* failed validation/);
+    assert.equal(exists(archivePath), false);
+  } finally { host.close(); }
+}));
