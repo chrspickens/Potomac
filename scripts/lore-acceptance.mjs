@@ -266,5 +266,13 @@ try {
   })));
   // Chrome's renderer processes may briefly still be closing their profile
   // after the browser socket and main process exit. Retry ENOTEMPTY cleanup.
-  rmSync(directory, { recursive: true, force: true, maxRetries: 12, retryDelay: 200 });
+  try {
+    rmSync(directory, { recursive: true, force: true, maxRetries: 12, retryDelay: 200 });
+  } catch (error) {
+    // Chromium subprocesses can recreate cache files after the browser exits.
+    // All profiles and the test DB live in this isolated disposable directory;
+    // leave cleanup to the CI runner rather than turning a PASS into a FAIL.
+    if (!['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error?.code)) throw error;
+    console.warn(`WARN: temporary Chromium files were still busy during cleanup: ${error.code}`);
+  }
 }
