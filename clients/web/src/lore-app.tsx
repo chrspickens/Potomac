@@ -1,7 +1,8 @@
-import { createContext, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { addLoreLink, createLore, fetchLoreAsset, getLoreLinks, HostRequestError, listLore, listLoreAssets, removeLoreLink, setLoreArchived, updateLore, uploadLoreAsset, type ConnectionStatus, type LoreArticle, type LoreAsset, type LoreInput, type LoreKind, type LoreLink, type Role } from './api.ts'
+import { createContext, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { addLoreLink, createLore, fetchLoreAsset, getLoreLinks, HostRequestError, listLore, listLoreAssets, removeLoreAsset, removeLoreLink, setLoreArchived, setLorePublication, updateLore, uploadLoreAsset, type ConnectionStatus, type LoreArticle, type LoreAsset, type LoreInput, type LoreKind, type LoreLink, type LoreTargetKind, type Role, type Encounter } from './api.ts'
 import { filterLore, LORE_KINDS, projectCachedPlayerLore, safeLorePreview, validateLoreImage } from './lore.ts'
 import { loadRememberedIdentity } from './identity.ts'
+import type { Actor } from './modules.ts'
 import { cacheAuthorizedLore, loadCachedAuthorizedLore } from './offline/snapshots.ts'
 import './lore.css'
 
@@ -10,7 +11,12 @@ export const LoreArticlesContext = createContext<LoreArticle[]>([])
 export const LoreTargetContext = createContext<(id?: string) => void>(() => {})
 export const LoreRelationsContext = createContext<Record<string, string[]>>({})
 
-export function LoreApp({ role, connection, targetId, initialArticles = [], onArticlesChange, hostAvailable }: { role: Role; connection: ConnectionStatus; targetId?: string; initialArticles?: LoreArticle[]; onArticlesChange?: (articles: LoreArticle[]) => void; hostAvailable: boolean }) {
+export function LoreApp({ role, connection, targetId, initialArticles = [], onArticlesChange, hostAvailable, availableActors = [], availableEncounters = [], onOpenTarget }: {
+  role: Role; connection: ConnectionStatus; targetId?: string; initialArticles?: LoreArticle[];
+  onArticlesChange?: (articles: LoreArticle[]) => void; hostAvailable: boolean;
+  availableActors?: Actor[]; availableEncounters?: Encounter[];
+  onOpenTarget?: (kind: 'actor' | 'encounter', id: string) => void
+}) {
   const [articles, setArticles] = useState<LoreArticle[]>(initialArticles)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -26,7 +32,11 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   const [links, setLinks] = useState<LoreLink[]>([])
   const [backlinks, setBacklinks] = useState<Array<{ id: string; sourceId: string; sourceTitle: string; label?: string }>>([])
   const [assets, setAssets] = useState<LoreAsset[]>([])
+  const [linkTargetKind, setLinkTargetKind] = useState<LoreTargetKind>('lore')
+  const [previews, setPreviews] = useState<Record<string,string>>({})
+  const previewUrls = useRef<string[]>([])
   const canEdit = role === 'gm' && connection === 'connected' && hostAvailable
+  useEffect(() => () => { for (const url of previewUrls.current) URL.revokeObjectURL(url); previewUrls.current = [] }, [selectedId])
 
   const reload = async () => {
     if (connection !== 'connected') {
@@ -93,7 +103,14 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
     const input = { ...form, title: form.title.trim(), tags: [...new Set(form.tags.map(item => item.trim()).filter(Boolean))] }
     try {
       const saved = selected && editing && selectedId === selected.id ? await updateLore(selected.id, selected.revision, input) : await createLore(input)
-      setArticles(current => { const next = [...current.filter(item => item.id !== saved.id), saved]; onArticlesChange?.(next); return next }); setSelectedId(saved.id); setEditing(false)
+      // Persist the article first: publishing is a distinct, audited host
+      // operation. A failed publication must never be represented as shared.
+      setArticles(current => { const next = [...current.filter(item => item.id !== saved.id), saved]; onArticlesChange?.(next); return next })
+      setSelectedId(saved.id); setEditing(false)
+      if (saved.visibility !== input.visibility) {
+        const published = await setLorePublication(saved.id, saved.revision, input.visibility === 'shared')
+        setArticles(current => { const next = current.map(item => item.id === saved.id ? { ...item, ...published } : item); onArticlesChange?.(next); return next })
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore could not be saved') }
     finally { setBusy(false) }
   }
@@ -104,12 +121,21 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore archive state could not be changed') }
     finally { setBusy(false) }
   }
+  const changePublication = async () => {
+    if (!selected || !canEdit || selected.archived) return
+    setBusy(true); setError('')
+    try {
+      const publication = await setLorePublication(selected.id, selected.revision, selected.visibility !== 'shared')
+      setArticles(current => { const next = current.map(item => item.id === selected.id ? { ...item, ...publication } : item); onArticlesChange?.(next); return next })
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not change article sharing') }
+    finally { setBusy(false) }
+  }
   const linkLore = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!selected || !canEdit) return
     const formData = new FormData(event.currentTarget)
     try {
-      await addLoreLink(selected.id, selected.revision, 'lore', String(formData.get('targetId') || ''))
+      await addLoreLink(selected.id, selected.revision, linkTargetKind, String(formData.get('targetId') || ''))
       await reload()
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore relationship could not be added') }
   }
@@ -118,11 +144,31 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
     try { await removeLoreLink(selected.id, link.id, selected.revision); await reload() }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore relationship could not be removed') }
   }
+  const removeAsset = async (asset: LoreAsset) => {
+    if (!selected || !canEdit || !window.confirm(`Remove attachment “${asset.name}” from this article?`)) return
+    setBusy(true); setError('')
+    try {
+      await removeLoreAsset(asset.id)
+      setAssets(current => current.filter(item => item.id !== asset.id))
+      setPreviews(current => { const next = { ...current }; delete next[asset.id]; return next })
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Attachment could not be removed') }
+    finally { setBusy(false) }
+  }
+  const previewAsset = async (asset: LoreAsset) => {
+    try {
+      const blob = await fetchLoreAsset(role, asset.id)
+      if (!['image/png','image/jpeg','image/gif','image/webp'].includes(blob.type)) throw new Error('Image preview is unavailable for this file type')
+      const url = URL.createObjectURL(blob)
+      previewUrls.current.push(url)
+      setPreviews(current => ({ ...current, [asset.id]: url }))
+      setError('')
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Attachment preview failed') }
+  }
   const attachFile = async (file?: File) => {
     if (!selected || !canEdit || !file) return
     const invalid = validateLoreImage(file)
     if (invalid) { setError(invalid); return }
-    try { const asset = await uploadLoreAsset(selected.id, file); setAssets(current => [...current, asset]); setError('') }
+    try { const asset = await uploadLoreAsset(selected.id, file); setAssets(current => [...current, asset]); setError(''); await previewAsset(asset) }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Attachment upload failed') }
   }
   const openAsset = async (asset: LoreAsset, download = false) => {
