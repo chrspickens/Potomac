@@ -84,7 +84,14 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   useEffect(() => { void reload() }, [role, connection])
   // The parent live snapshot must not overwrite offline cached articles with
   // an empty list while the host is unavailable.
-  useEffect(() => { if (connection === 'connected') setArticles(initialArticles) }, [initialArticles, connection])
+  useEffect(() => {
+    if (connection !== 'connected') return
+    setArticles(current => initialArticles.map(article => {
+      if (role !== 'gm') return article // Player projections are always host-authorized
+      const previous = current.find(item => item.id === article.id)
+      return previous && previous.revision > article.revision ? previous : article
+    }))
+  }, [initialArticles, connection, role])
   useEffect(() => { if (targetId) setSelectedId(targetId) }, [targetId])
   useEffect(() => {
     let cancelled = false
@@ -126,7 +133,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   const archive = async () => {
     if (!selected || !canEdit) return
     setBusy(true); setError('')
-    try { const saved = await setLoreArchived(selected.id, selected.revision, !selected.archived); setArticles(current => { const next = current.map(item => item.id === saved.id ? { ...item, ...saved } : item); onArticlesChange?.(next); return next }); setSelectedId('') }
+    try { const latest = await readLore('gm', selected.id); const saved = await setLoreArchived(selected.id, latest.article.revision, !selected.archived); setArticles(current => { const next = current.map(item => item.id === saved.id ? { ...item, ...saved } : item); onArticlesChange?.(next); return next }); setSelectedId('') }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore archive state could not be changed') }
     finally { setBusy(false) }
   }
@@ -147,13 +154,14 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
     if (!selected || !canEdit) return
     const formData = new FormData(event.currentTarget)
     try {
-      await addLoreLink(selected.id, selected.revision, linkTargetKind, String(formData.get('targetId') || ''))
+      const latest = await readLore('gm', selected.id)
+      await addLoreLink(selected.id, latest.article.revision, linkTargetKind, String(formData.get('targetId') || ''))
       await reload()
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore relationship could not be added') }
   }
   const unlinkLore = async (link: LoreLink) => {
     if (!selected || !canEdit) return
-    try { await removeLoreLink(selected.id, link.id, selected.revision); await reload() }
+    try { const latest = await readLore('gm', selected.id); await removeLoreLink(selected.id, link.id, latest.article.revision); await reload() }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore relationship could not be removed') }
   }
   const removeAsset = async (asset: LoreAsset) => {
