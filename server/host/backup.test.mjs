@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { createHost } from './index.mjs';
 import { exportCampaignBackup, restoreCampaignBackup } from './backup.mjs';
 
@@ -123,6 +124,79 @@ test('pre-Lore v2 campaign backups restore without synthesizing Lore records', a
   const restored = createHost({ databasePath: destination });
   try { assert.equal(restored.db.prepare('SELECT COUNT(*) AS n FROM lore_entries').get().n, 0); }
   finally { restored.close(); }
+}));
+
+test('historical Lore v3 layout restores Lore records and attached assets', async () => withDirectory(async directory => {
+  const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'campaign.json'), destination = join(directory, 'restored.sqlite');
+  const host = createHost({ databasePath: sourcePath });
+  try {
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run('lore-v3','foundation-demo','V3 note','now','now');
+    const bytes = Buffer.from('v3 image object');
+    const digest = createHashHex(bytes);
+    mkdirSync(`${sourcePath}.assets`, { recursive: true }); writeFileSync(`${sourcePath}.assets/${digest}`, bytes);
+    host.db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run('asset-v3','foundation-demo','lore-v3','v3.png','image/png',bytes.length,digest,'gm','now');
+    exportCampaignBackup(sourcePath, backupPath);
+  } finally { host.close(); }
+  const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  archive.schemaVersion = 3; archive.manifest.potomacDataVersion = 3;
+  archive.manifest.includedCollections = ['campaign','modules','actors','encounters','encounter_participants','members','actor_grants','events','operations','offline_receipts','offline_proposals','offline_decisions','lore_entries','lore_operations','lore_links','assets'];
+  delete archive.data.lore_assets; delete archive.data.sessions; delete archive.data.session_state; delete archive.data.session_operations;
+  delete archive.integrity;
+  archive.integrity = { algorithm: 'sha256', sha256: archiveChecksum({ format: archive.format, schemaVersion: 3, manifest: archive.manifest, data: archive.data }) };
+  writeFileSync(backupPath, JSON.stringify(archive));
+  restoreCampaignBackup(backupPath, destination);
+  const restored = createHost({ databasePath: destination });
+  try { assert.equal(restored.db.prepare('SELECT title FROM lore_entries WHERE id=?').get('lore-v3').title, 'V3 note'); }
+  finally { restored.close(); }
+  assert.equal(readFileSync(`${destination}.assets/${createHashHex(Buffer.from('v3 image object'))}`, 'utf8'), 'v3 image object');
+}));
+
+test('a halfway asset restore failure leaves the database and asset destination untouched', async () => withDirectory(async directory => {
+  const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'campaign.json'), destination = join(directory, 'restored.sqlite');
+  const host = createHost({ databasePath: sourcePath });
+  try {
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run('lore-fail','foundation-demo','Assets','now','now');
+    mkdirSync(`${sourcePath}.assets`, { recursive: true });
+    for (const text of ['first bytes','second bytes']) {
+      const bytes = Buffer.from(text), digest = createHashHex(bytes);
+      writeFileSync(`${sourcePath}.assets/${digest}`, bytes);
+      host.db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(`asset-${text[0]}`,'foundation-demo','lore-fail',`${text[0]}.bin`,'application/octet-stream',bytes.length,digest,'gm','now');
+    }
+    exportCampaignBackup(sourcePath, backupPath);
+  } finally { host.close(); }
+  const emptyDestination = new DatabaseSync(destination); emptyDestination.close();
+  const originalDestination = readFileSync(destination);
+  mkdirSync(`${destination}.assets`);
+  let writes = 0;
+  assert.throws(() => restoreCampaignBackup(backupPath, destination, { assetWriter(path, bytes, options) {
+    if (++writes === 2) throw new Error('injected halfway attachment failure');
+    writeFileSync(path, bytes, options);
+  } }), /injected halfway attachment failure/);
+  assert.deepEqual(readFileSync(destination), originalDestination);
+  assert.deepEqual(readdirSync(`${destination}.assets`), []);
+}));
+
+test('v4 restore rejects missing and extra asset objects with valid archive digests', async () => withDirectory(async directory => {
+  const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'campaign.json'), destination = join(directory, 'restored.sqlite');
+  const host = createHost({ databasePath: sourcePath });
+  try {
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run('lore-assets','foundation-demo','Assets','now','now');
+    const bytes = Buffer.from('referenced bytes'), digest = createHashHex(bytes);
+    mkdirSync(`${sourcePath}.assets`, { recursive: true }); writeFileSync(`${sourcePath}.assets/${digest}`, bytes);
+    host.db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run('asset-ref','foundation-demo','lore-assets','ref.bin','application/octet-stream',bytes.length,digest,'gm','now');
+    exportCampaignBackup(sourcePath, backupPath);
+  } finally { host.close(); }
+  const original = JSON.parse(readFileSync(backupPath, 'utf8'));
+  for (const mutate of [archive => { archive.data.assets = []; }, archive => {
+    const bytes = Buffer.from('unreferenced'), sha256 = createHashHex(bytes);
+    archive.data.assets.push({ sha256, size: bytes.length, bytes: bytes.toString('base64') });
+  }]) {
+    const invalid = structuredClone(original); mutate(invalid);
+    invalid.integrity.sha256 = archiveChecksum({ format: invalid.format, schemaVersion: invalid.schemaVersion, manifest: invalid.manifest, data: invalid.data });
+    writeFileSync(backupPath, JSON.stringify(invalid));
+    assert.throws(() => restoreCampaignBackup(backupPath, destination), /asset (objects do not match|references unavailable)/);
+    assert.equal(exists(destination), false);
+  }
 }));
 
 test('backup alteration and unsupported schemas fail before touching destination', async () => withDirectory(async directory => {

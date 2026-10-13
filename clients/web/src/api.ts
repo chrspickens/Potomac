@@ -8,11 +8,30 @@ export type LoreKind = 'location' | 'person' | 'faction' | 'quest' | 'item' | 'h
 export type LoreVisibility = 'gm' | 'shared'
 export type LoreArticle = { id: string; campaignId?: string; title: string; summary?: string; kind: LoreKind; tags: string[]; body: string; revision: number; visibility: LoreVisibility; archived: boolean; updatedAt?: string; gmNotes?: string; linkedEncounterIds?: string[] }
 export type LoreInput = Pick<LoreArticle, 'title' | 'kind' | 'tags' | 'body' | 'visibility' | 'gmNotes'>
-export type LoreLink = { id: string; linkId?: string; targetKind: string; targetId: string; targetTitle?: string; label?: string }
+export type LoreTargetKind = 'lore' | 'actor' | 'encounter'
+export type LoreLink = { id: string; linkId?: string; targetKind: LoreTargetKind; targetId: string; targetTitle?: string; label?: string }
 export type LoreBacklink = { id: string; sourceId: string; sourceTitle: string; label?: string }
 export type LoreAsset = { id: string; entryId: string; name: string; mediaType: string; byteSize: number; sha256: string; createdAt: string }
 type LoreWireArticle = LoreArticle
-function loreCommand(input: LoreInput) { return { ...input, gmNotes: input.gmNotes ?? '' } }
+function loreCommand(input: LoreInput) {
+  return {
+    type: input.kind,
+    title: input.title,
+    tags: input.tags,
+    body: input.body,
+    gmNotes: input.gmNotes ?? ''
+  }
+}
+
+function projectLoreArticle(wire: LoreWireArticle & { type?: LoreKind; published?: boolean; bodyMarkdown?: string }): LoreArticle {
+  return {
+    ...wire,
+    kind: wire.kind ?? wire.type ?? 'note',
+    body: wire.body ?? wire.bodyMarkdown ?? '',
+    visibility: wire.visibility ?? (wire.published ? 'shared' : 'gm'),
+    tags: Array.isArray(wire.tags) ? wire.tags : []
+  }
+}
 export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
@@ -167,7 +186,7 @@ export async function listLore(role: Role): Promise<LoreArticle[]> {
   let after: string | undefined
   for (let page = 0; page < 5; page += 1) {
     const result = await http<{ articles: LoreWireArticle[]; next: string | null; hasMore: boolean }>(`/api/lore?limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`, role)
-    articles.push(...result.articles)
+    articles.push(...result.articles.map(projectLoreArticle))
     if (!result.hasMore || !result.next) break
     after = result.next
   }
@@ -178,14 +197,14 @@ export async function searchLore(role: Role, query = '', options: { after?: stri
   if (options.after) params.set('after', options.after)
   if (options.limit !== undefined) params.set('limit', String(options.limit))
   const result = await http<{ articles: LoreWireArticle[]; next: string | null; hasMore: boolean }>(`/api/lore?${params}`, role)
-  return result
+  return { ...result, articles: result.articles.map(projectLoreArticle) }
 }
 export async function createLore(input: LoreInput): Promise<LoreArticle> {
   if (!baseUrl) throw new Error('Lore requires a configured host')
-  return http<LoreWireArticle>('/api/lore', 'gm', { method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), operationId: crypto.randomUUID(), baseRevision: 0, ...loreCommand(input) }) })
+  return projectLoreArticle(await http<LoreWireArticle>('/api/lore', 'gm', { method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), operationId: crypto.randomUUID(), baseRevision: 0, ...loreCommand(input) }) }))
 }
 export async function updateLore(id: string, baseRevision: number, input: LoreInput): Promise<LoreArticle> {
-  return http<LoreWireArticle>(`/api/lore/${encodeURIComponent(id)}`, 'gm', { method: 'PUT', body: JSON.stringify({ ...loreCommand(input), baseRevision, operationId: crypto.randomUUID() }) })
+  return projectLoreArticle(await http<LoreWireArticle>(`/api/lore/${encodeURIComponent(id)}`, 'gm', { method: 'PUT', body: JSON.stringify({ ...loreCommand(input), baseRevision, operationId: crypto.randomUUID() }) }))
 }
 export async function setLoreArchived(id: string, baseRevision: number, archived: boolean): Promise<{ id: string; revision: number; archived: boolean }> {
   return http(`/api/lore/${encodeURIComponent(id)}/${archived ? 'archive' : 'restore'}`, 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, operationId: crypto.randomUUID() }) })
@@ -196,7 +215,7 @@ export async function readLore(role: Role, id: string): Promise<{ article: LoreA
 export async function getLoreLinks(role: Role, id: string): Promise<{ links: LoreLink[]; backlinks: LoreBacklink[] }> {
   return http(`/api/lore/${encodeURIComponent(id)}/links`, role)
 }
-export async function addLoreLink(id: string, baseRevision: number, targetKind: 'lore' | 'encounter', targetId: string, label = ''): Promise<unknown> {
+export async function addLoreLink(id: string, baseRevision: number, targetKind: LoreTargetKind, targetId: string, label = ''): Promise<unknown> {
   return http(`/api/lore/${encodeURIComponent(id)}/links`, 'gm', { method: 'PUT', body: JSON.stringify({ operationId: crypto.randomUUID(), baseRevision, targetKind, targetId, ...(label.trim() ? { label: label.trim() } : {}) }) })
 }
 export async function removeLoreLink(id: string, linkId: string, baseRevision: number): Promise<unknown> {
@@ -217,6 +236,9 @@ export async function fetchLoreAsset(role: Role, id: string): Promise<Blob> {
   const response = await fetch(`${baseUrl}/api/assets/${encodeURIComponent(id)}/content`, { headers: { authorization: `Bearer ${tokenFor(role)}` } })
   if (!response.ok) { const body = await response.json().catch(() => ({})); throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status) }
   return response.blob()
+}
+export async function removeLoreAsset(id: string): Promise<void> {
+  await http(`/api/assets/${encodeURIComponent(id)}`, 'gm', { method: 'DELETE' })
 }
 export async function listLoreLinkedToEncounter(role: Role, encounterId: string): Promise<LoreArticle[]> {
   if (!baseUrl) return []

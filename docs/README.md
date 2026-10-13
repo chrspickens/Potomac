@@ -15,6 +15,7 @@ Implementation note (2026-10-11): the Workspace 0.2 localhost experiment uses SS
 | [Workspace 0.4 requirements](workspace-0.4-requirements.md) | First playable single-campaign workflow, contracts, authorization, migrations and backup/restore ([tracker #26](https://github.com/chrspickens/Potomac/issues/26)) |
 | [Workspace 0.5 requirements](workspace-0.5-requirements.md) | Live Table session lifecycle, module-neutral action/roll contracts, role-filtered projections, recovery and browser acceptance ([issue #35](https://github.com/chrspickens/Potomac/issues/35)) |
 | [Workspace 0.6 requirements](workspace-0.6-requirements.md) | Generic Lore articles, host-filtered sharing, stable links, managed assets, read-only offline access and portable backup ([issue #47](https://github.com/chrspickens/Potomac/issues/47)) |
+| [Lore manual QA](lore-manual-qa.md) | GM/two-player release checklist, backup compatibility, attachment handling and recorded automated results |
 | [Engineering standards](engineering-standards.md) | Code organization, module contracts, security, UX, and testing expectations |
 | [Agent and developer diagnostics](agent-debugging.md) | Localhost-only debug commands and isolated smoke checks |
 | [Architectural decision records](adr/README.md) | Template and decision-record conventions |

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,6 +36,10 @@ const canonicalize = value => Array.isArray(value) ? value.map(canonicalize)
 const checksum = value => createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
 const checksumBytes = value => createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(`Backup ${message}`); };
+const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
+const MAX_ASSETS = 10_000;
+const MAX_ASSET_BYTES = 64 * 1024 * 1024;
+const MAX_TOTAL_ASSET_BYTES = 384 * 1024 * 1024;
 
 function validateArchive(archive, modulesDirectory) {
   if (!archive || archive.format !== BACKUP_FORMAT || ![2, 3, BACKUP_SCHEMA_VERSION].includes(archive.schemaVersion)) fail('format or schema version is unsupported');
@@ -121,8 +125,13 @@ function validateArchive(archive, modulesDirectory) {
   for (const row of archive.data.lore_links) if (row.campaign_id !== archive.manifest.campaignId || !loreIds.has(row.source_id) || !['lore', 'actor', 'encounter'].includes(row.target_kind) || (row.target_kind === 'lore' && !loreIds.has(row.target_id)) || (row.target_kind === 'actor' && !actors.has(row.target_id)) || (row.target_kind === 'encounter' && !encounterIds.has(row.target_id))) fail('Lore link references an unavailable record');
   for (const asset of archive.data.lore_assets) if (!loreIds.has(asset.entry_id) || asset.campaign_id !== archive.manifest.campaignId || !Number.isSafeInteger(asset.byte_size) || asset.byte_size < 0 || !/^[a-f0-9]{64}$/.test(asset.sha256) || !archive.data.assets.some(bytes => bytes.sha256 === asset.sha256 && bytes.size === asset.byte_size)) fail('Lore asset references unavailable metadata or bytes');
   for (const row of archive.data.assets) {
-    if (!/^[a-f0-9]{64}$/.test(row.sha256) || !Number.isSafeInteger(row.size) || row.size < 0 || Buffer.from(row.bytes, 'base64').toString('base64') !== row.bytes || Buffer.from(row.bytes, 'base64').length !== row.size || checksumBytes(Buffer.from(row.bytes, 'base64')) !== row.sha256) fail('asset bytes failed validation');
+    if (!row || !/^[a-f0-9]{64}$/.test(row.sha256) || !Number.isSafeInteger(row.size) || row.size < 0 || row.size > MAX_ASSET_BYTES || typeof row.bytes !== 'string' || Buffer.from(row.bytes, 'base64').toString('base64') !== row.bytes || Buffer.from(row.bytes, 'base64').length !== row.size || checksumBytes(Buffer.from(row.bytes, 'base64')) !== row.sha256) fail('asset bytes failed validation');
   }
+  if (archive.data.assets.length > MAX_ASSETS || archive.data.assets.reduce((total, asset) => total + asset.size, 0) > MAX_TOTAL_ASSET_BYTES) fail('asset collection exceeds supported bounds');
+  if (new Set(archive.data.assets.map(asset => asset.sha256)).size !== archive.data.assets.length) fail('asset objects are duplicated');
+  const assetHashes = new Set(archive.data.assets.map(asset => asset.sha256));
+  const referencedHashes = new Set(archive.data.lore_assets.map(asset => asset.sha256));
+  if (archiveLayout === 'v4' && (assetHashes.size !== referencedHashes.size || [...assetHashes].some(hash => !referencedHashes.has(hash)))) fail('asset objects do not match Lore references');
   return archive;
 }
 
@@ -162,9 +171,14 @@ export function exportCampaignBackup(databasePath, outputPath, { modulesDirector
   }
 }
 
-export function restoreCampaignBackup(inputPath, destinationPath, { modulesDirectory = bundledModulesDirectory, assetsDirectory = `${resolve(destinationPath)}.assets` } = {}) {
+export function restoreCampaignBackup(inputPath, destinationPath, { modulesDirectory = bundledModulesDirectory, assetsDirectory = `${resolve(destinationPath)}.assets`, assetWriter = writeFileSync } = {}) {
   let archive;
-  try { archive = JSON.parse(readFileSync(resolve(inputPath), 'utf8')); } catch { fail('archive is unreadable or malformed JSON'); }
+  try {
+    if (statSync(resolve(inputPath)).size > MAX_ARCHIVE_BYTES) fail('archive exceeds supported size');
+    const archiveBytes = readFileSync(resolve(inputPath));
+    if (archiveBytes.length > MAX_ARCHIVE_BYTES) fail('archive exceeds supported size');
+    archive = JSON.parse(archiveBytes.toString('utf8'));
+  } catch (error) { if (error.message?.startsWith('Backup archive exceeds')) throw error; fail('archive is unreadable or malformed JSON'); }
   validateArchive(archive, modulesDirectory);
   const target = resolve(destinationPath);
   if (existsSync(target)) {
@@ -179,8 +193,18 @@ export function restoreCampaignBackup(inputPath, destinationPath, { modulesDirec
     } finally { check.close(); }
   }
   if (existsSync(assetsDirectory) && readdirSync(assetsDirectory).length) fail('asset destination is not empty');
-  const db = new DatabaseSync(target);
+  const stageId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const stagedTarget = `${target}.restore-${stageId}`;
+  const stagedAssets = `${assetsDirectory}.restore-${stageId}`;
+  const previousAssets = `${assetsDirectory}.previous-${stageId}`;
+  const previousTarget = `${target}.previous-${stageId}`;
+  let stagedDb;
+  let movedOldAssets = false;
+  let movedOldTarget = false;
+  let publishedAssets = false;
   try {
+    stagedDb = new DatabaseSync(stagedTarget);
+    const db = stagedDb;
     db.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;');
     const schemaSql = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8').match(/const schema = `([\s\S]*?)`;/)?.[1];
     if (!schemaSql) fail('host schema could not be loaded');
@@ -203,16 +227,25 @@ export function restoreCampaignBackup(inputPath, destinationPath, { modulesDirec
       }));
     }
     db.exec('COMMIT;');
-    mkdirSync(assetsDirectory, { recursive: true });
-    for (const asset of archive.data.assets) writeFileSync(resolve(assetsDirectory, asset.sha256), Buffer.from(asset.bytes, 'base64'), { flag: 'wx' });
+    db.close(); stagedDb = undefined;
+    mkdirSync(stagedAssets);
+    for (const asset of archive.data.assets) assetWriter(resolve(stagedAssets, asset.sha256), Buffer.from(asset.bytes, 'base64'), { flag: 'wx' });
+    if (existsSync(assetsDirectory)) { renameSync(assetsDirectory, previousAssets); movedOldAssets = true; }
+    renameSync(stagedAssets, assetsDirectory); publishedAssets = true;
+    if (existsSync(target)) { renameSync(target, previousTarget); movedOldTarget = true; }
+    renameSync(stagedTarget, target);
+    if (movedOldAssets) { try { rmSync(previousAssets, { recursive: true, force: true }); } catch { /* restore is committed; retain recoverable backup if cleanup fails */ } }
+    if (movedOldTarget) { try { rmSync(previousTarget, { force: true }); } catch { /* restore is committed; retain recoverable backup if cleanup fails */ } }
   } catch (error) {
-    try { db.exec('ROLLBACK;'); } catch { /* transaction may already have rolled back */ }
-    db.close();
-    rmSync(target, { force: true }); rmSync(`${target}-wal`, { force: true }); rmSync(`${target}-shm`, { force: true });
-    if (existsSync(assetsDirectory) && !readdirSync(assetsDirectory).length) rmSync(assetsDirectory, { recursive: true, force: true });
+    try { stagedDb?.exec('ROLLBACK;'); } catch { /* transaction may already have rolled back */ }
+    try { stagedDb?.close(); } catch { /* database may already be closed */ }
+    rmSync(stagedTarget, { force: true }); rmSync(`${stagedTarget}-wal`, { force: true }); rmSync(`${stagedTarget}-shm`, { force: true });
+    rmSync(stagedAssets, { recursive: true, force: true });
+    if (publishedAssets) rmSync(assetsDirectory, { recursive: true, force: true });
+    if (movedOldAssets) renameSync(previousAssets, assetsDirectory);
+    if (movedOldTarget) renameSync(previousTarget, target);
     throw error;
   }
-  db.close();
   return archive.manifest;
 }
 

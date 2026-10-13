@@ -1,15 +1,94 @@
 // Focused Lore HTTP/privacy acceptance: pnpm acceptance:lore
 // Exercises the current host contract against a disposable SQLite database.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolve } from 'node:path';
 import { createHost } from '../server/host/index.mjs';
 
 const directory = mkdtempSync(join(tmpdir(), 'potomac-lore-acceptance-'));
 const gmToken = 'lore-acceptance-gm';
 let host;
 let baseUrl;
+const root = resolve(import.meta.dirname, '..');
+const chromePath = [process.env.POTOMAC_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean).find(existsSync);
+const children = [];
+let browserSocket;
+let sequence = 0;
+const pending = new Map();
+
+function start(command, args, options = {}) {
+  const child = spawn(command, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk.toString(); });
+  child.stderr.on('data', chunk => { output += chunk.toString(); });
+  children.push({ child, getOutput: () => output });
+  return children.at(-1);
+}
+
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  return port;
+}
+
+async function waitFor(url, label, timeoutMs = 30000) {
+  const started = Date.now(); let lastError;
+  while (Date.now() - started < timeoutMs) {
+    try { const response = await fetch(url); if (response.ok) return response; lastError = new Error(`HTTP ${response.status}`); }
+    catch (error) { lastError = error; }
+    await delay(120);
+  }
+  throw new Error(`${label} did not become ready: ${lastError?.message || 'timeout'}`);
+}
+
+function cdp(method, params = {}, sessionId) {
+  return new Promise((resolve, reject) => {
+    const id = ++sequence;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, 12000);
+    pending.set(id, message => { clearTimeout(timer); message.error ? reject(new Error(`CDP ${method}: ${message.error.message}`)) : resolve(message.result); });
+    browserSocket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+}
+
+async function evaluate(sessionId, expression) {
+  const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId);
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+  return result.result.value;
+}
+
+async function waitForExpression(sessionId, expression, label, timeoutMs = 15000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try { if (await evaluate(sessionId, expression)) return; } catch {}
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for ${label}: ${await evaluate(sessionId, 'document.body.innerText.slice(0,500)').catch(() => '')}`);
+}
+
+async function clickText(sessionId, text, selector = 'button') {
+  const clicked = await evaluate(sessionId, `(() => { const el=[...document.querySelectorAll(${JSON.stringify(selector)})].find(item=>item.textContent.trim().includes(${JSON.stringify(text)})); if(!el || el.disabled) return false; el.click(); return true })()`);
+  assert.equal(clicked, true, `Enabled ${selector} containing “${text}” exists`);
+}
+
+async function openLoreClient(contextId, role, url) {
+  const { targetId } = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: contextId });
+  const { sessionId } = await cdp('Target.attachToTarget', { targetId, flatten: true });
+  await cdp('Page.enable', {}, sessionId); await cdp('Runtime.enable', {}, sessionId); await cdp('Page.navigate', { url }, sessionId);
+  await waitForExpression(sessionId, 'Boolean(document.querySelector("nav[aria-label=Applications]"))', `${role} application shell`);
+  await evaluate(sessionId, `(() => { const select=document.querySelector('.topbar-right select'); if(select.value!==${JSON.stringify(role)}) { select.value=${JSON.stringify(role)}; select.dispatchEvent(new Event('change',{bubbles:true})); } })()`);
+  await waitForExpression(sessionId, "document.querySelector('.status')?.textContent.includes('CONNECTED')", `${role} authorized host connection`);
+  await clickText(sessionId, 'Lore', 'nav[aria-label="Applications"] button');
+  await waitForExpression(sessionId, "document.querySelector('.lore-page h1')?.textContent.includes('Lore')", `${role} Lore app`);
+  return { sessionId };
+}
 
 async function startHost() {
   host = createHost({ databasePath: join(directory, 'host.sqlite'), gmToken, playerToken: 'lore-acceptance-unused', seedDemo: false });
@@ -33,6 +112,8 @@ try {
   const enrolled = await json(await request('/api/members/enroll', gmToken, { method: 'POST', body: JSON.stringify({ displayName: 'Lore Reader' }) }));
   assert.equal(enrolled.status, 201);
   const playerToken = enrolled.body.credential;
+  const enrolledSecond = await json(await request('/api/members/enroll', gmToken, { method: 'POST', body: JSON.stringify({ displayName: 'Lore Reader Two' }) }));
+  assert.equal(enrolledSecond.status, 201);
 
   const invalidCredential = await request('/api/lore', 'invalid-lore-credential');
   assert.equal(invalidCredential.status, 401, 'Lore reads require host authentication');
@@ -94,16 +175,7 @@ try {
   assert.equal((await json(await request('/api/lore', playerToken))).body.articles.length, 0, 'unpublished Lore is unavailable to players');
   assert.equal((await json(await request(`/api/lore/${encodeURIComponent(loreId)}`, playerToken))).status, 404);
 
-  const uiSource = readFileSync(new URL('../clients/web/src/lore-app.tsx', import.meta.url), 'utf8');
-  const apiSource = readFileSync(new URL('../clients/web/src/api.ts', import.meta.url), 'utf8');
-  assert.match(uiSource, /<h1>Lore &amp; handouts<\/h1>/, 'Lore application surface is present');
-  assert.match(uiSource, /Preview safely/, 'Lore UI exposes a safe text preview');
-  assert.ok(apiSource.includes("/api/lore/${encodeURIComponent(id)}/${archived ? 'archive' : 'restore'}"), 'archive API path is wired');
-
-  assert.match(apiSource, /export type LoreKind = /, 'client declares an explicit Lore kind contract');
-  assert.match(apiSource, /export type LoreVisibility = /, 'client declares an explicit Lore visibility contract');
-  assert.match(apiSource, /kind: LoreKind/, 'client Lore articles carry kind explicitly');
-  assert.match(apiSource, /visibility: LoreVisibility/, 'client Lore articles carry visibility explicitly');
+  assert.ok(chromePath, 'Chrome or Edge is available for real browser acceptance; set POTOMAC_CHROME if needed');
   const archiveResponse = await request(`/api/lore/${encodeURIComponent(loreId)}/archive`, gmToken, {
     method: 'PUT', body: JSON.stringify({ operationId: 'lore-client-archive-shape', baseRevision: 3 })
   });
@@ -114,11 +186,72 @@ try {
   assert.ok(archiveEvent, 'archive event has the explicit lore.archived kind');
   assert.equal(archiveEvent.visibility, 'gm', 'archive event visibility is explicit');
 
-  console.log('PASS: Lore creation, publication/revocation/archive, explicit kind and visibility contracts, GM/player projections, authorization, event filtering, and client wire alignment.');
+  // Drive the actual Lore app in three isolated Chromium browser contexts.
+  const ports = await Promise.all([freePort(), freePort(), freePort(), freePort()]);
+  const [gmPort, playerPort, secondPlayerPort, debugPort] = ports;
+  for (const [port, playerCredential] of [[gmPort, 'unused-gm-player'], [playerPort, playerToken], [secondPlayerPort, enrolledSecond.body.credential]]) {
+    start(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
+      cwd: join(root, 'clients/web'), env: { ...process.env, VITE_POTOMAC_HOST: baseUrl, VITE_POTOMAC_GM_TOKEN: gmToken, VITE_POTOMAC_PLAYER_TOKEN: playerCredential },
+    });
+    await waitFor(`http://127.0.0.1:${port}/`, `Lore web client ${port}`);
+  }
+  start(chromePath, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--remote-allow-origins=*', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${join(directory, 'chrome')}`, 'about:blank']);
+  const version = await (await waitFor(`http://127.0.0.1:${debugPort}/json/version`, 'Chrome DevTools')).json();
+  browserSocket = new WebSocket(version.webSocketDebuggerUrl);
+  await new Promise((resolvePromise, reject) => { browserSocket.addEventListener('open', resolvePromise, { once: true }); browserSocket.addEventListener('error', reject, { once: true }); });
+  browserSocket.addEventListener('message', event => {
+    const message = JSON.parse(event.data);
+    if (message.id) { const callback = pending.get(message.id); pending.delete(message.id); callback?.(message); }
+  });
+  const gmContext = await cdp('Target.createBrowserContext');
+  const playerContext = await cdp('Target.createBrowserContext');
+  const secondPlayerContext = await cdp('Target.createBrowserContext');
+  const gmBrowser = await openLoreClient(gmContext.browserContextId, 'gm', `http://127.0.0.1:${gmPort}/`);
+  const playerBrowser = await openLoreClient(playerContext.browserContextId, 'player', `http://127.0.0.1:${playerPort}/`);
+  const secondPlayerBrowser = await openLoreClient(secondPlayerContext.browserContextId, 'player', `http://127.0.0.1:${secondPlayerPort}/`);
+  await clickText(gmBrowser.sessionId, 'New article', '.lore-page button');
+  await waitForExpression(gmBrowser.sessionId, "Boolean(document.querySelector('.lore-page form'))", 'GM Lore editor');
+  const uiCreated = await evaluate(gmBrowser.sessionId, `(() => {
+    const set = (label, value) => { const control = [...document.querySelectorAll('label')].find(item => item.textContent.trim().startsWith(label))?.querySelector('input,textarea'); if (!control) return false; const setter = Object.getOwnPropertyDescriptor(control.__proto__, 'value')?.set; setter?.call(control, value); control.dispatchEvent(new Event('input', { bubbles: true })); control.dispatchEvent(new Event('change', { bubbles: true })); return true };
+    return set('Title', 'UI Created Atlas') && set('Article body', 'Created through the Lore editor.');
+  })()`);
+  assert.equal(uiCreated, true, 'Lore editor fields are available');
+  await clickText(gmBrowser.sessionId, 'Save on host', '.lore-page button');
+  await waitForExpression(gmBrowser.sessionId, "document.body.innerText.includes('UI Created Atlas')", 'UI-created Lore article');
+  const browserArticle = await json(await request('/api/lore', gmToken, { method: 'POST', body: JSON.stringify({ id: 'lore-browser-shared', operationId: 'lore-browser-shared-create', baseRevision: 0, type: 'location', title: 'Browser Shared Atlas', body: 'A **shared** passage with a safe preview.', gmNotes: 'UI_ONLY_GM_SECRET', tags: ['browser', 'acceptance'] }) }));
+  assert.equal(browserArticle.status, 201);
+  const browserPublished = await json(await request('/api/lore/lore-browser-shared/publication', gmToken, { method: 'PUT', body: JSON.stringify({ operationId: 'lore-browser-shared-publish', baseRevision: 1, published: true }) }));
+  assert.equal(browserPublished.status, 200);
+  await waitForExpression(gmBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('Browser Shared Atlas'))", 'GM Lore list');
+  await waitForExpression(playerBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('Browser Shared Atlas'))", 'player A receives shared article');
+  await waitForExpression(secondPlayerBrowser.sessionId, "[...document.querySelectorAll('.lore-list button')].some(item=>item.textContent.includes('Browser Shared Atlas'))", 'player B receives shared article');
+  await clickText(gmBrowser.sessionId, 'Browser Shared Atlas', '.lore-list button');
+  await clickText(playerBrowser.sessionId, 'Browser Shared Atlas', '.lore-list button');
+  await clickText(secondPlayerBrowser.sessionId, 'Browser Shared Atlas', '.lore-list button');
+  assert.equal(await evaluate(gmBrowser.sessionId, "document.querySelector('.lore-article .gm-note')?.textContent.includes('UI_ONLY_GM_SECRET')"), true, 'GM UI shows GM notes');
+  for (const browser of [playerBrowser, secondPlayerBrowser]) {
+    const visible = await evaluate(browser.sessionId, 'document.body.innerText');
+    assert.ok(visible.includes('A shared passage'), 'player UI renders the shared article');
+    assert.ok(!visible.includes('UI_ONLY_GM_SECRET'), 'GM-only note is absent from both player DOMs');
+  }
+  const playerPayload = await request('/api/lore/lore-browser-shared', playerToken);
+  const playerPayloadBytes = await playerPayload.text();
+  assert.equal(playerPayload.status, 200);
+  assert.ok(!playerPayloadBytes.includes('UI_ONLY_GM_SECRET'), 'GM notes are absent from actual player HTTP response bytes');
+
+  console.log('PASS: Lore HTTP authorization/projection/event privacy plus real GM, player A and player B browser contexts; GM creation and all three shared-article views render correctly, and GM notes remain private.');
 } catch (error) {
   console.error(`FAIL: ${error.stack || error.message}`);
   process.exitCode = 1;
 } finally {
   stopHost();
+  try { if (browserSocket?.readyState === WebSocket.OPEN) await cdp('Browser.close'); } catch {}
+  try { browserSocket?.close(); } catch {}
+  for (const { child } of [...children].reverse()) if (child.exitCode === null) child.kill('SIGTERM');
+  await Promise.all(children.map(({ child }) => new Promise(resolvePromise => {
+    if (child.exitCode !== null) return resolvePromise();
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolvePromise(); }, 2500);
+    child.once('exit', () => { clearTimeout(timer); resolvePromise(); });
+  })));
   rmSync(directory, { recursive: true, force: true });
 }

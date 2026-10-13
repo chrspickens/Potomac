@@ -1,12 +1,12 @@
 # Potomac Workspace 0.6 — Lore and Handouts requirements
 
-**Status:** Proposed requirements baseline; documentation only
+**Status:** Implemented baseline; acceptance and remaining gaps tracked separately
 **Version:** 0.6.0-draft.1
 **Scope:** Campaign-owned Lore articles, stable links, deliberately shared projections, managed attachment assets, search, offline read-only access, and portable backup for the existing one-campaign host.
 **Specification issue:** [#47](https://github.com/chrspickens/Potomac/issues/47) · **Tracker:** [#46](https://github.com/chrspickens/Potomac/issues/46)
 **Related:** [Workspace 0.4](workspace-0.4-requirements.md) · [Workspace 0.5](workspace-0.5-requirements.md) · [Architecture](architecture.md) · [Engineering standards](engineering-standards.md) · [ADR-0011](adr/0011-lore-records-and-markdown.md) · [ADR-0012](adr/0012-lore-sharing-and-revocation.md) · [ADR-0013](adr/0013-managed-assets-and-portable-backup.md)
 
-> This is a target contract, not evidence of implementation. The current host uses SQLite, authenticated HTTP, SSE notifications and a version-2 JSON campaign backup; it does not yet implement Lore records, Lore assets, or Lore migrations. This milestone adds no executable module behavior and keeps the existing one-campaign, loopback-host boundary.
+> This document records the 0.6 contract. The current checkout implements Lore records, sharing, links, managed attachments and v4 campaign backups on the existing one-campaign, localhost-only host. Run `pnpm acceptance:lore` for isolated three-context UI and HTTP privacy coverage. Manual visual/release QA is tracked in [Lore manual QA](lore-manual-qa.md); passing automated checks is not manual signoff.
 
 ## 1. Outcome and boundaries
 
@@ -106,7 +106,7 @@ Migration from the current 0.5 host adds Lore tables/indexes and version metadat
 
 Portable export advances the campaign archive to the next format version (v4 unless an intervening released version requires a higher successor). It includes entries, links, asset metadata, required audit/operation history, and actual binary asset bytes with per-asset byte size and SHA-256. Bytes are encoded in a deterministic archive representation and associated with an opaque asset ID, never a host filesystem path. Archive-level integrity covers manifest, database records, and every asset byte. Restore validates archive/version, checksums, quotas, uniqueness, campaign identity, all references, Markdown asset references, MIME allowlist and size limits before modifying destination. It restores only to a new/empty destination under the existing 0.4/0.5 rule; no merge or overwrite. Import existing supported v2 and v3 archives without inventing Lore records/assets; preserve their existing data and migrate to the current DB schema. Unsupported/corrupt archives fail before destination mutation. Restore stages bytes and SQLite transactionally and removes only its own newly created destination artifacts on failure.
 
-The current checkout's backup writer/importer is v2, so v3 compatibility is a forward compatibility requirement for any v3 artifact produced before implementation, not a claim that this checkout currently writes v3. Any deployed v3 shape must be pinned with a fixture/spec before the importer is implemented. Never claim v2/v3 import works based on this requirements document.
+The current checkout writes v4. The importer recognizes v2 and two precise v3 collection layouts: the earlier Table-session layout and the short-lived Lore/asset layout. This distinction matters because both historical shapes used schema version 3. Compatibility claims are limited to the fixtures in `server/host/backup.test.mjs`; an unknown v3 collection layout is rejected. Version 2 predates session history and Lore/assets, so restore supplies safe defaults and cannot recreate absent data. Backup/restore is only to a new or empty destination; it does not merge or overwrite.
 
 ## 7. Acceptance scenarios
 

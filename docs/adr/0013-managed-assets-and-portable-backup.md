@@ -5,7 +5,7 @@
 
 ## Context
 
-Lore attachments need durable IDs, access checks, integrity and safe backup/restore. Storing arbitrary client paths or exposing a static directory risks path traversal and bypasses authorization. Backing up only SQLite metadata would create restored records with missing files. The current campaign backup is a versioned JSON archive (v2 in this checkout), and 0.5 requires preserving prior backup imports.
+Lore attachments need durable IDs, access checks, integrity and safe backup/restore. Storing arbitrary client paths or exposing a static directory risks path traversal and bypasses authorization. Backing up only SQLite metadata would create restored records with missing files. The campaign archive is versioned; this checkout writes v4 and preserves pinned v2/v3 import layouts.
 
 ## Options considered
 
@@ -17,7 +17,7 @@ Lore attachments need durable IDs, access checks, integrity and safe backup/rest
 
 Asset metadata and references are SQLite-owned; bytes reside under a host-managed storage root keyed only by opaque host-generated values. Enforce an allowlist by detected content, per-file and campaign quotas, hard streaming limits, SHA-256 verification, atomic staged writes and cleanup of incomplete uploads. Downloads are authenticated host operations; no user path is opened or served.
 
-Campaign backup advances to v4 (or the next successor if another format ships first), containing Lore rows, links, asset metadata and actual binary bytes with sizes and hashes, under archive-wide integrity. Restore validates all bytes/references before changing a new or empty destination. Import supported v2 and v3 artifacts without inventing Lore content; current checkout support is v2, and any v3 format must be pinned with a fixture before implementation. No merge or overwrite is introduced.
+Campaign backup uses v4, containing Lore rows, links, asset metadata and actual binary bytes with sizes and hashes, under archive-wide integrity. Restore validates bytes and references before importing into a new or empty destination. The importer accepts v2 plus two fixture-pinned v3 layouts (Table-session and earlier Lore/asset); it does not infer compatibility from version alone. No merge or overwrite is introduced.
 
 ## Consequences
 
@@ -25,4 +25,4 @@ Backup size grows with attachments and restore must stage both database and file
 
 ## Follow-up / validation
 
-Test traversal attempts, MIME spoofing, oversized/interrupted uploads, duplicate hashes, cleanup, access revocation, archive corruption, rollback, v2/v3 import fixtures and complete asset-byte round trips. See [Workspace 0.6 requirements](../workspace-0.6-requirements.md) and [issue #47](https://github.com/chrspickens/Potomac/issues/47).
+Test traversal attempts, MIME spoofing, oversized/interrupted uploads, duplicate hashes, cleanup, access revocation, archive corruption, rollback, v2/v3 import fixtures and complete asset-byte round trips. Verified backup layouts are recorded in [host backup tests](../../server/host/backup.test.mjs). See [Workspace 0.6 requirements](../workspace-0.6-requirements.md) and [manual Lore QA](../lore-manual-qa.md).
