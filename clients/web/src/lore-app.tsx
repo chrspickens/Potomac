@@ -34,6 +34,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   const [assets, setAssets] = useState<LoreAsset[]>([])
   const [linkTargetKind, setLinkTargetKind] = useState<LoreTargetKind>('lore')
   const [previews, setPreviews] = useState<Record<string,string>>({})
+  const [offlineCachedAt, setOfflineCachedAt] = useState<number | null>(null)
   const previewUrls = useRef<string[]>([])
   const canEdit = role === 'gm' && connection === 'connected' && hostAvailable
   useEffect(() => () => { for (const url of previewUrls.current) URL.revokeObjectURL(url); previewUrls.current = [] }, [selectedId])
@@ -46,6 +47,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
         if (identity) try {
           const cached = await loadCachedAuthorizedLore(identity)
           const rows = projectCachedPlayerLore(cached)
+          setOfflineCachedAt(Math.max(0, ...cached.map(entry => entry.cachedAt ?? 0)) || null)
           setArticles(rows); onArticlesChange?.(rows)
         } catch (cause) { setError(cause instanceof Error ? cause.message : 'Cached Lore could not be loaded') }
       }
@@ -53,14 +55,15 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
     }
     setLoading(true)
     try {
-      const result = await listLore(role); setArticles(result); onArticlesChange?.(result); setError('')
+      const result = await listLore(role); setArticles(result); onArticlesChange?.(result); setOfflineCachedAt(null); setError('')
       if (role === 'player') {
         const host = import.meta.env.VITE_POTOMAC_HOST?.replace(/\/$/, '')
         const identity = host ? loadRememberedIdentity(host) : null
         if (identity) {
+          const cachedAt = Date.now()
           const entries = await Promise.all(result.map(async article => {
             const detail = await getLoreLinks(role, article.id)
-            return { id: article.id, revision: article.revision, article: article as unknown as Record<string, unknown>, links: [...detail.links, ...detail.backlinks] as unknown as Array<Record<string, unknown>> }
+            return { id: article.id, revision: article.revision, article: article as unknown as Record<string, unknown>, links: [...detail.links, ...detail.backlinks] as unknown as Array<Record<string, unknown>>, cachedAt }
           }))
           await cacheAuthorizedLore(identity, entries)
         }
@@ -75,7 +78,9 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
     finally { setLoading(false) }
   }
   useEffect(() => { void reload() }, [role, connection])
-  useEffect(() => { setArticles(initialArticles) }, [initialArticles])
+  // The parent live snapshot must not overwrite offline cached articles with
+  // an empty list while the host is unavailable.
+  useEffect(() => { if (connection === 'connected') setArticles(initialArticles) }, [initialArticles, connection])
   useEffect(() => { if (targetId) setSelectedId(targetId) }, [targetId])
   useEffect(() => {
     let cancelled = false
@@ -183,7 +188,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
 
   return <main className="lore-page">
       <div className="page-intro"><div><p className="eyebrow">APPLICATION / LORE</p><h1>Lore &amp; handouts</h1><p>Browse campaign articles by type and tag. The host filters content by visibility.</p></div>{canEdit && <button className="primary" onClick={() => { setSelectedId(''); startEdit() }}>New article</button>}</div>
-    {connection === 'disconnected' && <p role="status" className="capability-note">Host disconnected. Cached authorized Lore is read-only; previously downloaded data may remain on this device after access is revoked.</p>}
+    {connection === 'disconnected' && <p role="status" className="capability-note">Host disconnected. Previously authorized Lore is read-only and stale{offlineCachedAt ? ` (last synchronized ${new Date(offlineCachedAt).toLocaleString()})` : ' (sync date unavailable)'}. Previously downloaded data may remain on this device after access is revoked.</p>}
     {!hostAvailable && <p role="status" className="capability-note">Lore requires a configured host; local preview has no Lore storage.</p>}
     {error && <p role="alert" className="error-banner">{error}{/revision|conflict|stale/i.test(error) ? ' Reload the latest article before editing again.' : ''}<button onClick={() => void reload()}>Retry</button></p>}
     <div className="lore-layout"><aside className="lore-browser"><label>Search<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Title, tags, or text" /></label>{role === 'gm' && <label>Type<select value={kind} onChange={event => setKind(event.target.value as LoreKind | 'all')}><option value="all">All types</option>{LORE_KINDS.map(value => <option key={value} value={value}>{value}</option>)}</select></label>}{role === 'gm' && <label>Tag<input value={tag} onChange={event => setTag(event.target.value)} placeholder="Any tag" /></label>}{role === 'gm' && <label className="lore-check"><input type="checkbox" checked={showArchived} onChange={event => setShowArchived(event.target.checked)} /> Show archived</label>}
