@@ -122,6 +122,11 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 15000
 }
 
 async function clickText(sessionId, text, selector = 'button') {
+  await waitForExpression(sessionId, `(() => {
+    const target = [...document.querySelectorAll(${JSON.stringify(selector)})]
+      .find(element => element.textContent.trim().includes(${JSON.stringify(text)}));
+    return Boolean(target && !target.disabled);
+  })()`, `enabled ${text} control`);
   const result = await evaluate(sessionId, `(() => {
     const target = [...document.querySelectorAll(${JSON.stringify(selector)})]
       .find(element => element.textContent.trim().includes(${JSON.stringify(text)}));
@@ -132,6 +137,7 @@ async function clickText(sessionId, text, selector = 'button') {
 }
 
 async function clickSelector(sessionId, selector) {
+  await waitForExpression(sessionId, `(() => { const target=document.querySelector(${JSON.stringify(selector)}); return Boolean(target && !target.disabled); })()`, `enabled ${selector}`);
   const clicked = await evaluate(sessionId, `(() => {
     const target = document.querySelector(${JSON.stringify(selector)});
     if (!target) return { clicked: false, navLabel: document.querySelector('nav')?.getAttribute('aria-label') || null };
