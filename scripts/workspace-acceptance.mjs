@@ -103,8 +103,10 @@ async function click(sessionId, selector) {
 }
 
 async function clickText(sessionId, text, selector = 'button') {
-  const found = await evaluate(sessionId, `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.textContent.trim().includes(${JSON.stringify(text)})); if (!target) return false; target.click(); return true; })()`);
-  assert.equal(found, true, `Found clickable ${selector} containing “${text}”`);
+  const ready = `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.textContent.trim().includes(${JSON.stringify(text)})); return Boolean(target && !target.disabled); })()`;
+  await waitForExpression(sessionId, ready, `enabled ${text} control`);
+  const clicked = await evaluate(sessionId, `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.textContent.trim().includes(${JSON.stringify(text)})); if (!target || target.disabled) return false; target.click(); return true; })()`);
+  assert.equal(clicked, true, `Found enabled ${selector} containing “${text}”`);
 }
 
 async function waitForExpression(sessionId, expression, label, timeoutMs = 12000) {
@@ -485,6 +487,7 @@ try {
   await clickText(gm.sessionId, 'Create on host', '.encounters-page .schema-form button');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='The Orchard Ruins')", 'encounter created through app');
   assert.ok((await (await request('/api/encounters', gmToken)).json()).encounters.some(e=>e.name==='The Orchard Ruins'), 'encounter creation via GM app persisted to host');
+  await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Set active'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation control enabled');
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Encounters application switches shared active context');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Set active'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');
