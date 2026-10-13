@@ -1,7 +1,7 @@
 // Focused Lore HTTP/privacy acceptance: pnpm acceptance:lore
 // Exercises the current host contract against a disposable SQLite database.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -225,6 +225,44 @@ try {
   assert.ok(uiCreatedArticle, 'GM UI create commits to the authoritative host');
   assert.equal(uiCreatedArticle.visibility, 'gm', 'GM UI creates a private draft by default');
   await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-article .action-grid button')?.textContent === 'Edit'", 'GM-created article detail');
+
+  // The GM attaches an image using the actual file picker. Browser and raw
+  // authorization tests must agree about who can read those bytes.
+  const sampleImage = join(directory, 'accepted-image.png');
+  const sampleBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/5k0AAAAASUVORK5CYII=', 'base64');
+  writeFileSync(sampleImage, sampleBytes);
+  const inputRemote = await cdp('Runtime.evaluate', { expression: "document.querySelector('.lore-assets input[type=file]')", returnByValue: false }, gmBrowser.sessionId);
+  assert.ok(inputRemote.result.objectId, 'GM Lore UI exposes the attachment picker');
+  await cdp('DOM.setFileInputFiles', { files: [sampleImage], objectId: inputRemote.result.objectId }, gmBrowser.sessionId);
+  await waitForExpression(gmBrowser.sessionId, "Boolean(document.querySelector('.lore-assets .lore-asset img.lore-asset-preview'))", 'GM sees uploaded image preview');
+  const uploadedAssets = await json(await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}/assets`, gmToken));
+  assert.equal(uploadedAssets.status, 200);
+  assert.equal(uploadedAssets.body.assets.length, 1, 'image upload through the UI persists to host');
+  const uploadedAssetId = uploadedAssets.body.assets[0].id;
+  assert.equal((await request(`/api/assets/${encodeURIComponent(uploadedAssetId)}/content`, playerToken)).status, 404, 'unpublished image is private');
+
+  // GM creates a real relationship through the typed picker. The linked
+  // target stays GM-only and must be filtered from player link projections.
+  const privateTarget = await json(await request('/api/lore', gmToken, {
+    method: 'POST', body: JSON.stringify({ id: 'lore-ui-secret-target', operationId: 'lore-ui-secret-target-create', baseRevision: 0,
+      type: 'note', title: 'Unrevealed Link Target', body: 'SECRET_LINK_CONTENT' })
+  }));
+  assert.equal(privateTarget.status, 201);
+  await waitForExpression(gmBrowser.sessionId,
+    "[...document.querySelectorAll('.lore-relations select[name=targetId] option')].some(option => option.textContent === 'Unrevealed Link Target')",
+    'related article available to GM');
+  const selectedLink = await evaluate(gmBrowser.sessionId, `(() => {
+    const element = document.querySelector('.lore-relations select[name=targetId]');
+    element.value = 'lore-ui-secret-target';
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return element.value;
+  })()`);
+  assert.equal(selectedLink, 'lore-ui-secret-target');
+  await clickText(gmBrowser.sessionId, 'Add relationship', '.lore-relations button');
+  await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-relations')?.innerText.includes('Unrevealed Link Target')", 'GM relationship shown after save');
+  const gmRelations = await json(await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}/links`, gmToken));
+  assert.ok(gmRelations.body.links.some(link => link.targetId === 'lore-ui-secret-target'));
+
   await clickText(gmBrowser.sessionId, 'Publish to players', '.lore-article .action-grid button');
   await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-article .action-grid')?.innerText.includes('Revoke from players')", 'GM publish command completes');
   const browserPublished = await json(await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}`, gmToken));
@@ -245,10 +283,23 @@ try {
   const playerPayloadBytes = await playerPayload.text();
   assert.equal(playerPayload.status, 200);
   assert.ok(!playerPayloadBytes.includes('UI_ONLY_GM_SECRET'), 'GM notes are absent from actual player HTTP response bytes');
+  const playerRelations = await json(await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}/links`, playerToken));
+  assert.ok(!JSON.stringify(playerRelations.body).includes('lore-ui-secret-target'), 'private link target is absent from player responses');
+  for (const credential of [playerToken, enrolledSecond.body.credential]) {
+    const assetResponse = await request(`/api/assets/${encodeURIComponent(uploadedAssetId)}/content`, credential);
+    assert.equal(assetResponse.status, 200, 'published image accessible to authorized player');
+    assert.deepEqual(Buffer.from(await assetResponse.arrayBuffer()), sampleBytes, 'published image bytes are identical');
+  }
+
 
   await clickText(gmBrowser.sessionId, 'Revoke from players', '.lore-article .action-grid button');
   await waitForExpression(gmBrowser.sessionId, "document.querySelector('.lore-article .action-grid')?.innerText.includes('Publish to players')", 'GM revoke command completes');
   assert.equal((await request(`/api/lore/${encodeURIComponent(uiCreatedArticle.id)}`, playerToken)).status, 404, 'UI revocation denies player HTTP retrieval');
+  assert.equal((await request(`/api/assets/${encodeURIComponent(uploadedAssetId)}/content`, playerToken)).status, 404, 'revocation denies previously shared image');
+  await evaluate(gmBrowser.sessionId, 'window.confirm = () => true');
+  await clickText(gmBrowser.sessionId, 'Remove attachment', '.lore-assets button');
+  await waitForExpression(gmBrowser.sessionId, "!document.querySelector('.lore-assets .lore-asset')", 'GM removed the attachment through UI');
+  assert.equal((await request(`/api/assets/${encodeURIComponent(uploadedAssetId)}/content`, gmToken)).status, 404, 'removed asset no longer exists on the host');
 
   console.log('PASS: Lore HTTP authorization/projection/event privacy plus real GM, player A and player B browser contexts; GM creation and all three shared-article views render correctly, and GM notes remain private.');
 } catch (error) {
