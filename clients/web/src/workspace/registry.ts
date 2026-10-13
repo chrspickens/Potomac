@@ -7,6 +7,8 @@ const definitions: BrickDefinition<unknown>[] = [
   { typeId: 'table.session', version: 1, ownerAppId: 'table', title: 'Session', supportedBindings: ['none'], defaultBinding: { mode: 'none' }, defaultSize: { w: 4, h: 2 }, resolve: (_binding, adapter) => adapter.getSession(), render: () => null, validateOptions: isEmptyRecord },
   { typeId: 'table.participants', version: 1, ownerAppId: 'table', title: 'Participants', supportedBindings: ['follow', 'pinned'], defaultBinding: { mode: 'follow', contextKey: 'session.activeEncounter' }, defaultSize: { w: 6, h: 4 }, resolve: (_binding, adapter) => adapter.getParticipants(), render: () => null, validateOptions: isEmptyRecord, getBindingOptions: adapter => adapter.getEncounterOptions() },
   { typeId: 'table.activity', version: 1, ownerAppId: 'table', title: 'Table Activity', supportedBindings: ['none'], defaultBinding: { mode: 'none' }, defaultSize: { w: 4, h: 3 }, resolve: (_binding, adapter) => adapter.getActivity(), render: () => null, validateOptions: isEmptyRecord },
+  { typeId: 'lore.article', version: 1, ownerAppId: 'lore', title: 'Lore Article', supportedBindings: ['pinned'], defaultSize: { w: 4, h: 3 }, resolve: () => undefined, render: () => null, validateOptions: isEmptyRecord, getBindingOptions: adapter => adapter.getLoreOptions?.() ?? [] },
+  { typeId: 'lore.related', version: 1, ownerAppId: 'lore', title: 'Related Lore', supportedBindings: ['follow'], defaultBinding: { mode: 'follow', contextKey: 'session.activeEncounter' }, defaultSize: { w: 4, h: 3 }, resolve: () => undefined, render: () => null, validateOptions: isEmptyRecord },
 ];
 const contributions = new Map<string, BrickDefinition<unknown>>(definitions.map(definition => [definition.typeId, definition]));
 

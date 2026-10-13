@@ -3,7 +3,14 @@ import { loadRememberedIdentity, rememberIdentity } from './identity'
 import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 
 export type Role = 'gm' | 'player'
-export type Encounter = { id: string; name: string; summary: string; status?: 'prepared' | 'active' | 'completed'; revision?: number; participants?: Array<{ actorId: string; initiative?: number | null; status?: string; activationOrder?: number | null }> }
+export type Encounter = { id: string; name: string; summary: string; status?: 'prepared' | 'active' | 'completed'; revision?: number; participants?: Array<{ actorId: string; initiative?: number | null; status?: string; activationOrder?: number | null }>; loreIds?: string[] }
+export type LoreKind = 'location' | 'person' | 'faction' | 'quest' | 'item' | 'handout' | 'note'
+export type LoreVisibility = 'gm' | 'shared'
+export type LoreArticle = { id: string; campaignId?: string; title: string; summary?: string; kind: LoreKind; tags: string[]; body: string; revision: number; visibility: LoreVisibility; archived: boolean; updatedAt?: string; gmNotes?: string; linkedEncounterIds?: string[] }
+export type LoreInput = Pick<LoreArticle, 'title' | 'kind' | 'tags' | 'body' | 'visibility' | 'gmNotes'>
+type LoreLink = { id: string; targetKind: string; targetId: string; targetTitle?: string; label?: string }
+type LoreWireArticle = LoreArticle
+function loreCommand(input: LoreInput) { return { ...input, gmNotes: input.gmNotes ?? '' } }
 export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
@@ -147,6 +154,52 @@ export async function editCampaignEncounter(id: string, baseRevision: number, fi
 }
 export async function saveEncounterParticipants(id: string, baseRevision: number, participants: NonNullable<Encounter['participants']>): Promise<Encounter> {
   return http('/api/encounters/' + encodeURIComponent(id) + '/participants', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, participants }) })
+}
+
+export async function listLore(role: Role): Promise<LoreArticle[]> {
+  if (!baseUrl) return []
+  const articles: LoreArticle[] = []
+  let after: string | undefined
+  for (let page = 0; page < 5; page += 1) {
+    const result = await http<{ articles: LoreWireArticle[]; next: string | null; hasMore: boolean }>(`/api/lore?limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`, role)
+    articles.push(...result.articles)
+    if (!result.hasMore || !result.next) break
+    after = result.next
+  }
+  return articles
+}
+export async function searchLore(role: Role, query = '', options: { after?: string; limit?: number } = {}): Promise<{ articles: LoreArticle[]; next: string | null; hasMore: boolean }> {
+  const params = new URLSearchParams({ q: query })
+  if (options.after) params.set('after', options.after)
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  const result = await http<{ articles: LoreWireArticle[]; next: string | null; hasMore: boolean }>(`/api/lore?${params}`, role)
+  return result
+}
+export async function createLore(input: LoreInput): Promise<LoreArticle> {
+  if (!baseUrl) throw new Error('Lore requires a configured host')
+  return http<LoreWireArticle>('/api/lore', 'gm', { method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), operationId: crypto.randomUUID(), baseRevision: 0, ...loreCommand(input) }) })
+}
+export async function updateLore(id: string, baseRevision: number, input: LoreInput): Promise<LoreArticle> {
+  return http<LoreWireArticle>(`/api/lore/${encodeURIComponent(id)}`, 'gm', { method: 'PUT', body: JSON.stringify({ ...loreCommand(input), baseRevision, operationId: crypto.randomUUID() }) })
+}
+export async function setLoreArchived(id: string, baseRevision: number, archived: boolean): Promise<{ id: string; revision: number; archived: boolean }> {
+  return http(`/api/lore/${encodeURIComponent(id)}/${archived ? 'archive' : 'restore'}`, 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, operationId: crypto.randomUUID() }) })
+}
+export async function readLore(role: Role, id: string): Promise<{ article: LoreArticle; links: LoreLink[] }> {
+  return http(`/api/lore/${encodeURIComponent(id)}`, role)
+}
+export async function listLoreLinkedToEncounter(role: Role, encounterId: string): Promise<LoreArticle[]> {
+  if (!baseUrl) return []
+  const candidates = await listLore(role)
+  const linked: LoreArticle[] = []
+  for (let start = 0; start < Math.min(candidates.length, 100); start += 10) {
+    const batch = candidates.slice(start, start + 10)
+    const details = await Promise.all(batch.map(article => readLore(role, article.id).catch(() => undefined)))
+    details.forEach((detail, index) => {
+      if (detail?.links.some(link => link.targetKind === 'encounter' && link.targetId === encounterId)) linked.push(candidates[start + index])
+    })
+  }
+  return linked
 }
 
 export type ReviewProposal = { id: string; operationId: string; memberId: string; entityId: string; actionId: string; campaignId?: string | null; baseRevision?: number | null; ruleVersion?: number | null; status: string; createdAt: string; request?: OfflineOperation }

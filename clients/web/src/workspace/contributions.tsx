@@ -1,5 +1,6 @@
 import type { Activity, Encounter, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
+import type { LoreArticle } from '../api.ts';
 import type { BrickBinding, BrickDefinition, BrickRenderProps, AuthorizedBrickDataAdapter } from './types.ts';
 import { resolveTableParticipants } from './authorized-adapter.ts';
 import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
@@ -68,6 +69,16 @@ function TableParticipantsBrick({ data, onOpenApp }: BrickRenderProps<Array<{ ac
   return <div className="table-participants">{data.map(({ actor, status }) => <article key={actor.entityId}><div><strong>{actor.name}</strong><small>{actor.module.manifest.name}{status ? ` · ${status}` : ''}</small></div><div className="table-participant-fields">{actor.module.view.brick.filter(item => item.control === 'stat' || item.control === 'resource').map((item, index) => <span key={`${item.field}-${index}`}><small>{item.label}</small><b>{formatPublicValue(valueAt(actor.data, item.field || ''))}</b></span>)}</div><button type="button" onClick={() => onOpenApp?.('characters', actor.entityId)}>Open Character</button></article>)}</div>;
 }
 
+function LoreArticleBrick({ data, onOpenApp }: BrickRenderProps<LoreArticle>) {
+  return data ? <div className="lore-brick"><p className="eyebrow">{data.kind}</p><h3>{data.title}</h3><p>{data.body.slice(0, 360) || 'This article has no body yet.'}</p><button type="button" onClick={() => onOpenApp?.('lore', data.id)}>Open Lore</button></div> : <p className="brick-message">This Lore article is unavailable, archived, or not shared with you.</p>;
+}
+
+function RelatedLoreBrick({ data, onOpenApp, offline }: BrickRenderProps<LoreArticle[]>) {
+  if (offline) return <p className="brick-message">Reconnect to refresh encounter-linked Lore.</p>;
+  if (!data?.length) return <p className="brick-message">No accessible Lore is linked to this encounter.</p>;
+  return <div className="lore-related">{data.map(item => <article key={item.id}><p className="eyebrow">{item.kind}</p><h3>{item.title}</h3><p>{item.body.slice(0, 140)}</p><button type="button" onClick={() => onOpenApp?.('lore', item.id)}>Open Lore</button></article>)}</div>;
+}
+
 function formatPublicValue(value: unknown): string {
   if (typeof value === 'object' && value !== null && 'current' in value) {
     const resource = value as { current?: unknown; maximum?: unknown };
@@ -107,8 +118,18 @@ const tableParticipantsDefinition: BrickDefinition<Array<{ actor: Actor; status?
 const tableActivityDefinition: BrickDefinition<Activity[]> = {
   ...declaredBrickDefinition('table.activity'), resolve: (_binding, adapter) => adapter.getActivity(), render: ActivityBrick,
 };
+const loreArticleDefinition: BrickDefinition<LoreArticle> = {
+  ...declaredBrickDefinition('lore.article'),
+  resolve: (binding, adapter) => binding.mode === 'pinned' ? adapter.getLore?.(binding.entityId) : undefined,
+  render: LoreArticleBrick,
+};
+const loreRelatedDefinition: BrickDefinition<LoreArticle[]> = {
+  ...declaredBrickDefinition('lore.related'),
+  resolve: (binding, adapter) => binding.mode === 'follow' ? adapter.getRelatedLore?.() : undefined,
+  render: RelatedLoreBrick,
+};
 
-export const brickDefinitions: BrickDefinition<unknown>[] = [characterDefinition, encounterDefinition, activityDefinition, tableSessionDefinition, tableParticipantsDefinition, tableActivityDefinition] as unknown as BrickDefinition<unknown>[];
+export const brickDefinitions: BrickDefinition<unknown>[] = [characterDefinition, encounterDefinition, activityDefinition, tableSessionDefinition, tableParticipantsDefinition, tableActivityDefinition, loreArticleDefinition, loreRelatedDefinition] as unknown as BrickDefinition<unknown>[];
 for (const definition of brickDefinitions) registerBrickDefinition(definition, true);
 
 export function resolveDefaultBinding<TData>(definition: BrickDefinition<TData>, adapter: AuthorizedBrickDataAdapter): BrickBinding {

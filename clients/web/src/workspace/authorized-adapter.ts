@@ -1,4 +1,4 @@
-import type { Activity, Encounter, Role, SessionSnapshot } from '../api.ts';
+import type { Activity, Encounter, LoreArticle, Role, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 import type { AuthorizedBrickDataAdapter, BrickBinding } from './types.ts';
 
@@ -10,10 +10,11 @@ export function resolveTableParticipants(binding: BrickBinding, adapter: Authori
 }
 
 export function createAuthorizedBrickAdapter(
-  actors: Actor[], encounters: Encounter[], activeEncounter: Encounter | null, activity: Activity[], session?: SessionSnapshot, role: Role = 'player',
+  actors: Actor[], encounters: Encounter[], activeEncounter: Encounter | null, activity: Activity[], session?: SessionSnapshot, role: Role = 'player', lore: LoreArticle[] = [],
 ): AuthorizedBrickDataAdapter & { getEncounterOptions: () => Array<{ id: string; label: string }> } {
   const actorById = new Map(actors.map(actor => [actor.entityId, actor]));
   const encounterById = new Map(encounters.map(encounter => [encounter.id, encounter]));
+  const loreById = new Map(lore.map(article => [article.id, article]));
   const participantsFor = (id: string) => (encounterById.get(id)?.participants || []).flatMap(item => {
     const actor = actorById.get(item.actorId);
     return actor ? [{ actor, status: item.status || undefined }] : [];
@@ -28,6 +29,12 @@ export function createAuthorizedBrickAdapter(
     getParticipantsForEncounter: participantsFor,
     getSession: () => session,
     getRole: () => role,
+    getLore: id => { const article = loreById.get(id); return article && !article.archived ? article : undefined },
+    getLoreOptions: () => lore.filter(article => !article.archived).map(({ id, title }) => ({ id, label: title })),
+    getRelatedLore: () => (activeEncounter?.loreIds ?? []).flatMap(id => {
+      const article = loreById.get(id);
+      return article && !article.archived ? [article] : [];
+    }),
     getEncounterOptions: () => encounters.map(({ id, name }) => ({ id, label: name })),
   };
 }

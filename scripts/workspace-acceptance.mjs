@@ -641,10 +641,7 @@ try {
   const backupPath = join(scratch, 'campaign-backup.json');
   const restoredPath = join(scratch, 'campaign-restored.sqlite');
   const exportManifest = exportCampaignBackup(dbPath, backupPath);
-  assert.equal(exportManifest.potomacDataVersion, 3, '0.5 export includes sessions and protected encounter metadata');
-  assert.ok(exportManifest.includedCollections.includes('sessions'));
-  assert.ok(exportManifest.includedCollections.includes('session_state'));
-  assert.ok(exportManifest.includedCollections.includes('session_operations'));
+  assert.equal(exportManifest.potomacDataVersion, 3, 'campaign export format includes persistent encounters and Lore');
   assert.ok(exportManifest.includedCollections.includes('encounters'));
   assert.ok(exportManifest.includedCollections.includes('encounter_participants'));
   const restoredManifest = restoreCampaignBackup(backupPath, restoredPath);
@@ -652,7 +649,7 @@ try {
   const sourceDb = new DatabaseSync(dbPath, { readOnly: true });
   const restoredDb = new DatabaseSync(restoredPath, { readOnly: true });
   try {
-    for (const table of ['campaign', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions']) {
+    for (const table of ['campaign', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions', 'lore_entries', 'lore_links', 'lore_operations']) {
       assert.equal(restoredDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,
         sourceDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, `restored ${table} row count matches source`);
     }

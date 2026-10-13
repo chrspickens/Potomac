@@ -1,7 +1,7 @@
 import type { Snapshot } from '../api'
 import type { Actor } from '../modules'
 import type { RememberedIdentity } from '../identity'
-import { openOfflineStorage, type AuthorizedSnapshot } from './storage'
+import { openOfflineStorage, type AuthorizedLoreEntry, type AuthorizedSnapshot } from './storage'
 
 export async function cachePlayerSnapshot(host: string, snapshot: Snapshot): Promise<void> {
   if (snapshot.role !== 'player' || !snapshot.memberId) return
@@ -26,6 +26,16 @@ export async function cachePlayerSnapshot(host: string, snapshot: Snapshot): Pro
       encounters: snapshot.encounters,
     })
   } finally { storage.close() }
+}
+
+export async function cacheAuthorizedLore(identity: RememberedIdentity, entries: AuthorizedLoreEntry[]): Promise<void> {
+  const storage = await openOfflineStorage({ host: identity.host, campaignId: identity.campaignId, memberId: identity.memberId })
+  try { await storage.replaceAuthorizedLore(entries) } finally { storage.close() }
+}
+
+export async function loadCachedAuthorizedLore(identity: RememberedIdentity): Promise<AuthorizedLoreEntry[]> {
+  const storage = await openOfflineStorage({ host: identity.host, campaignId: identity.campaignId, memberId: identity.memberId })
+  try { return await storage.listAuthorizedLore() } finally { storage.close() }
 }
 
 export async function loadCachedPlayerSnapshot(identity: RememberedIdentity): Promise<{ snapshot: Snapshot; lastSyncedAt: number } | null> {

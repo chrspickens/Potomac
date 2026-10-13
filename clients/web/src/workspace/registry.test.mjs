@@ -43,3 +43,13 @@ test('Table brick contributions are registered with safe context bindings', () =
   assert.deepEqual(getBrickDefinition('table.participants').supportedBindings, ['follow', 'pinned']);
   assert.deepEqual(getBrickDefinition('table.session').supportedBindings, ['none']);
 });
+
+test('Lore brick declarations use pinned IDs and active encounter context only', () => {
+  const pinned = getBrickDefinition('lore.article');
+  const related = getBrickDefinition('lore.related');
+  assert.ok(pinned);
+  assert.ok(related);
+  assert.deepEqual(pinned.supportedBindings, ['pinned']);
+  assert.deepEqual(related.supportedBindings, ['follow']);
+  assert.deepEqual(related.defaultBinding, { mode: 'follow', contextKey: 'session.activeEncounter' });
+});

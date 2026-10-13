@@ -13,6 +13,7 @@ pnpm check                         # build, tests, isolated host smoke and two-c
 pnpm debug:smoke                   # isolated host, separate temporary database
 pnpm acceptance:campaign           # isolated browser acceptance with a GM and two enrolled players
 pnpm acceptance:system-b-table     # fresh pinned System B host: Table start, action, redaction and reconnect
+pnpm acceptance:lore               # focused Lore CRUD, publication and player privacy over host HTTP
 ```
 
 Direct commands work without installation:
@@ -31,6 +32,8 @@ node scripts/diagnostics/potomac-debug.mjs watch --role player --since 0 --limit
 `pnpm acceptance:system-b-table` starts a second, genuinely fresh host with demo seeding disabled, pins it to System B, and provisions a System B character/encounter through host APIs. A GM and player use isolated browser profiles against the same generic Table and Character UI. It starts a session from the Table control, submits a System B action during that session, checks the GM-only field against player DOM and actual HTTP/SSE response bytes, then takes the player browser offline and verifies reconnect refreshes the committed active session. It is a focused second-system browser scenario, not a repeat of the broad campaign-management walkthrough.
 
 `pnpm acceptance:table` complements those browser runs with focused isolated host HTTP/SSE checks for session lifecycle, replay, idempotent operations, offline retries, redaction, and revocation. `pnpm check` runs all three browser/host acceptance commands, so CI covers the broad System A walkthrough, the System B Table scenario, and lower-level host recovery cases.
+
+`pnpm acceptance:lore` uses an isolated database to check Lore creation, publication/revocation, GM/player projections, role authorization, and player event-replay privacy. It also checks that the Lore UI surface exists and reports current client/host contract mismatches (visibility fields, kind, and archive route) as known gaps. It does not claim the Lore editor flow passes end to end; a dedicated browser scenario remains a follow-up.
 
 The System B browser scenario is intentionally limited to the generic Table session/action/redaction/reconnect path; it does not repeat the complete campaign-management workflow or manual visual QA. Run `pnpm acceptance:workspace` for the same System A browser scenario under its 0.2 name. Browser commands require Node dependencies and Chrome or Edge; set `POTOMAC_CHROME` to the browser executable when automatic discovery does not find it.
 

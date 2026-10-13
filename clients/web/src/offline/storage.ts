@@ -54,11 +54,12 @@ export class OfflineStorageCorruptionError extends Error {
 }
 
 const DATABASE_NAME = 'potomac-offline';
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const SNAPSHOTS = 'authorizedSnapshots';
 const OPERATIONS = 'queuedOperations';
 const DRAFTS = 'privateDrafts';
 const METADATA = 'sessionMetadata';
+const LORE = 'authorizedLore';
 
 type Stored<T> = T & {
   key: string;
@@ -107,7 +108,11 @@ export type OfflineStorage = {
   savePrivateDraft(draft: PrivateDraft): Promise<PrivateDraft>;
   listPrivateDrafts(): Promise<PrivateDraft[]>;
   deletePrivateDraft(draftId: string): Promise<void>;
+  replaceAuthorizedLore(entries: AuthorizedLoreEntry[]): Promise<void>;
+  listAuthorizedLore(): Promise<AuthorizedLoreEntry[]>;
 };
+
+export type AuthorizedLoreEntry = { id: string; revision: number; article: Record<string, unknown>; links: Array<Record<string, unknown>> };
 
 /** Opens storage scoped to one host, campaign, and member. Never put credentials in a draft payload. */
 export function openOfflineStorage(
@@ -122,7 +127,7 @@ export function openOfflineStorage(
     request.onupgradeneeded = (event) => {
       const db = request.result;
       const transaction = request.transaction!;
-      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA]) {
+      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE]) {
         const store = db.objectStoreNames.contains(storeName)
           ? transaction.objectStore(storeName)
           : db.createObjectStore(storeName, { keyPath: 'key' });
@@ -166,8 +171,8 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
     close: () => db.close(),
 
     async clearScope() {
-      const tx = db.transaction([SNAPSHOTS, OPERATIONS, DRAFTS, METADATA], 'readwrite');
-      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA]) {
+      const tx = db.transaction([SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE], 'readwrite');
+      for (const storeName of [SNAPSHOTS, OPERATIONS, DRAFTS, METADATA, LORE]) {
         const store = tx.objectStore(storeName);
         const request = store.index('scopeKey').getAllKeys(scopedKey);
         request.onsuccess = () => { for (const key of request.result) store.delete(key); };
@@ -429,7 +434,37 @@ function createStorage(db: IDBDatabase, scope: OfflineScope, scopedKey: string):
       tx.objectStore(DRAFTS).delete(JSON.stringify([scopedKey, draftId]));
       await transactionResult(tx);
     },
+
+    async replaceAuthorizedLore(entries) {
+      for (const entry of entries) validateLoreEntry(entry);
+      if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error('Duplicate authorized Lore ID');
+      const tx = db.transaction(LORE, 'readwrite');
+      const store = tx.objectStore(LORE);
+      const existing = store.index('scopeKey').getAllKeys(scopedKey);
+      existing.onsuccess = () => {
+        for (const key of existing.result) store.delete(key);
+        for (const entry of entries) store.put(scoped({ entry: structuredClone(entry) }, entry.id));
+      };
+      await transactionResult(tx);
+    },
+
+    async listAuthorizedLore() {
+      const rows = await listScoped(db, LORE, scopedKey) as Array<Stored<{ entry: AuthorizedLoreEntry }>>;
+      for (const row of rows) if (!isLoreRecord(row, scope)) throw new OfflineStorageCorruptionError(LORE, 1);
+      return rows.map(row => row.entry);
+    },
   };
+}
+
+function validateLoreEntry(entry: AuthorizedLoreEntry): void {
+  if (!isRecord(entry) || !isNonEmptyString(entry.id) || !Number.isSafeInteger(entry.revision) || entry.revision < 1 || !isRecord(entry.article) || !Array.isArray(entry.links)) throw new Error('Invalid authorized Lore entry');
+  assertJson(entry);
+}
+function isLoreRecord(value: unknown, scope: OfflineScope): value is Stored<{ entry: AuthorizedLoreEntry }> {
+  const scopeKey = offlineScopeKey(scope);
+  if (!isRecord(value) || value.scopeKey !== scopeKey || value.host !== scope.host || value.campaignId !== scope.campaignId || value.memberId !== scope.memberId || !isRecord(value.entry)) return false;
+  try { validateLoreEntry(value.entry as AuthorizedLoreEntry) } catch { return false }
+  return value.key === JSON.stringify([scopeKey, value.entry.id]);
 }
 
 async function updateOperation(
