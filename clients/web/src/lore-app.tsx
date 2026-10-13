@@ -41,6 +41,10 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
 
   const reload = async () => {
     if (connection !== 'connected') {
+      // Never reuse a previous role's in-memory projection when offline.
+      // A cache may be shown only for the exact remembered player scope.
+      setArticles([]); onArticlesChange?.([]); setSelectedId(''); setLinks([]); setBacklinks([]); setAssets([])
+      setOfflineCachedAt(null)
       if (role === 'player' && hostAvailable) {
         const host = import.meta.env.VITE_POTOMAC_HOST?.replace(/\/$/, '')
         const identity = host ? loadRememberedIdentity(host) : null
