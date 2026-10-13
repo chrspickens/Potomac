@@ -32,4 +32,6 @@ Baseline: `989fc27` (latest `main` at run time). No production campaign data was
 
 The browser harness failure was in the test driver: Chromium rendered the form, but the controlled React form did not produce a committed create operation through the attempted CDP input path. Cleanup also raced SQLite WAL handles on Windows. This is test infrastructure work, not evidence of a host authorization or Maps product defect. No application fix was made and no security assertion was weakened.
 
+Follow-up diagnosis confirmed the production UI constructs the correct `campaignId`, `baseRevision: 0`, and `visibility: 'gm'` payload. The failure was caused by the prototype driver’s direct value assignment/incomplete React events; the repository’s proven pattern is to focus the control and use CDP `Input.insertText`, then click the real submit button and verify the host receipt. The prototype was removed rather than retained as a misleading acceptance command because it did not pass.
+
 Human visual acceptance, physical touch-device behavior, complete image-upload UI flow, full cross-map/Lore/encounter handoff, and a single end-to-end Flooded Observatory trace remain outstanding.
