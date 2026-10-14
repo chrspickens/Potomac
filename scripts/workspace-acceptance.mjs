@@ -405,6 +405,11 @@ try {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
   }
   assert.equal(await evaluate(player.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.')"), true, 'player Table view has no GM session controls');
+  await clickText(gm.sessionId, 'Return to preparation');
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .active-encounter h2')?.textContent === 'Edited Acceptance Encounter'", 'GM returns to the active encounter preparation while session remains active');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').length === 2", 'active encounter offers non-mutating Open Table re-entry');
+  await clickText(gm.sessionId, 'Open Table', '.encounter-card button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'GM reopens Table without reactivating the encounter');
 
   const gmState = await evaluate(gm.sessionId, `(() => { const e = document.querySelector('.gm-note'); return {note:e?.textContent || '', actor:document.querySelector('.character-view h3')?.textContent || '', key:Object.keys(localStorage).find(k=>k.startsWith('potomac:workspace:')), body:document.body.innerText.slice(0,900)} })()`);
   assert.match(gmState.note, /The magistrate recognizes Mira\./, `GM sees the fixture secret note: ${JSON.stringify(gmState)}`);
