@@ -18,7 +18,7 @@ const reservePorts = async count => { const servers = []; try { for (let index =
 const [hostPort, webPort, debugPort] = await reservePorts(3); const hostUrl = `http://127.0.0.1:${hostPort}`; const webUrl = `http://127.0.0.1:${webPort}/`; const gmToken = `maps-browser-gm-${process.pid}`; const redactionTokens = new Set([gmToken])
 const children = []; const start = (cmd, args, options = {}) => { const child = spawn(cmd, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options }); let output = ''; child.stdout.on('data', chunk => { output = safeText(output + chunk.toString()).slice(-30000) }); child.stderr.on('data', chunk => { output = safeText(output + chunk.toString()).slice(-30000) }); children.push({ child, getOutput: () => output }); return child }; let hostProcess; const launchHost = (databasePath, port = hostPort, token = gmToken) => start(process.execPath, [join(root, 'server/host/index.mjs')], { env: { ...process.env, PORT: String(port), POTOMAC_DB: databasePath, POTOMAC_GM_TOKEN: token, POTOMAC_PLAYER_TOKEN: `disabled-${process.pid}`, POTOMAC_SEED_DEMO: '0' } }); const stopHost = async () => { const previous = hostProcess; previous.kill('SIGTERM'); await waitChildExit(previous, 10000); if (previous.exitCode === null && previous.signalCode === null) throw new Error('Disposable host did not exit after SIGTERM') }; const waitFor = async (url, label) => { const started = Date.now(); let last; while (Date.now() - started < 30000) { try { const response = await fetch(url); if (response.ok) return response; last = new Error(`HTTP ${response.status}`) } catch (error) { last = error } await delay(120) } throw new Error(`${label} did not become ready: ${last?.message || 'timeout'}\n${children.map(item => item.getOutput()).join('\n')}`) }
 const api = async (path, token, init = {}) => { const response = await fetch(`${hostUrl}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } }); return { response, body: await response.json().catch(() => undefined) } }
-let socket; let nextId = 0; const pending = new Map(); const diagnostics = { startedAt: new Date().toISOString(), events: [], requests: {}, statuses: [], probes: {}, stages: [] }; let gmSession; let diagnosticsPath; const clients = {}; const traceWaiters = new Map()
+let socket; let nextId = 0; const pending = new Map(); const diagnostics = { startedAt: new Date().toISOString(), events: [], requests: {}, statuses: [], probes: {}, stages: [] }; let gmSession; let diagnosticsPath; const clients = {}; const traceWaiters = new Map(); const acceptanceLoreIds = new Set(); const acceptancePinIds = new Set()
 const cdp = (method, params = {}, sessionId) => new Promise((resolvePromise, reject) => { const id = ++nextId; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout ${method}`)) }, 15000); pending.set(id, message => { clearTimeout(timer); message.error ? reject(new Error(`${method}: ${message.error.message}`)) : resolvePromise(message.result) }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })) })
 const evaluate = (session, expression) => cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, session).then(result => { if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value })
 const waitExpr = async (session, expression, label) => { const started = Date.now(); while (Date.now() - started < 15000) { if (await evaluate(session, expression)) return; await delay(100) } throw new Error(`Timed out: ${label}`) }
@@ -58,6 +58,12 @@ async function openClient(label, width = 1440, height = 900, clientUrl = webUrl,
       const url = new URL(p.request.url)
       const safeQuery = url.searchParams.has('since') ? `?since=${encodeURIComponent(url.searchParams.get('since'))}` : ''
       diagnostics.requests[requestId] = { id: p.requestId, label, startedAt: new Date().toISOString(), method: p.request.method, url: `${url.origin}${url.pathname}${safeQuery}`, events: [] }
+      if (p.request.method === 'POST' && url.pathname.endsWith('/commands')) {
+        try {
+          const body = JSON.parse(p.request.postData || '{}')
+          diagnostics.requests[requestId].command = { name: safeText(body.command || ''), baseRevision: Number.isInteger(body.baseRevision) ? body.baseRevision : undefined, hasLoreTarget: typeof body.targetLoreEntryId === 'string', loreTargetMatchesAcceptanceFixture: acceptanceLoreIds.has(body.targetLoreEntryId), hasPieceId: typeof body.pieceId === 'string', pieceMatchesAcceptanceFixture: acceptancePinIds.has(body.pieceId), hasLabel: typeof body.label === 'string' }
+        } catch { diagnostics.requests[requestId].command = { parseFailed: true } }
+      }
       client.requestIds.push(requestId)
       record(message.method, { label, requestId: p.requestId, method: p.request.method, url: diagnostics.requests[requestId].url })
     } else if (message.method === 'Network.responseReceived' || message.method === 'Network.loadingFailed' || message.method === 'Network.loadingFinished') {
@@ -66,6 +72,11 @@ async function openClient(label, width = 1440, height = 900, clientUrl = webUrl,
       const event = { at: new Date().toISOString(), type: message.method === 'Network.responseReceived' ? 'response' : message.method === 'Network.loadingFailed' ? 'failed' : 'finished', ...(message.method === 'Network.responseReceived' ? { status: p.response.status, mimeType: p.response.mimeType } : { error: safeText(p.errorText || ''), canceled: p.canceled }) }
       if (request) request.events.push(event)
       record(message.method, { label, requestId: p.requestId, ...(event.status ? { status: event.status } : {}), ...(event.error ? { error: event.error, canceled: event.canceled } : {}), ...(p.response?.url ? { url: safeText(p.response.url) } : {}) })
+      if (message.method === 'Network.responseReceived' && p.response.status >= 400 && new URL(p.response.url).pathname.startsWith('/api/')) {
+        void cdp('Network.getResponseBody', { requestId: p.requestId }, sessionId).then(result => {
+          try { const body = JSON.parse(result.body); const request = diagnostics.requests[`${label}:${p.requestId}`]; if (request) request.error = { status: p.response.status, reasonCode: safeText(body.reasonCode || ''), message: safeText(body.error || '') } } catch {}
+        }).catch(() => {})
+      }
     } else if (message.method === 'Runtime.consoleAPICalled') {
       record(message.method, { label, level: p.type, args: (p.args || []).map(arg => arg.value ?? arg.description).filter(value => typeof value === 'string' || typeof value === 'number').map(safeText) })
     } else if (message.method === 'Runtime.exceptionThrown') {
@@ -174,6 +185,29 @@ try {
   assert.equal(diagnostics.events.some(event => event.label === 'GM' && event.type === 'Runtime.consoleAPICalled' && event.args.join(' ').includes('Cannot update a component')), false, 'Maps state updates do not emit React cross-component update warnings')
   await screenshot(gm, 'gm-flooded-observatory-created.png')
   mark('Stage 3: create Ashen Coast and Flooded Observatory in Maps UI, upload both images, verify grid configuration', 'PASS', { worldId: world.id, battleId: battle.id })
+  const createLoreViaUi = async (title, visibility) => {
+    await clickText(gm, 'Lore', 'nav button')
+    await waitExpr(gm, "document.body.innerText.includes('APPLICATION / LORE')", `${title} Lore UI`)
+    await clickText(gm, 'New article')
+    await waitExpr(gm, "Boolean(document.querySelector('.lore-page .schema-form'))", `${title} editor`)
+    await inputText(gm, '.schema-form input[maxlength="160"]', title)
+    await selectValue(gm, 'label:has(option[value="shared"]) select', visibility)
+    await inputText(gm, '.lore-body textarea', `${title} acceptance text. The map route must not alter the active encounter.`)
+    await clickText(gm, 'Save on host', '.schema-form button')
+    await waitExpr(gm, `document.body.innerText.includes(${JSON.stringify(title)})`, `${title} article saved by UI`)
+    const articles = await api('/api/lore', gmToken)
+    const article = articles.body.articles.find(item => item.title === title)
+    assert.ok(article, `${title} persisted from the Lore UI`)
+    assert.equal(article.visibility, visibility)
+    await screenshot(gm, title === 'Sunken Archive' ? 'gm-sunken-archive-lore.png' : 'gm-private-lore.png')
+    await clickText(gm, 'Maps', 'nav button')
+    await waitExpr(gm, "document.body.innerText.includes('APPLICATION / MAPS')", `${title} returns to Maps`)
+    return article
+  }
+  const sunkenArchive = await createLoreViaUi('Sunken Archive', 'shared')
+  const privateLore = await createLoreViaUi('GM-only Tide Ledger', 'gm')
+  acceptanceLoreIds.add(sunkenArchive.id); acceptanceLoreIds.add(privateLore.id)
+  mark('Stage 3b: GM creates public Sunken Archive and private Lore through the Lore UI', 'PASS', { publicLoreId: sunkenArchive.id })
   const gmActorState = (await api('/api/state', gmToken)).body
   const actorA = gmActorState.actors.find(actor => actor.id === 'actor-emberfall-01')
   assert.ok(actorA, 'System A campaign bootstrap created only its compatible fixture')
@@ -218,8 +252,35 @@ try {
   await clickText(gm, 'Save link', '.map-links button')
   const linkedWorld = await waitMap(world.id, gmToken, map => map.pieces?.some(piece => piece.id === linkPin && piece.destination?.sceneId === battle.id && piece.destination?.label === 'Go to Flooded Observatory'), 'World-to-Battle link')
   await waitExpr(gm, `document.querySelector('.map-revision')?.textContent===${JSON.stringify(`Host revision ${linkedWorld.revision}`)} && document.querySelector('.map-notice')?.textContent.includes('Saved on host.')`, 'World map link UI refresh')
+  const lorePin = await addPiece({ scene: world, kind: 'pin', label: 'Western cove marker', visible: true })
+  acceptancePinIds.add(lorePin)
+  await waitExpr(gm, "Boolean([...document.querySelectorAll('.map-lore-link button')].find(button=>button.textContent.includes('Save Lore link')&&!button.disabled))", 'Lore destination control ready after the location pin commit')
+  await selectValue(gm, 'select[aria-label="Lore destination for Western cove marker"]', sunkenArchive.id)
+  await inputText(gm, 'input[aria-label="Lore link label for Western cove marker"]', 'Read the recovered journal')
+  assert.equal(await evaluate(gm, `document.querySelector('.map-lore-link select[aria-label="Lore destination for Western cove marker"]')?.value`), sunkenArchive.id, 'Maps UI has the intended authorized Lore target selected')
+  assert.equal((await api(`/api/lore/${sunkenArchive.id}`, gmToken)).response.status, 200, 'GM can currently read the Lore target selected in Maps UI')
+  assert.ok((await api(`/api/maps/${world.id}`, gmToken)).body.pieces.some(piece => piece.id === lorePin && piece.kind === 'pin'), 'Lore target pin exists on the current World Map revision')
+  await clickText(gm, 'Save Lore link', 'form.map-lore-link:has(select[aria-label="Lore destination for Western cove marker"]) button')
+  await waitExpr(gm, "Boolean(document.querySelector('.map-error')) || document.querySelector('.map-notice')?.textContent.includes('Saved on host.')", 'Lore pin destination command result')
+  const loreLinkUiError = await evaluate(gm, "document.querySelector('.map-error')?.textContent || ''")
+  if (loreLinkUiError) throw new Error(`Maps UI rejected Lore destination: ${loreLinkUiError}`)
+  const linkedLoreWorld = await waitMap(world.id, gmToken, map => map.pieces?.some(piece => piece.id === lorePin && piece.destination?.kind === 'lore_entry' && piece.destination.entryId === sunkenArchive.id && piece.destination.title === 'Sunken Archive'), 'authorized World-to-Lore pin')
+  assert.equal(linkedLoreWorld.pieces.find(piece => piece.id === lorePin).destination.label, 'Read the recovered journal')
+  const privateLorePin = await addPiece({ scene: world, kind: 'pin', label: 'Unshared ledger marker', visible: true })
+  acceptancePinIds.add(privateLorePin)
+  await selectValue(gm, 'select[aria-label="Lore destination for Unshared ledger marker"]', privateLore.id)
+  await waitExpr(gm, "Boolean([...document.querySelectorAll('.map-lore-link button')].find(button=>button.textContent.includes('Save Lore link')&&!button.disabled))", 'Lore destination control ready for private target')
+  await clickText(gm, 'Save Lore link', 'form.map-lore-link:has(select[aria-label="Lore destination for Unshared ledger marker"]) button')
+  const linkedPrivateLore = await waitMap(world.id, gmToken, map => map.pieces?.some(piece => piece.id === privateLorePin && piece.destination?.kind === 'lore_entry' && piece.destination.entryId === privateLore.id), 'GM-only Lore pin')
+  assert.ok(linkedPrivateLore.pieces.find(piece => piece.id === privateLorePin).destination)
   const associate = async (scene, encounterId, expectedName) => {
+    // Re-enter Maps through the UI so the revision used by the command comes from a fresh host read.
+    await clickText(gm, 'Table', 'nav[aria-label="Applications"] button')
+    await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
     await clickText(gm, scene.name, '.map-browser button')
+    const latest = await api(`/api/maps/${scene.id}`, gmToken)
+    assert.equal(latest.response.status, 200)
+    await waitExpr(gm, `document.querySelector('.map-toolbar strong')?.textContent===${JSON.stringify(scene.name)} && document.querySelector('.map-revision')?.textContent===${JSON.stringify(`Host revision ${latest.body.revision}`)}`, `${scene.name} fresh UI revision before encounter association`)
     await selectValue(gm, 'select[aria-label="Associated encounter"]', encounterId)
     await waitMap(scene.id, gmToken, map => map.encounterId === encounterId, `${scene.name} encounter association`)
     assert.equal((await api('/api/maps', gmToken)).body.maps.find(map => map.id === scene.id).name, expectedName)
@@ -259,9 +320,17 @@ try {
     assert.ok(!result.timedOut && !result.done, 'SSE replay emits a first authorized event chunk')
     const replayChunk = new TextDecoder().decode(result.value)
     controller.abort(); await reader.cancel().catch(() => {})
-    assert.ok(!replayChunk.includes('PRIVATE GM NOTES') && !replayChunk.includes('GM-private pressure valve') && !replayChunk.includes(privatePin), 'player SSE replay chunk excludes GM-only metadata and private pin identifiers')
+    assert.ok(!replayChunk.includes('PRIVATE GM NOTES') && !replayChunk.includes('GM-private pressure valve') && !replayChunk.includes(privatePin) && !replayChunk.includes(privateLore.id) && !replayChunk.includes('GM-only Tide Ledger'), 'player SSE replay chunk excludes private pins and inaccessible Lore destination IDs/titles')
   }
-  await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
+  const selectFreshMapForMutation = async scene => {
+    await clickText(gm, 'Table', 'nav[aria-label="Applications"] button')
+    await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
+    await clickText(gm, scene.name, '.map-browser button')
+    const latest = await api(`/api/maps/${scene.id}`, gmToken)
+    assert.equal(latest.response.status, 200)
+    await waitExpr(gm, `document.querySelector('.map-toolbar strong')?.textContent===${JSON.stringify(scene.name)} && document.querySelector('.map-revision')?.textContent===${JSON.stringify(`Host revision ${latest.body.revision}`)}`, `${scene.name} fresh UI revision before publication`)
+  }
+  await selectFreshMapForMutation(world)
   await clickText(gm, 'Ashen Coast', '.map-browser button')
   // A scene button click schedules React state work: wait for the chosen scene
   // and its enabled mutation control before clicking Publish.
@@ -269,7 +338,7 @@ try {
   await clickText(gm, 'Publish to players', '.map-toolbar button')
   const publishedWorldByHost = await waitMap(world.id, gmToken, map => map.visibility === 'shared', 'Ashen Coast publication')
   await waitExpr(gm, `document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast' && document.querySelector('.map-toolbar button')?.textContent==='Revoke from players' && document.querySelector('.map-revision')?.textContent===${JSON.stringify(`Host revision ${publishedWorldByHost.revision}`)}`, 'Ashen Coast publication reflected in GM UI')
-  await clickText(gm, 'Flooded Observatory', '.map-browser button')
+  await selectFreshMapForMutation(battle)
   await waitExpr(gm, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory' && [...document.querySelectorAll('.map-toolbar button')].some(button=>button.textContent==='Publish to players'&&!button.disabled)", 'Flooded Observatory selected and publish control ready')
   await clickText(gm, 'Publish to players', '.map-toolbar button')
   const publishedBattleByHost = await waitMap(battle.id, gmToken, map => map.visibility === 'shared', 'Flooded Observatory publication')
@@ -283,21 +352,50 @@ try {
     assert.ok(!JSON.stringify(publishedWorld.body).includes('PRIVATE GM NOTES'))
     assert.ok(!JSON.stringify(publishedBattle.body).includes('PRIVATE GM NOTES'))
     assert.ok(!publishedBattle.body.pieces.some(piece => piece.id === privatePin), 'player map projection omits private pins by ID')
+    const publicLoreDestination = publishedWorld.body.pieces.find(piece => piece.id === lorePin)?.destination
+    assert.deepEqual(publicLoreDestination && { kind: publicLoreDestination.kind, entryId: publicLoreDestination.entryId, title: publicLoreDestination.title }, { kind: 'lore_entry', entryId: sunkenArchive.id, title: 'Sunken Archive' }, 'authorized Lore destination is resolved on the host')
+    const privateDestinationPiece = publishedWorld.body.pieces.find(piece => piece.id === privateLorePin)
+    assert.ok(privateDestinationPiece && !privateDestinationPiece.destination, 'shared location pin omits a private Lore destination rather than exposing a placeholder')
+    assert.ok(!JSON.stringify(publishedWorld.body).includes(privateLore.id) && !JSON.stringify(publishedWorld.body).includes('GM-only Tide Ledger'), 'player HTTP map projection excludes inaccessible Lore ID and title')
+    assert.equal((await api(`/api/lore/${privateLore.id}`, identity.credential)).response.status, 404, 'direct private Lore IDs are unavailable to players')
     assert.deepEqual(publishedBattle.body.pieces.filter(piece => piece.kind === 'actor').map(piece => piece.id).sort(), [tokenA, tokenB].sort(), 'both granted actor tokens are visible to players')
     const replay = await api('/api/state?since=0', identity.credential)
-    assert.ok(!JSON.stringify(replay.body).includes('PRIVATE GM NOTES'), 'player replay omits GM-only metadata')
+    assert.ok(!JSON.stringify(replay.body).includes('PRIVATE GM NOTES') && !JSON.stringify(replay.body).includes(privateLore.id) && !JSON.stringify(replay.body).includes('GM-only Tide Ledger'), 'player replay omits GM-only metadata and private Lore destination details')
     assert.equal((await fetch(`${hostUrl}/api/maps/${world.id}/background/content`, { headers: { authorization: `Bearer ${identity.credential}` } })).status, 200, 'published image is authorized')
+    assert.ok(publishedWorld.body.pieces.some(piece => piece.id === linkPin && piece.visible), 'public map projection includes the shared navigation pin')
   }
-  assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('GM-private pressure valve') || document.body.innerText.includes('PRIVATE GM NOTES')"), 'Player A rendered DOM omits private pin and GM notes')
-  assert.ok(!await evaluate(playerB.sessionId, "document.body.innerText.includes('GM-private pressure valve') || document.body.innerText.includes('PRIVATE GM NOTES')"), 'Player B rendered DOM omits private pin and GM notes')
+  for (const client of [playerA, playerB]) assert.ok(!await evaluate(client.sessionId, "document.body.innerText.includes('GM-private pressure valve') || document.body.innerText.includes('PRIVATE GM NOTES') || document.body.innerText.includes('GM-only Tide Ledger')"), `${client.label} rendered DOM omits private pin, GM notes and private Lore metadata`)
+  // Exercise change and remove only after both player projections proved that
+  // a visible pin does not disclose its private Lore target.
+  await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
+  await clickText(gm, 'Ashen Coast', '.map-browser button')
+  await waitExpr(gm, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'GM returns to Ashen Coast to edit Lore target')
+  await selectValue(gm, 'select[aria-label="Lore destination for Unshared ledger marker"]', sunkenArchive.id)
+  await waitExpr(gm, "Boolean([...document.querySelectorAll('.map-lore-link button')].find(button=>button.textContent.includes('Save Lore link')&&!button.disabled))", 'Lore destination control ready for change')
+  await clickText(gm, 'Save Lore link', 'form.map-lore-link:has(select[aria-label="Lore destination for Unshared ledger marker"]) button')
+  await waitMap(world.id, gmToken, map => map.pieces?.some(piece => piece.id === privateLorePin && piece.destination?.kind === 'lore_entry' && piece.destination.entryId === sunkenArchive.id), 'GM changes pin Lore destination')
+  await waitExpr(gm, "Boolean([...document.querySelectorAll('form.map-lore-link:has(select[aria-label=\"Lore destination for Unshared ledger marker\"]) button')].find(button=>button.textContent.includes('Remove Lore link')&&!button.disabled))", 'changed Lore destination is visible in Maps UI')
+  await clickText(gm, 'Remove Lore link', 'form.map-lore-link:has(select[aria-label="Lore destination for Unshared ledger marker"]) button')
+  const editedPrivateLink = await waitMap(world.id, gmToken, map => map.pieces?.some(piece => piece.id === privateLorePin && !piece.destination), 'GM removes Lore destination')
+  assert.ok(editedPrivateLink.pieces.some(piece => piece.id === privateLorePin), 'removing a link preserves the location pin')
   for (const client of [playerA, playerB]) {
     const session = client.sessionId
     await clickText(session, 'Ashen Coast', '.map-browser button')
-    await waitExpr(session, "document.querySelector('.map-piece-row')?.textContent.includes('Observatory trail marker')", `${client.label} visible World pin`)
+    await waitExpr(session, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", `${client.label} Ashen Coast becomes the active Maps view`)
+    const mapPieceLabels = await evaluate(session, "[...document.querySelectorAll('.map-piece-row')].map(row=>row.querySelector('strong')?.textContent || '')")
+    diagnostics.probes[`${client.label}-world-piece-labels`] = mapPieceLabels
+    await waitExpr(session, "[...document.querySelectorAll('.map-piece-row')].some(row=>row.textContent.includes('Observatory trail marker'))", `${client.label} visible World pin`)
     await clickText(session, 'Go to Flooded Observatory', '.map-piece-row button')
     await waitExpr(session, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", `${client.label} World-to-Battle navigation`)
     await clickText(session, 'Back to previous map', '.map-toolbar button')
     await waitExpr(session, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", `${client.label} Battle-to-World back navigation`)
+    await waitExpr(session, "[...document.querySelectorAll('.map-piece-row button')].some(button=>button.textContent.includes('Open Sunken Archive'))", `${client.label} authorized Lore destination is rendered on the location pin`)
+    await clickText(session, 'Open Sunken Archive', '.map-piece-row button')
+    await waitExpr(session, "document.querySelector('.lore-page h2')?.textContent==='Sunken Archive' && document.body.innerText.includes('map route must not alter')", `${client.label} Map-to-Lore navigation opens authorized article`)
+    assert.equal((await api('/api/state', gmToken)).body.context.activeEncounter, activeEncounterBeforeNavigation, 'Map → Lore navigation leaves session.activeEncounter unchanged')
+    await clickText(session, 'Back to map', '.lore-page .page-intro button')
+    await waitExpr(session, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", `${client.label} Lore-to-origin-Map back navigation`)
+    assert.equal((await api('/api/state', gmToken)).body.context.activeEncounter, activeEncounterBeforeNavigation, 'Lore → Map back navigation leaves session.activeEncounter unchanged')
     assert.equal((await api('/api/state', gmToken)).body.context.activeEncounter, activeEncounterBeforeNavigation, 'map navigation does not change the active encounter')
   }
   await screenshot(playerA.sessionId, 'player-a-ashen-coast-published.png'); await screenshot(playerB.sessionId, 'player-b-ashen-coast-published.png'); await screenshot(gm, 'gm-battle-private-pin.png')
@@ -340,6 +438,12 @@ try {
   await waitExpr(playerA.sessionId, "document.querySelector('.map-cache-state') && [...document.querySelectorAll('.map-browser button strong')].some(item=>item.textContent==='Flooded Observatory')", 'cached authorized maps available offline after reload')
   await clickText(playerA.sessionId, 'Ashen Coast', '.map-browser button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-canvas image.map-background')?.href.baseVal.startsWith('blob:')", 'cached World image rendered offline after reload')
+  assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('GM-only Tide Ledger')"), 'offline map cache contains no private Lore title')
+  assert.ok(await evaluate(playerA.sessionId, "[...document.querySelectorAll('.map-piece-row button')].some(button=>button.textContent.includes('Open Sunken Archive'))"), 'previously authorized Lore destination survives in scoped offline map cache')
+  await clickText(playerA.sessionId, 'Open Sunken Archive', '.map-piece-row button')
+  await waitExpr(playerA.sessionId, "document.querySelector('.lore-page h2')?.textContent==='Sunken Archive' && document.body.innerText.includes('Host disconnected')", 'previously authorized Lore article opens from scoped offline cache as stale read-only content')
+  await clickText(playerA.sessionId, 'Back to map', '.lore-page .page-intro button')
+  await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'offline Lore returns to originating World Map')
   await clickText(playerA.sessionId, 'Go to Flooded Observatory', '.map-piece-row button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory' && document.querySelector('.map-canvas image.map-background')?.href.baseVal.startsWith('blob:')", 'offline cached cross-map navigation and image')
   await screenshot(playerA.sessionId, 'player-a-offline-cached-observatory.png')
@@ -371,6 +475,8 @@ try {
   assert.equal(persistedMaps.find(map => map.id === battle.id)?.visibility, 'gm', 'Battle Map revocation persists after host restart')
   const persistedWorld = await api(`/api/maps/${world.id}`, gmToken); const persistedBattle = await api(`/api/maps/${battle.id}`, gmToken)
   assert.ok(persistedWorld.body.pieces.some(piece => piece.id === linkPin && piece.destination?.sceneId === battle.id), 'World pin and cross-map link persist after host restart')
+  assert.deepEqual(persistedWorld.body.pieces.find(piece => piece.id === lorePin)?.destination, { kind: 'lore_entry', entryId: sunkenArchive.id, title: 'Sunken Archive', label: 'Read the recovered journal' }, 'authorized Lore destination persists after host restart')
+  assert.ok(persistedWorld.body.pieces.some(piece => piece.id === privateLorePin && !piece.destination), 'removed private-pin destination remains removed after host restart')
   assert.ok(persistedBattle.body.pieces.some(piece => piece.id === tokenA && piece.visible) && persistedBattle.body.pieces.some(piece => piece.id === tokenB && piece.visible), 'Battle actor tokens and sharing persist after host restart')
   assert.ok(persistedBattle.body.pieces.some(piece => piece.id === privatePin && !piece.visible), 'GM-private Battle pin persists after host restart')
   assert.equal(persistedWorld.body.encounterId, 'acceptance-coast-encounter'); assert.equal(persistedBattle.body.encounterId, 'acceptance-observatory-encounter')
@@ -388,8 +494,8 @@ try {
   assert.equal(backupManifest.potomacDataVersion, 5, 'exported archive is v5')
   restoreCampaignBackup(backupPath, restoredDb)
   const restoredSql = new DatabaseSync(restoredDb, { readOnly: true })
-  const restoredCounts = Object.fromEntries(['map_scenes', 'map_pieces', 'map_links', 'map_encounter_scenes', 'map_assets'].map(table => [table, restoredSql.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count]))
-  assert.equal(restoredCounts.map_scenes, 2); assert.equal(restoredCounts.map_pieces, 4); assert.equal(restoredCounts.map_links, 1); assert.equal(restoredCounts.map_encounter_scenes, 2); assert.equal(restoredCounts.map_assets, 2)
+  const restoredCounts = Object.fromEntries(['map_scenes', 'map_pieces', 'map_links', 'map_lore_links', 'map_encounter_scenes', 'map_assets'].map(table => [table, restoredSql.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count]))
+  assert.equal(restoredCounts.map_scenes, 2); assert.equal(restoredCounts.map_pieces, 6); assert.equal(restoredCounts.map_links, 1); assert.equal(restoredCounts.map_lore_links, 1); assert.equal(restoredCounts.map_encounter_scenes, 2); assert.equal(restoredCounts.map_assets, 2)
   const assetRows = restoredSql.prepare('SELECT sha256 FROM map_assets ORDER BY sha256').all(); restoredSql.close()
   const restoredAssetBytes = await Promise.all(assetRows.map(asset => readFile(join(`${restoredDb}.assets`, asset.sha256))))
   const expectedWorldBytes = await readFile(worldImage); const expectedBattleBytes = await readFile(battleImage)
@@ -397,11 +503,60 @@ try {
   hostProcess = launchHost(restoredDb); await waitFor(`${hostUrl}/health`, 'v5-restored host')
   const restoredMaps = (await api('/api/maps', gmToken)).body.maps
   assert.equal(restoredMaps.length, 2); assert.equal((await api(`/api/maps/${world.id}`, gmToken)).body.pieces.find(piece => piece.id === linkPin).destination.sceneId, battle.id)
+  assert.deepEqual((await api(`/api/maps/${world.id}`, gmToken)).body.pieces.find(piece => piece.id === lorePin).destination, { kind: 'lore_entry', entryId: sunkenArchive.id, title: 'Sunken Archive', label: 'Read the recovered journal' }, 'v5 restore preserves the authorized Map pin → Lore relation')
+  assert.equal((await api(`/api/lore/${sunkenArchive.id}`, playerAIdentity.credential)).response.status, 200, 'restored Lore authorization and stable target ID remain valid for enrolled player')
+  assert.ok(!JSON.stringify((await api(`/api/maps/${world.id}`, playerAIdentity.credential)).body).includes(privateLore.id), 'v5-restored player projection contains no removed or private Lore target ID')
   assert.equal((await api(`/api/maps/${battle.id}`, playerAIdentity.credential)).response.status, 404, 'restored host preserves revoked-player authorization')
   await waitExpr(gm, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'GM reconnects to v5-restored host')
   await screenshot(gm, 'gm-after-v5-restored-host.png')
   diagnostics.backup = { schemaVersion: backupManifest.potomacDataVersion, restoredCounts, mapIds: [world.id, battle.id], imageBytes: restoredAssetBytes.map(bytes => bytes.length) }
   mark('Stage 8: v5 backup restores separate empty database and exact map image assets', 'PASS', diagnostics.backup)
+  const loreRevokeCursor = (await api('/api/state', playerAIdentity.credential)).body.revision
+  const loreRevokeController = new AbortController()
+  const loreRevokeStream = await fetch(`${hostUrl}/api/stream?since=${loreRevokeCursor}`, { headers: { authorization: `Bearer ${playerAIdentity.credential}` }, signal: loreRevokeController.signal })
+  assert.equal(loreRevokeStream.status, 200, 'Player A can observe the authorized live stream before Lore revocation')
+  const loreRevokeReader = loreRevokeStream.body.getReader()
+  await clickText(gm, 'Lore', 'nav[aria-label="Applications"] button')
+  await waitExpr(gm, "[...document.querySelectorAll('.lore-list button strong')].some(item=>item.textContent==='Sunken Archive')", 'restored Lore list is ready before selecting its article')
+  await clickText(gm, 'Sunken Archive', '.lore-list button')
+  await waitExpr(gm, "document.querySelector('.lore-article h2')?.textContent==='Sunken Archive' && [...document.querySelectorAll('.lore-article .action-grid button')].some(button=>button.textContent==='Revoke from players')", 'GM opens the restored Lore target for revocation')
+  await clickText(gm, 'Revoke from players', '.lore-article .action-grid button')
+  await waitExpr(gm, "[...document.querySelectorAll('.lore-article .action-grid button')].some(button=>button.textContent==='Publish to players')", 'GM UI confirms Lore revocation')
+  let loreRevokeEvent = ''
+  while (!loreRevokeEvent.includes('permissions.refresh')) {
+    const { done, value } = await loreRevokeReader.read()
+    assert.equal(done, false, 'Player SSE remains open while Lore authorization refreshes')
+    loreRevokeEvent += new TextDecoder().decode(value)
+  }
+  loreRevokeController.abort(); await loreRevokeReader.cancel().catch(() => {})
+  assert.ok(!loreRevokeEvent.includes(sunkenArchive.id) && !loreRevokeEvent.includes('Sunken Archive') && !loreRevokeEvent.includes(world.id), 'Lore revocation SSE refresh contains no target, title or source-map metadata')
+  assert.equal((await api(`/api/lore/${sunkenArchive.id}`, playerAIdentity.credential)).response.status, 404, 'revoked Lore ID is no longer directly readable after v5 restore')
+  for (const identity of [playerAIdentity, playerBIdentity]) {
+    const projected = await api(`/api/maps/${world.id}`, identity.credential)
+    assert.equal(projected.response.status, 200)
+    const pin = projected.body.pieces.find(piece => piece.id === lorePin)
+    assert.ok(pin && !pin.destination, 'revoked Lore target is omitted while the independently shared location pin remains visible')
+    assert.ok(!JSON.stringify(projected.body).includes(sunkenArchive.id) && !JSON.stringify(projected.body).includes('Sunken Archive'), 'revoked Lore ID and title are absent from current map projection')
+    const replay = await api('/api/state?since=0', identity.credential)
+    assert.ok(!JSON.stringify(replay.body).includes(sunkenArchive.id) && !JSON.stringify(replay.body).includes('Sunken Archive'), 'revoked Lore metadata is absent from authorized state replay')
+    await clickText(identity === playerAIdentity ? playerA.sessionId : playerB.sessionId, 'Table', 'nav[aria-label="Applications"] button')
+    const client = identity === playerAIdentity ? playerA : playerB
+    await clickText(client.sessionId, 'Maps', 'nav[aria-label="Applications"] button')
+    await clickText(client.sessionId, 'Ashen Coast', '.map-browser button')
+    await waitExpr(client.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast' && [...document.querySelectorAll('.map-piece-row')].some(row=>row.textContent.includes('Western cove marker'))", `${client.label} refreshed map retains the public pin after target revocation`)
+    assert.ok(!await evaluate(client.sessionId, "document.querySelector('.lore-article h2')?.textContent==='Sunken Archive' || [...document.querySelectorAll('.map-piece-row button')].some(button=>button.textContent.includes('Open Sunken Archive'))"), `${client.label} rendered UI does not expose revoked Lore metadata or navigation`)
+  }
+  await clickText(playerA.sessionId, 'Lore', 'nav[aria-label="Applications"] button')
+  await waitExpr(playerA.sessionId, "![...document.querySelectorAll('.lore-list button strong')].some(item=>item.textContent==='Sunken Archive')", 'Player A refreshed Lore list excludes revoked article')
+  await cdp('Fetch.enable', { patterns: [{ urlPattern: `${hostUrl}/*`, requestStage: 'Request' }] }, playerA.sessionId)
+  await cdp('Page.reload', { ignoreCache: false }, playerA.sessionId)
+  await waitExpr(playerA.sessionId, "document.readyState==='complete' && document.querySelector('.status')?.textContent.match(/OFFLINE|DISCONNECTED/)", 'Player A reloads after authorization refresh without host access')
+  await clickText(playerA.sessionId, 'Lore', 'nav[aria-label="Applications"] button')
+  await waitExpr(playerA.sessionId, "![...document.querySelectorAll('.lore-list button strong')].some(item=>item.textContent==='Sunken Archive') && !document.body.innerText.includes('Sunken Archive')", 'refreshed offline Lore cache excludes the revoked article')
+  await cdp('Fetch.disable', {}, playerA.sessionId)
+  await waitExpr(playerA.sessionId, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'Player A reconnects after revoked-Lore offline-cache check')
+  await screenshot(playerA.sessionId, 'player-a-revoked-lore-cache-refreshed.png')
+  mark('Stage 8b: restored Lore revocation refreshes both players, raw stream, map projection and offline cache', 'PASS')
   await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
   await waitExpr(gm, "Boolean(document.querySelector('.maps-page'))", 'GM Maps UI after backup restore')
   await clickText(gm, 'Flooded Observatory', '.map-browser button')

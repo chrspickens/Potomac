@@ -5,9 +5,9 @@ import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 import type { MapScene, MapPiece, MapSceneCreate } from '@potomac/contracts'
 
 export type { MapScene, MapPiece, MapGrid, MapSceneKind } from '@potomac/contracts'
-export type MapPieceView = MapPiece & { destination?: { sceneId: string; name: string; label: string } }
+export type MapPieceView = MapPiece
 export type MapSceneView = MapScene & { pieces: MapPieceView[]; encounterId?: string | null }
-export type MapCommand = { operationId: string; baseRevision: number; command: 'update' | 'archive' | 'restore' | 'publish' | 'revoke' | 'piece.put' | 'piece.delete' | 'link.put' | 'link.delete' | 'encounter.set'; name?: string; kind?: MapScene['kind']; width?: number; height?: number; grid?: MapScene['grid']; visibility?: MapScene['visibility']; gmNotes?: string; piece?: Omit<MapPiece, 'revision'>; pieceId?: string; targetSceneId?: string; label?: string; encounterId?: string | null }
+export type MapCommand = { operationId: string; baseRevision: number; command: 'update' | 'archive' | 'restore' | 'publish' | 'revoke' | 'piece.put' | 'piece.delete' | 'link.put' | 'link.delete' | 'lore-link.put' | 'lore-link.delete' | 'encounter.set'; name?: string; kind?: MapScene['kind']; width?: number; height?: number; grid?: MapScene['grid']; visibility?: MapScene['visibility']; gmNotes?: string; piece?: Omit<MapPiece, 'revision'>; pieceId?: string; targetSceneId?: string; targetLoreEntryId?: string; label?: string; encounterId?: string | null }
 
 export async function listMaps(role: Role): Promise<MapSceneView[]> {
   if (!baseUrl) return []

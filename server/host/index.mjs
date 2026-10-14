@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS map_pieces (id TEXT PRIMARY KEY, scene_id TEXT NOT NU
 CREATE INDEX IF NOT EXISTS map_pieces_scene ON map_pieces(scene_id,id);
 CREATE TABLE IF NOT EXISTS map_links (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, source_scene_id TEXT NOT NULL REFERENCES map_scenes(id) ON DELETE CASCADE, target_scene_id TEXT NOT NULL REFERENCES map_scenes(id), piece_id TEXT NOT NULL REFERENCES map_pieces(id) ON DELETE CASCADE, label TEXT NOT NULL DEFAULT '', UNIQUE(source_scene_id,piece_id));
 CREATE INDEX IF NOT EXISTS map_links_target ON map_links(campaign_id,target_scene_id);
+CREATE TABLE IF NOT EXISTS map_lore_links (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, source_scene_id TEXT NOT NULL REFERENCES map_scenes(id) ON DELETE CASCADE, target_lore_entry_id TEXT NOT NULL REFERENCES lore_entries(id) ON DELETE CASCADE, piece_id TEXT NOT NULL REFERENCES map_pieces(id) ON DELETE CASCADE, label TEXT NOT NULL DEFAULT '', UNIQUE(source_scene_id,piece_id));
+CREATE INDEX IF NOT EXISTS map_lore_links_target ON map_lore_links(campaign_id,target_lore_entry_id);
 CREATE TABLE IF NOT EXISTS map_encounter_scenes (campaign_id TEXT NOT NULL, encounter_id TEXT NOT NULL REFERENCES encounters(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES map_scenes(id), PRIMARY KEY(campaign_id,encounter_id));
 CREATE TABLE IF NOT EXISTS map_assets (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, scene_id TEXT NOT NULL REFERENCES map_scenes(id), original_name TEXT NOT NULL, media_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS map_assets_scene ON map_assets(campaign_id,scene_id);
@@ -236,11 +238,21 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     encounterId: (() => { const association=db.prepare('SELECT encounter_id FROM map_encounter_scenes WHERE campaign_id=? AND scene_id=? ORDER BY encounter_id LIMIT 1').get(campaignId,scene.id); const encounter=association&&db.prepare('SELECT * FROM encounters WHERE id=?').get(association.encounter_id); return encounter&&(auth.role==='gm'||encounter.visibility==='public')?encounter.id:null; })(),
     ...(auth.role === 'gm' ? { gmNotes: scene.gm_notes } : {}),
     background: scene.background_id ? (() => { const asset = db.prepare('SELECT * FROM map_assets WHERE id=? AND scene_id=?').get(scene.background_id, scene.id); return asset && { id: asset.id, name: asset.original_name, mediaType: asset.media_type, byteSize: asset.byte_size, sha256: asset.sha256 }; })() : null });
+  const mapLoreLink = piece => db.prepare('SELECT target_lore_entry_id,label FROM map_lore_links WHERE piece_id=?').get(piece.id);
+  const canReadMapDestination = (piece, auth) => {
+    const loreLink = mapLoreLink(piece);
+    if (loreLink) return canReadLore(loreRow.get(loreLink.target_lore_entry_id, campaignId), auth);
+    const mapLink = db.prepare('SELECT target_scene_id FROM map_links WHERE piece_id=?').get(piece.id);
+    return !mapLink || canReadMap(mapSceneRow.get(mapLink.target_scene_id, campaignId), auth);
+  };
   const mapPieces = (scene, auth) => db.prepare('SELECT * FROM map_pieces WHERE scene_id=? ORDER BY id').all(scene.id)
-    .filter(piece => auth.role === 'gm' || piece.visible === 1 && (piece.kind !== 'actor' || canReadActor(actorRow.get(piece.actor_id), auth)) && (() => { const link = db.prepare('SELECT target_scene_id FROM map_links WHERE piece_id=?').get(piece.id); return !link || canReadMap(mapSceneRow.get(link.target_scene_id, campaignId), auth); })())
+    // The visible pin is independent of its Lore target. Keep the pin in the
+    // projection but omit its destination below when the Lore policy rejects it.
+    .filter(piece => auth.role === 'gm' || piece.visible === 1 && (piece.kind !== 'actor' || canReadActor(actorRow.get(piece.actor_id), auth)) && (mapLoreLink(piece) || canReadMapDestination(piece, auth)))
     .map(piece => ({ id: piece.id, sceneId: piece.scene_id, kind: piece.kind, x: piece.x, y: piece.y, visible: Boolean(piece.visible), revision: piece.revision,
       ...(piece.kind === 'actor' ? { actorId: piece.actor_id } : { label: piece.label }),
-      ...(piece.kind === 'pin' && db.prepare('SELECT target_scene_id,label FROM map_links WHERE piece_id=?').get(piece.id) ? { destination: (() => { const link = db.prepare('SELECT target_scene_id,label FROM map_links WHERE piece_id=?').get(piece.id); const target = mapSceneRow.get(link.target_scene_id, campaignId); return canReadMap(target, auth) ? { sceneId: target.id, name: target.name, label: link.label } : undefined; })() } : {}) }));
+      ...(piece.kind === 'pin' && mapLoreLink(piece) ? { destination: (() => { const link = mapLoreLink(piece); const target = loreRow.get(link.target_lore_entry_id, campaignId); return canReadLore(target, auth) ? { kind: 'lore_entry', entryId: target.id, title: target.title, label: link.label ?? '' } : undefined; })() }
+        : piece.kind === 'pin' && db.prepare('SELECT target_scene_id,label FROM map_links WHERE piece_id=?').get(piece.id) ? { destination: (() => { const link = db.prepare('SELECT target_scene_id,label FROM map_links WHERE piece_id=?').get(piece.id); const target = mapSceneRow.get(link.target_scene_id, campaignId); return canReadMap(target, auth) ? { kind: 'map_scene', sceneId: target.id, name: target.name, label: link.label } : undefined; })() } : {}) }));
   const mapsFor = auth => db.prepare('SELECT * FROM map_scenes WHERE campaign_id=? AND archived=0 ORDER BY id').all(campaignId).filter(scene => canReadMap(scene, auth)).map(scene => ({ ...mapProjection(scene, auth), pieces: mapPieces(scene, auth) }));
   const latest = () => Number(db.prepare('SELECT COALESCE(MAX(cursor),0) AS n FROM events').get().n);
   const loopbackOnly = () => {
@@ -317,6 +329,14 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       const title = link.target_kind === 'lore' ? target.title : link.target_kind === 'actor' ? projectActor(target, auth).data.name || target.id : target.name;
       return { id: link.id, targetKind: link.target_kind, targetId: link.target_id, targetTitle: title, ...(link.label ? { label: link.label } : {}) };
     });
+  const loreMapRefreshVisible = (event, auth) => {
+    if (auth.role === 'gm' || !auth.memberId || !['lore.created','lore.updated','lore.published','lore.revoked','lore.archived','lore.restored'].includes(event.kind)) return false;
+    let entryId;
+    try { entryId = JSON.parse(event.payload).entryId; } catch { return false; }
+    if (typeof entryId !== 'string') return false;
+    return db.prepare('SELECT source_scene_id FROM map_lore_links WHERE campaign_id=? AND target_lore_entry_id=?').all(campaignId, entryId)
+      .some(link => canReadMap(mapSceneRow.get(link.source_scene_id, campaignId), auth));
+  };
   const actionUsesHiddenFields = (action, actor) => {
     const hiddenPaths = JSON.parse(actor.visibility).gmOnly || [];
     const expressions = [action.requires, action.resolution?.modifier, ...(action.effects || []).map(effect => effect.amount)];
@@ -326,6 +346,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     || Boolean(db.prepare("SELECT 1 FROM encounters WHERE id=? AND visibility='public'").get(encounterId));
   const visibleEvent = (event, auth) => {
     if (auth.role === 'gm') return true;
+    if (loreMapRefreshVisible(event, auth)) return true;
     if (event.kind.startsWith('lore.')) {
       const payload = JSON.parse(event.payload);
       const entry = payload.entryId ? loreRow.get(payload.entryId, campaignId) : null;
@@ -334,7 +355,6 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }
       return Boolean(entry && canReadLore(entry, auth));
     }
-    if (event.visibility !== 'public') return false;
     let payload;
     try { payload = JSON.parse(event.payload); } catch { return false; }
     if (event.kind.startsWith('map.')) {
@@ -343,6 +363,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       if (payload.targetSceneId && !canReadMap(mapSceneRow.get(payload.targetSceneId, campaignId), auth)) return false;
       return Boolean(sceneId && canReadMap(mapSceneRow.get(sceneId, campaignId), auth));
     }
+    if (event.visibility !== 'public') return false;
     if (payload.sessionId) {
       const session = db.prepare('SELECT encounter_id FROM sessions WHERE id=? AND campaign_id=?').get(payload.sessionId, campaignId);
       if (!session || !visibleEncounter(session.encounter_id, auth)) return false;
@@ -354,6 +375,18 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     return true;
   };
   const eventJson = (event, auth) => {
+    const loreLifecycleEvent = ['lore.created','lore.updated','lore.published','lore.revoked','lore.archived','lore.restored'].includes(event.kind);
+    let opaqueLoreRefresh = auth.role !== 'gm' && event.kind.startsWith('map.lore-link.');
+    if (auth.role !== 'gm' && loreLifecycleEvent) {
+      let entry;
+      try { const entryId = JSON.parse(event.payload).entryId; if (typeof entryId === 'string') entry = loreRow.get(entryId, campaignId); } catch {}
+      // Keep the established, minimal lifecycle event for Lore a player can
+      // currently read. An inaccessible target referenced by a shared pin
+      // yields only an opaque refresh, including on revocation/archive.
+      opaqueLoreRefresh ||= Boolean(entry && !canReadLore(entry, auth) && loreMapRefreshVisible(event, auth));
+    }
+    if (opaqueLoreRefresh)
+      return { cursor: event.cursor, id: event.id, kind: 'permissions.refresh', visibility: 'public', payload: {}, createdAt: event.created_at };
     const payload = JSON.parse(event.payload);
     // Action parameters are client supplied and may contain values copied from GM-only fields.
     if (auth.role === 'player') {
@@ -653,7 +686,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const body = await readBody(req);
         const creating = url.pathname === '/api/maps';
         const id = creating ? body.id : decodeURIComponent(mapCommandMatch[1]);
-        const allowedKeys = creating ? ['operationId','baseRevision','id','campaignId','name','kind','width','height','grid','visibility','gmNotes'] : ['operationId','baseRevision','command','name','kind','width','height','grid','visibility','gmNotes','piece','pieceId','targetSceneId','label','encounterId'];
+        const allowedKeys = creating ? ['operationId','baseRevision','id','campaignId','name','kind','width','height','grid','visibility','gmNotes'] : ['operationId','baseRevision','command','name','kind','width','height','grid','visibility','gmNotes','piece','pieceId','targetSceneId','targetLoreEntryId','label','encounterId'];
         if (!body || Object.keys(body).some(key => !allowedKeys.includes(key)) || typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.operationId) || !Number.isInteger(body.baseRevision) || body.baseRevision < 0)
           return json(res, 400, { error: 'Valid operationId, baseRevision, and map command are required', reasonCode: 'invalid_command' });
         if (creating && (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))) return json(res, 400, { error: 'Map ID must be a stable opaque identifier', reasonCode: 'invalid_map' });
@@ -666,9 +699,9 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const current = creating ? null : mapSceneRow.get(id, campaignId);
         if (!creating && (!current || body.baseRevision !== current.revision)) return json(res, current ? 409 : 404, current ? { error: 'Map revision conflict', reasonCode: 'revision_conflict', currentRevision: current.revision } : { error: 'Map scene not found' });
         const command = creating ? 'create' : body.command;
-        if (!creating && !['update','archive','restore','publish','revoke','piece.put','piece.delete','link.put','link.delete','encounter.set','background.remove'].includes(command)) return json(res, 400, { error: 'Unsupported map command', reasonCode: 'unsupported_command' });
+        if (!creating && !['update','archive','restore','publish','revoke','piece.put','piece.delete','link.put','link.delete','lore-link.put','lore-link.delete','encounter.set','background.remove'].includes(command)) return json(res, 400, { error: 'Unsupported map command', reasonCode: 'unsupported_command' });
         const commandFields = creating ? ['operationId','baseRevision','id','campaignId','name','kind','width','height','grid','visibility','gmNotes']
-          : ['operationId','baseRevision','command', ...(command === 'update' ? ['name','kind','width','height','grid','gmNotes'] : command === 'piece.put' ? ['piece'] : command === 'piece.delete' || command === 'link.delete' ? ['pieceId'] : command === 'link.put' ? ['pieceId','targetSceneId','label'] : command === 'encounter.set' ? ['encounterId'] : [])];
+          : ['operationId','baseRevision','command', ...(command === 'update' ? ['name','kind','width','height','grid','gmNotes'] : command === 'piece.put' ? ['piece'] : command === 'piece.delete' || command === 'link.delete' || command === 'lore-link.delete' ? ['pieceId'] : command === 'link.put' ? ['pieceId','targetSceneId','label'] : command === 'lore-link.put' ? ['pieceId','targetLoreEntryId','label'] : command === 'encounter.set' ? ['encounterId'] : [])];
         if (Object.keys(body).some(key => !commandFields.includes(key))) return json(res,400,{error:'Fields are not valid for this map command',reasonCode:'invalid_command'});
         const next = { name: body.name ?? current?.name, kind: body.kind ?? current?.kind, width: body.width ?? current?.width, height: body.height ?? current?.height,
           grid: body.grid ?? (current ? JSON.parse(current.grid) : { type: body.kind === 'world' ? 'none' : 'square', size: 1 }), visibility: body.visibility ?? current?.visibility ?? 'gm', gmNotes: body.gmNotes ?? current?.gm_notes ?? '' };
@@ -678,12 +711,14 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           const conflictingPiece = piece && db.prepare('SELECT scene_id FROM map_pieces WHERE id=?').get(piece.id);
           if (conflictingPiece && conflictingPiece.scene_id !== id) return json(res,409,{error:'Map piece ID already belongs to another scene',reasonCode:'operation_conflict'});
           if (!piece || Object.keys(piece).some(key=>!['id','sceneId','kind','x','y','visible','revision','actorId','label'].includes(key)) || piece.sceneId !== undefined && piece.sceneId !== id || !/^[A-Za-z0-9_-]{1,128}$/.test(piece.id || '') || !['actor','pin'].includes(piece.kind) || piece.visible !== undefined && typeof piece.visible !== 'boolean' || !Number.isFinite(piece.x) || !Number.isFinite(piece.y) || piece.x < 0 || piece.y < 0 || piece.x > current.width || piece.y > current.height || piece.kind === 'actor' && (typeof piece.actorId !== 'string' || !actorRow.get(piece.actorId) || actorRow.get(piece.actorId).archived || actorRow.get(piece.actorId).module_id !== campaignJson().systemModuleId || actorRow.get(piece.actorId).module_version !== campaignJson().systemModuleVersion) || piece.kind === 'pin' && (typeof piece.label !== 'string' || piece.label.length > 200)) return json(res, 400, { error: 'Map piece is invalid or references an unavailable actor', reasonCode: 'invalid_piece' });
-          if (piece.kind === 'actor' && db.prepare('SELECT 1 FROM map_links WHERE piece_id=?').get(piece.id)) return json(res,409,{error:'Unlink a destination before changing a pin into an actor token',reasonCode:'invalid_piece'});
+          if (piece.kind === 'actor' && db.prepare('SELECT 1 FROM map_links WHERE piece_id=? UNION SELECT 1 FROM map_lore_links WHERE piece_id=?').get(piece.id,piece.id)) return json(res,409,{error:'Unlink a destination before changing a pin into an actor token',reasonCode:'invalid_piece'});
         }
         if (!creating && command === 'piece.delete' && !db.prepare('SELECT 1 FROM map_pieces WHERE id=? AND scene_id=?').get(body.pieceId,id)) return json(res,404,{error:'Map piece not found',reasonCode:'not_found'});
         if (!creating && command === 'link.delete' && !db.prepare('SELECT 1 FROM map_links WHERE source_scene_id=? AND piece_id=?').get(id,body.pieceId)) return json(res,404,{error:'Map link not found',reasonCode:'not_found'});
+        if (!creating && command === 'lore-link.delete' && !db.prepare('SELECT 1 FROM map_lore_links WHERE source_scene_id=? AND piece_id=?').get(id,body.pieceId)) return json(res,404,{error:'Map Lore link not found',reasonCode:'not_found'});
         if (!creating && command === 'update' && (db.prepare('SELECT 1 FROM map_pieces WHERE scene_id=? AND (x>? OR y>?) LIMIT 1').get(id,next.width,next.height))) return json(res,400,{error:'Scene dimensions cannot exclude existing pieces',reasonCode:'invalid_geometry'});
         if (!creating && command === 'link.put' && (!/^[A-Za-z0-9_-]{1,128}$/.test(body.pieceId || '') || !mapSceneRow.get(body.targetSceneId, campaignId) || !db.prepare("SELECT 1 FROM map_pieces WHERE id=? AND scene_id=? AND kind='pin'").get(body.pieceId, id) || typeof body.label !== 'string' || body.label.length > 200)) return json(res, 404, { error: 'Map link target or pin unavailable', reasonCode: 'invalid_reference' });
+        if (!creating && command === 'lore-link.put' && (!/^[A-Za-z0-9_-]{1,128}$/.test(body.pieceId || '') || !/^[A-Za-z0-9_-]{1,128}$/.test(body.targetLoreEntryId || '') || !canReadLore(loreRow.get(body.targetLoreEntryId, campaignId), { role: 'gm', memberId: null }) || !db.prepare("SELECT 1 FROM map_pieces WHERE id=? AND scene_id=? AND kind='pin'").get(body.pieceId, id) || body.label !== undefined && (typeof body.label !== 'string' || body.label.length > 200))) return json(res,404,{error:'Map Lore target or pin unavailable',reasonCode:'invalid_reference'});
         if (!creating && command === 'encounter.set' && body.encounterId !== null && !db.prepare('SELECT 1 FROM encounters WHERE id=?').get(body.encounterId)) return json(res, 404, { error: 'Encounter unavailable', reasonCode: 'invalid_reference' });
         const now = new Date().toISOString();
         const response = transaction(() => {
@@ -698,8 +733,16 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
               .run(next.name.trim(),next.kind,next.width,next.height,JSON.stringify(next.grid),visibility,next.gmNotes,command === 'archive' ? 1 : command === 'restore' ? 0 : current.archived,command === 'background.remove' ? null : current.background_id,revision,now,id,current.revision);
             if (command === 'piece.put') db.prepare('INSERT INTO map_pieces(id,scene_id,kind,actor_id,label,x,y,visible,revision) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,actor_id=excluded.actor_id,label=excluded.label,x=excluded.x,y=excluded.y,visible=excluded.visible,revision=map_pieces.revision+1 WHERE map_pieces.scene_id=excluded.scene_id').run(body.piece.id,id,body.piece.kind,body.piece.actorId || null,body.piece.label || '',body.piece.x,body.piece.y,body.piece.visible === false ? 0 : 1);
             if (command === 'piece.delete') db.prepare('DELETE FROM map_pieces WHERE id=? AND scene_id=?').run(body.pieceId,id);
-            if (command === 'link.put') db.prepare('INSERT INTO map_links(id,campaign_id,source_scene_id,target_scene_id,piece_id,label) VALUES(?,?,?,?,?,?) ON CONFLICT(source_scene_id,piece_id) DO UPDATE SET target_scene_id=excluded.target_scene_id,label=excluded.label').run(randomUUID(),campaignId,id,body.targetSceneId,body.pieceId,body.label);
+            if (command === 'link.put') {
+              db.prepare('DELETE FROM map_lore_links WHERE source_scene_id=? AND piece_id=?').run(id,body.pieceId);
+              db.prepare('INSERT INTO map_links(id,campaign_id,source_scene_id,target_scene_id,piece_id,label) VALUES(?,?,?,?,?,?) ON CONFLICT(source_scene_id,piece_id) DO UPDATE SET target_scene_id=excluded.target_scene_id,label=excluded.label').run(randomUUID(),campaignId,id,body.targetSceneId,body.pieceId,body.label);
+            }
             if (command === 'link.delete') db.prepare('DELETE FROM map_links WHERE source_scene_id=? AND piece_id=?').run(id,body.pieceId);
+            if (command === 'lore-link.put') {
+              db.prepare('DELETE FROM map_links WHERE source_scene_id=? AND piece_id=?').run(id,body.pieceId);
+              db.prepare('INSERT INTO map_lore_links(id,campaign_id,source_scene_id,target_lore_entry_id,piece_id,label) VALUES(?,?,?,?,?,?) ON CONFLICT(source_scene_id,piece_id) DO UPDATE SET target_lore_entry_id=excluded.target_lore_entry_id,label=excluded.label').run(randomUUID(),campaignId,id,body.targetLoreEntryId,body.pieceId,body.label ?? '');
+            }
+            if (command === 'lore-link.delete') db.prepare('DELETE FROM map_lore_links WHERE source_scene_id=? AND piece_id=?').run(id,body.pieceId);
             if (command === 'encounter.set') { if (body.encounterId) db.prepare('INSERT INTO map_encounter_scenes(campaign_id,encounter_id,scene_id) VALUES(?,?,?) ON CONFLICT(campaign_id,encounter_id) DO UPDATE SET scene_id=excluded.scene_id').run(campaignId,body.encounterId,id); else db.prepare('DELETE FROM map_encounter_scenes WHERE campaign_id=? AND scene_id=?').run(campaignId,id); }
             if (command === 'background.remove' && current.background_id) db.prepare('DELETE FROM map_assets WHERE id=? AND scene_id=?').run(current.background_id,id);
           }

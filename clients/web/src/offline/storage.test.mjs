@@ -14,6 +14,16 @@ test('offline map cache enforces a finite, bounded scene and image budget', () =
   assert.throws(() => validateAuthorizedMapCache([{ scene, cachedAt: 1 }, { scene, cachedAt: 2 }], 'campaign-a'), /Duplicate/);
 });
 
+test('offline map cache accepts only well-formed typed map or Lore pin destinations', () => {
+  const base = { id: 'map-a', campaignId: 'campaign-a', name: 'Map', kind: 'world', revision: 1, width: 100, height: 80, grid: { type: 'none', size: 0 }, visibility: 'shared', archived: false };
+  const pin = { id: 'pin-1', sceneId: 'map-a', kind: 'pin', x: 2, y: 3, visible: true, revision: 1 };
+  const valid = destination => validateAuthorizedMapCache([{ scene: { ...base, pieces: [{ ...pin, destination }] }, cachedAt: 1 }], 'campaign-a');
+  valid({ kind: 'map_scene', sceneId: 'map-b', name: 'Other map', label: 'Passage' });
+  valid({ kind: 'lore_entry', entryId: 'lore-sunken-archive', title: 'Sunken Archive', label: 'Read journal' });
+  assert.throws(() => valid({ kind: 'lore_entry', entryId: 'lore-private', title: 'Private entry' }), /destination/);
+  assert.throws(() => valid({ kind: 'lore_entry', entryId: 'lore-private', title: 'Private entry', label: '', sceneId: 'map-secret' }), /destination/);
+});
+
 test('offline scope key keeps host, campaign, and member identities distinct', () => {
   const base = { host: 'https://host.example', campaignId: 'campaign-1', memberId: 'member-1' };
   assert.notEqual(offlineScopeKey(base), offlineScopeKey({ ...base, host: 'https://other.example' }));

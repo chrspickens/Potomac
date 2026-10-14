@@ -9,11 +9,14 @@ export const BACKUP_SCHEMA_VERSION = 5;
 const V2_COLLECTIONS = ['campaign', 'modules', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions'];
 const PR45_V3_COLLECTIONS = [...V2_COLLECTIONS, 'sessions', 'session_state', 'session_operations'];
 const V3_COLLECTIONS = [...V2_COLLECTIONS, 'lore_entries', 'lore_operations', 'lore_links', 'assets'];
-const MAP_COLLECTIONS = ['map_scenes', 'map_pieces', 'map_links', 'map_encounter_scenes', 'map_assets', 'map_operations'];
+const MAP_COLLECTIONS = ['map_scenes', 'map_pieces', 'map_links', 'map_lore_links', 'map_encounter_scenes', 'map_assets', 'map_operations'];
+const LEGACY_MAP_COLLECTIONS = MAP_COLLECTIONS.filter(name => name !== 'map_lore_links');
 const V4_TABLE_COLLECTIONS = [...V2_COLLECTIONS, 'lore_entries', 'lore_operations', 'lore_links', 'lore_assets', 'sessions', 'session_state', 'session_operations'];
 const TABLE_COLLECTIONS = [...V4_TABLE_COLLECTIONS, ...MAP_COLLECTIONS];
+const LEGACY_TABLE_COLLECTIONS = [...V4_TABLE_COLLECTIONS, ...LEGACY_MAP_COLLECTIONS];
 const V4_COLLECTIONS = [...V2_COLLECTIONS, 'lore_entries', 'lore_operations', 'lore_links', 'lore_assets', 'sessions', 'session_state', 'session_operations', 'assets'];
 const COLLECTIONS = [...TABLE_COLLECTIONS, 'assets'];
+const LEGACY_COLLECTIONS = [...LEGACY_TABLE_COLLECTIONS, 'assets'];
 const TABLES = {
   campaign: ['id', 'context', 'name', 'system_module_id', 'system_module_version', 'revision'], modules: ['id', 'version', 'manifest'],
   encounters: ['id', 'name', 'summary', 'status', 'revision', 'created_at', 'updated_at', 'visibility', 'gm_notes'],
@@ -36,6 +39,7 @@ const TABLES = {
   map_scenes: ['id','campaign_id','name','kind','revision','width','height','grid','visibility','archived','gm_notes','background_id','created_at','updated_at'],
   map_pieces: ['id','scene_id','kind','actor_id','label','x','y','visible','revision'],
   map_links: ['id','campaign_id','source_scene_id','target_scene_id','piece_id','label'],
+  map_lore_links: ['id','campaign_id','source_scene_id','target_lore_entry_id','piece_id','label'],
   map_encounter_scenes: ['campaign_id','encounter_id','scene_id'],
   map_assets: ['id','campaign_id','scene_id','original_name','media_type','byte_size','sha256','created_at'],
   map_operations: ['operation_id','principal_id','request_hash','response']
@@ -64,13 +68,15 @@ function validateArchive(archive, modulesDirectory) {
     : version === 3 && matchesCollections(PR45_V3_COLLECTIONS) ? 'pr45-v3'
       : version === 3 && matchesCollections(V3_COLLECTIONS) ? 'lore-v3'
         : version === 4 && matchesCollections(V4_COLLECTIONS) ? 'v4'
-          : version === BACKUP_SCHEMA_VERSION && matchesCollections(COLLECTIONS) ? 'v5' : null;
+          : version === BACKUP_SCHEMA_VERSION && matchesCollections(COLLECTIONS) ? 'v5'
+            : version === BACKUP_SCHEMA_VERSION && matchesCollections(LEGACY_COLLECTIONS) ? 'v5-legacy' : null;
   if (!archiveLayout) fail('collection manifest is incomplete or does not match its schema');
   const expectedCollections = archiveLayout === 'v2' ? V2_COLLECTIONS
       : archiveLayout === 'pr45-v3' ? PR45_V3_COLLECTIONS
-      : archiveLayout === 'lore-v3' ? V3_COLLECTIONS : archiveLayout === 'v4' ? V4_COLLECTIONS : COLLECTIONS;
+      : archiveLayout === 'lore-v3' ? V3_COLLECTIONS : archiveLayout === 'v4' ? V4_COLLECTIONS : archiveLayout === 'v5-legacy' ? LEGACY_COLLECTIONS : COLLECTIONS;
   for (const collection of expectedCollections) if (!Array.isArray(archive.data[collection])) fail(`collection ${collection} is missing or invalid`);
   if (Object.keys(archive.data).some(collection => !expectedCollections.includes(collection))) fail('archive contains an unsupported collection');
+  if (archiveLayout === 'v5-legacy') archive.data.map_lore_links = [];
   if (archiveLayout !== 'v4' && archiveLayout !== 'v5') {
     for (const collection of COLLECTIONS) archive.data[collection] ??= [];
     for (const collection of MAP_COLLECTIONS) archive.data[collection] ??= [];
@@ -143,7 +149,7 @@ function validateArchive(archive, modulesDirectory) {
   const assetHashes = new Set(archive.data.assets.map(asset => asset.sha256));
   const referencedHashes = new Set(archive.data.lore_assets.map(asset => asset.sha256));
   if (archiveLayout === 'v4' && (assetHashes.size !== referencedHashes.size || [...assetHashes].some(hash => !referencedHashes.has(hash)))) fail('asset objects do not match Lore references');
-  if (archiveLayout === 'v5') {
+  if (archiveLayout === 'v5' || archiveLayout === 'v5-legacy') {
     const scenes = ids('map_scenes','id'), pieces = ids('map_pieces','id');
     for (const scene of archive.data.map_scenes) {
       let grid; try { grid=JSON.parse(scene.grid); } catch { fail('map grid is malformed'); }
@@ -153,6 +159,8 @@ function validateArchive(archive, modulesDirectory) {
     for (const piece of archive.data.map_pieces) { const scene=sceneRows.get(piece.scene_id); if (!scene || piece.kind === 'actor' && !actors.has(piece.actor_id) || piece.kind === 'actor' && !archive.data.actors.some(actor=>actor.id===piece.actor_id&&actor.module_id===pinned.system_module_id&&actor.module_version===pinned.system_module_version) || !['actor','pin'].includes(piece.kind) || !Number.isFinite(piece.x) || !Number.isFinite(piece.y) || piece.x < 0 || piece.y < 0 || piece.x>scene.width || piece.y>scene.height || ![0,1].includes(piece.visible) || !Number.isInteger(piece.revision) || piece.revision < 1) fail('map piece is invalid'); }
     const pieceRows=new Map(archive.data.map_pieces.map(row=>[row.id,row]));
     for (const link of archive.data.map_links) if (link.campaign_id !== archive.manifest.campaignId || !scenes.has(link.source_scene_id) || !scenes.has(link.target_scene_id) || pieceRows.get(link.piece_id)?.scene_id!==link.source_scene_id || pieceRows.get(link.piece_id)?.kind!=='pin') fail('map link is invalid');
+    const mapLinkedPieces = new Set(archive.data.map_links.map(link => link.piece_id));
+    for (const link of archive.data.map_lore_links) if (link.campaign_id !== archive.manifest.campaignId || !scenes.has(link.source_scene_id) || !loreIds.has(link.target_lore_entry_id) || !archive.data.lore_entries.some(entry => entry.id === link.target_lore_entry_id && entry.campaign_id === link.campaign_id) || pieceRows.get(link.piece_id)?.scene_id!==link.source_scene_id || pieceRows.get(link.piece_id)?.kind!=='pin' || mapLinkedPieces.has(link.piece_id) || link.label !== null && link.label !== undefined && (typeof link.label !== 'string' || link.label.length > 200)) fail('map Lore link is invalid');
     for (const association of archive.data.map_encounter_scenes) if (association.campaign_id !== archive.manifest.campaignId || !encounterIds.has(association.encounter_id) || !scenes.has(association.scene_id)) fail('map encounter association is invalid');
     for (const asset of archive.data.map_assets) {
       const object=archive.data.assets.find(bytes=>bytes.sha256===asset.sha256&&bytes.size===asset.byte_size), bytes=object&&Buffer.from(object.bytes,'base64');
