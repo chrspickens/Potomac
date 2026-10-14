@@ -404,11 +404,13 @@ try {
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Paused'", `${label} sees committed paused Table session`);
   }
+  await waitForExpression(player.sessionId, "document.querySelector('.player-session-banner strong')?.textContent === 'Session paused'", 'Player A sees the paused status in the player-session banner');
+  await waitForExpression(secondPlayer.sessionId, "document.querySelector('.player-session-banner strong')?.textContent === 'Session paused'", 'Player B sees the paused status in the player-session banner');
   await clickText(gm.sessionId, 'Resume session', '.table-session-panel button');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
   }
-  await waitForExpression(player.sessionId, "document.querySelector('.player-session-banner strong')?.textContent === 'Session live' && /Your character: (Mira Vell|Tarin Vale)/.test(document.querySelector('.player-session-banner small')?.textContent || '')", 'Player A sees the live status and an authorized character in the player-session banner');
+  await waitForExpression(player.sessionId, "document.querySelector('.player-session-banner strong')?.textContent === 'Session live' && /Your character: (Acceptance Created Character|Mira Vell|Tarin Vale)/.test(document.querySelector('.player-session-banner small')?.textContent || '')", 'Player A sees the live status and an authorized character in the player-session banner');
   await waitForExpression(secondPlayer.sessionId, "document.querySelector('.player-session-banner strong')?.textContent === 'Session live' && document.querySelector('.player-session-banner small')?.textContent.includes('No authorized character yet.')", 'Player B sees the live status without an ungranted character');
   for (const [label, client] of [['Player A', player], ['Player B', secondPlayer]]) {
     await clickText(client.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
