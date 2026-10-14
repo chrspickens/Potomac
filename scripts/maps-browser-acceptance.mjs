@@ -410,24 +410,28 @@ try {
   await screenshot(playerA.sessionId, 'player-a-ashen-coast-published.png'); await screenshot(playerB.sessionId, 'player-b-ashen-coast-published.png'); await screenshot(gm, 'gm-battle-private-pin.png')
   mark('Stage 4: tokens, private pin, encounter relations, publication, player privacy and cross-map navigation', 'PASS', { linkPin, privatePin, tokenA, tokenB })
   const searchInput = '#campaign-search-input'
-  const browserSearch = async (client, query) => {
+  const browserSearchForResult = async (client, query) => {
     await inputText(client.sessionId, searchInput, query)
-    await waitExpr(client.sessionId, `Boolean([...document.querySelectorAll('.campaign-search-results strong')].find(item=>item.textContent===${JSON.stringify(query)})) || document.querySelector('.campaign-search-results')?.textContent.includes(${JSON.stringify(query)})`, `${client.label} authorized search for ${query}`)
+    await waitExpr(client.sessionId, `Boolean([...document.querySelectorAll('.campaign-search-results strong')].find(item=>item.textContent===${JSON.stringify(query)}))`, `${client.label} authorized search result for ${query}`)
+  }
+  const browserSearchForNoResults = async (client, query) => {
+    await evaluate(client.sessionId, `(() => { const input=document.querySelector(${JSON.stringify(searchInput)}); if(!input) throw new Error('campaign search input is missing'); input.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(query)}); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); return true })()`)
+    await waitExpr(client.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('No matching authorized results.')", `${client.label} authorized search has no results for ${query}`)
   }
   const contextBeforeSearch = (await api('/api/state', gmToken)).body.context
-  await browserSearch(gmClient, 'Sunken Archive')
+  await browserSearchForResult(gmClient, 'Sunken Archive')
   await pressKey(gm, 'Enter')
   await waitExpr(gm, "document.querySelector('.lore-article h2')?.textContent==='Sunken Archive'", 'GM keyboard search opens Lore by stable ID')
   await clickText(gm, 'Back to origin', '.topbar-right button')
   await waitExpr(gm, "document.querySelector('.maps-page') && !document.querySelector('.lore-page')", 'GM returns to local origin')
   assert.equal(JSON.stringify((await api('/api/state', gmToken)).body.context), JSON.stringify(contextBeforeSearch), 'search open/back does not mutate active encounter context')
-  await browserSearch(playerA, 'Mira Vell')
+  await browserSearchForResult(playerA, 'Mira Vell')
   assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('GM-only Tide Ledger')"), 'Player A DOM omits private Lore label')
   await pressKey(playerA.sessionId, 'Enter')
   await waitExpr(playerA.sessionId, "document.querySelector('.full-character .character-identity h3')?.textContent==='Mira Vell'", 'Player A keyboard search opens authorized character')
   await clickText(playerA.sessionId, 'Back to origin', '.topbar-right button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'Player A returns to the selected local Maps origin')
-  await browserSearch(playerB, 'Flooded Observatory')
+  await browserSearchForResult(playerB, 'Flooded Observatory')
   await evaluate(playerB.sessionId, `(() => { const button=[...document.querySelectorAll('.campaign-search-results button')].find(item=>item.querySelector('strong')?.textContent==='Flooded Observatory'&&item.querySelector('small')?.textContent.startsWith('map')); if(!button) throw new Error('Flooded Observatory map search result is missing'); button.click(); return true })()`)
   await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'Player B pointer search opens a different authorized map')
   await clickText(playerB.sessionId, 'Back to origin', '.topbar-right button')
@@ -438,8 +442,7 @@ try {
   const revokedLore = await api(`/api/lore/${sunkenArchive.id}/publication`, gmToken, { method: 'PUT', body: JSON.stringify({ operationId: `browser-search-revoke-${process.pid}`, baseRevision: sunkenArchive.revision, published: false }) })
   assert.equal(revokedLore.response.status, 200, 'GM revokes the shared Lore target')
   for (const [client, identity] of [[playerA, playerAIdentity], [playerB, playerBIdentity]]) {
-    await browserSearch(client, 'Sunken Archive')
-    await waitExpr(client.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('No matching authorized results.')", `${client.label} refreshed search excludes revoked target`)
+    await browserSearchForNoResults(client, 'Sunken Archive')
     assert.ok(!await evaluate(client.sessionId, "document.body.innerText.includes('Sunken Archive')"), `${client.label} DOM omits revoked title after refresh`)
     assert.equal((await api(`/api/navigation/lore/${sunkenArchive.id}`, identity.credential)).response.status, 404, `${client.label} cannot resolve revoked stable ID`)
     const replay = await api('/api/state?since=0', identity.credential)
