@@ -394,6 +394,13 @@ try {
     && (!event.actorId || secondPlayerProjection.actors.some(actor => actor.id === event.actorId))), 'second player event replay contains only public events for readable actors');
   assert.ok(secondPlayer.secrets.every(item => !item.body.includes(playerMemberId)), 'second player browser network payloads do not disclose the first member identity');
 
+  // Campaign Home is the landing page; enter Table explicitly before asserting
+  // the shared context strip and live-session bricks.
+  for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
+    await clickText(client.sessionId, 'Table', 'nav[aria-label="Applications"] button');
+    await waitForExpression(client.sessionId, "document.querySelector('.dashboard-page') && document.querySelector('.session-strip')", `${label} explicitly navigates from Campaign Home to Table`);
+  }
+
   // Exercise the registered Table bricks in three isolated browser profiles.
   // The GM and Player A have authorized roster entries; Player B has no grants.
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
