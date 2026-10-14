@@ -206,8 +206,8 @@ export async function createCampaignActor(input: { id: string; moduleId: string;
 }
 
 
-export async function getCampaignConfig(): Promise<CampaignConfig> {
-  return http<CampaignConfig>('/api/campaign', 'gm')
+export async function getCampaignConfig(role: Role = 'gm'): Promise<CampaignConfig> {
+  return http<CampaignConfig>('/api/campaign', role)
 }
 export async function saveCampaignConfig(config: Omit<CampaignConfig, 'id'>): Promise<CampaignConfig> {
   return http<CampaignConfig>('/api/campaign', 'gm', { method: 'PUT', body: JSON.stringify({
