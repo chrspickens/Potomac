@@ -447,10 +447,7 @@ try {
   await clickText(gm.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.character-list button'))", 'character app participant grant selection');
   await clickText(gm.sessionId, 'Mira Vell', '.character-list button');
-  const orchardBeforeLinkList = await (await request('/api/encounters', gmToken)).json();
-  const orchardBeforeLink = orchardBeforeLinkList.encounters.find(item => item.name === 'The Orchard Ruins');
-  assert.ok(orchardBeforeLink, 'encounter exists before character linking');
-  const preLinkDetail = await (await request(`/api/encounters/${encodeURIComponent(orchardBeforeLink.id)}`, gmToken)).json();
+  const preLinkDetail = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
   await evaluate(gm.sessionId, "document.querySelector('.gm-admin').open = true");
   await evaluate(gm.sessionId, "window.prompt = (_message, fallback) => fallback || ''");
   await clickText(gm.sessionId, 'Grant selected character');
