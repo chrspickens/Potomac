@@ -385,8 +385,8 @@ try {
 
   // Exercise the registered Table bricks in three isolated browser profiles.
   // The GM and Player A have authorized roster entries; Player B has no grants.
-  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
-  await waitForExpression(player.sessionId, "document.querySelector('.session-strip strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
+  await waitForExpression(player.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
   await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No participants'))", 'Player B empty authorized Table roster');
   const tableRoster = await evaluate(player.sessionId, "[...document.querySelectorAll('.table-participants article strong')].map(item=>item.textContent)");
   assert.deepEqual(tableRoster.sort(), ['Mira Vell', 'Tarin Vale'], 'Player A Table shows only its two granted participants from the active encounter');
@@ -492,12 +492,14 @@ try {
   await clickText(gm.sessionId, 'Create on host', '.encounters-page .schema-form button');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='The Orchard Ruins')", 'encounter created through app');
   assert.ok((await (await request('/api/encounters', gmToken)).json()).encounters.some(e=>e.name==='The Orchard Ruins'), 'encounter creation via GM app persisted to host');
-  await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Set active'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation control enabled');
-  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
-  await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Encounters application switches shared active context');
-  await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Set active'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');
-  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Set active') button.click() })");
-  await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'Edited Acceptance Encounter'", 'Encounters application activates the selected encounter');
+  await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation and Table handoff enabled');
+  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Activate and open Table') button.click() })");
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('The Glass Bridge')", 'Encounters application hands off to Table with shared context');
+  await clickText(gm.sessionId, 'Return to preparation');
+  await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Table returns to encounter preparation without changing context');
+  await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');
+  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Activate and open Table') button.click() })");
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Encounters application activates the selected encounter and opens Table');
   const uiEncounterActivation = await (await request('/api/state', gmToken)).json();
   assert.equal(uiEncounterActivation.context.activeEncounter, createdEncounter.id, 'Encounters application activation commits shared campaign context');
   await clickText(gm.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
@@ -510,7 +512,7 @@ try {
 
   await evaluate(gm.sessionId, "(() => { const select=document.querySelector('#encounter-select'); select.value='encounter-a'; select.dispatchEvent(new Event('change',{bubbles:true})); })()");
   await clickText(gm.sessionId, 'Set active');
-  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip strong')?.textContent === 'The Glass Bridge'", 'active encounter A');
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'The Glass Bridge'", 'active encounter A');
 
   // Exercise dashboard/group/brick creation through the actual controls.
   await clickText(gm.sessionId, 'Edit layout');
