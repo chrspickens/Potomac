@@ -20,7 +20,15 @@ const children = []; const start = (cmd, args, options = {}) => { const child = 
 const api = async (path, token, init = {}) => { const response = await fetch(`${hostUrl}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } }); return { response, body: await response.json().catch(() => undefined) } }
 let socket; let nextId = 0; const pending = new Map(); const diagnostics = { startedAt: new Date().toISOString(), events: [], requests: {}, statuses: [], probes: {}, stages: [] }; let gmSession; let diagnosticsPath; const clients = {}; const traceWaiters = new Map(); const acceptanceLoreIds = new Set(); const acceptancePinIds = new Set()
 const cdp = (method, params = {}, sessionId) => new Promise((resolvePromise, reject) => { const id = ++nextId; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout ${method}`)) }, 15000); pending.set(id, message => { clearTimeout(timer); message.error ? reject(new Error(`${method}: ${message.error.message}`)) : resolvePromise(message.result) }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })) })
-const evaluate = (session, expression) => cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, session).then(result => { if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value })
+const evaluate = (session, expression) => {
+  const serializedExpression = `(() => { const value = (${expression}); if (value === undefined) return JSON.stringify({ type: 'undefined' }); const type = typeof value; return JSON.stringify({ type, value: type === 'object' ? JSON.stringify(value) : value }) })()`
+  return cdp('Runtime.evaluate', { expression: serializedExpression, returnByValue: true, awaitPromise: true }, session).then(result => {
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
+    const serialized = JSON.parse(result.result.value)
+    if (serialized.type === 'undefined') return undefined
+    return serialized.type === 'object' ? JSON.parse(serialized.value) : serialized.value
+  })
+}
 const waitExpr = async (session, expression, label) => { const started = Date.now(); while (Date.now() - started < 15000) { if (await evaluate(session, expression)) return; await delay(100) } throw new Error(`Timed out: ${label}`) }
 const clickText = (session, text, selector = 'button') => evaluate(session, `(() => { const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(x=>x.textContent.includes(${JSON.stringify(text)})&&!x.disabled); if(!e) throw new Error('missing enabled ${text}; body='+document.body.innerText.slice(0,900)); e.click(); return true })()`)
 const inputText = async (session, selector, value) => { await evaluate(session, `(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e) throw new Error('missing input'); e.focus(); e.select(); return true })()`); await cdp('Input.insertText', { text: value }, session) }
