@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clampPoint, nearestGridPoint, viewportToScene } from './maps.ts';
+import { clampPoint, nearestGridPoint, positionForMove, viewportToScene } from './maps.ts';
 
 test('viewport transforms preserve scene coordinates at any pan and zoom', () => {
   assert.deepEqual(viewportToScene({ x: 120, y: 100 }, { x: 20, y: 40 }, 2), { x: 50, y: 30 });
@@ -13,4 +13,15 @@ test('coordinate clamping is explicit and grid snapping is opt-in at the caller'
   assert.deepEqual(clampPoint(exact, { width: 100, height: 100 }), exact);
   assert.deepEqual(clampPoint({ x: -4, y: 102 }, { width: 100, height: 100 }), { x: 0, y: 100 });
   assert.deepEqual(nearestGridPoint(exact, { type: 'square', size: 10 }), { x: 20, y: 30 });
+});
+
+test('opt-in square and hex snap applies only to proposed moves and keeps unsnapped fractional coordinates', () => {
+  const squareScene = { width: 100, height: 80, grid: { type: 'square', size: 10 } };
+  const hexScene = { width: 100, height: 80, grid: { type: 'hex', size: 10 } };
+  const fractional = { x: 17.25, y: 32.75 };
+  assert.deepEqual(positionForMove(fractional, squareScene, false), fractional);
+  assert.deepEqual(positionForMove(fractional, squareScene, true), { x: 20, y: 30 });
+  assert.deepEqual(positionForMove(fractional, hexScene, false), fractional);
+  assert.deepEqual(positionForMove(fractional, hexScene, true), nearestGridPoint(fractional, hexScene.grid));
+  assert.deepEqual(positionForMove({ x: 110, y: -2 }, squareScene, false), { x: 100, y: 0 });
 });

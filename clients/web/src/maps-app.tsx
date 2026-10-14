@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Actor } from './modules.ts'
 import type { ConnectionStatus, Encounter, LoreArticle, MapPiece, MapPieceView, MapSceneView, Role } from './api.ts'
 import { commandMap, createMap, fetchMapBackground, listMaps, loadMap, uploadMapBackground } from './api.ts'
-import { clampPoint, gridPoints, nearestGridPoint, pieceDisplayLabel, viewportToScene } from './maps.ts'
+import { gridPoints, pieceDisplayLabel, positionForMove, viewportToScene } from './maps.ts'
 import './maps.css'
 import './maps-controls.css'
 
@@ -16,25 +16,30 @@ export function MapCanvas({ scene, actors, onSelect, onDropPiece, backgroundUrl,
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [panStart, setPanStart] = useState<{ x: number; y: number; originX: number; originY: number }>()
+  const dragPointRef = useRef<{ x: number; y: number }>()
   const points = useMemo(() => gridPoints(scene.width, scene.height, scene.grid), [scene.width, scene.height, scene.grid])
   const position = (event: React.PointerEvent<SVGSVGElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect()
     const point = viewportToScene({ x: (event.clientX - bounds.left) / bounds.width * scene.width, y: (event.clientY - bounds.top) / bounds.height * scene.height }, pan, zoom)
-    return clampPoint(snapToGrid ? nearestGridPoint(point, scene.grid) : point, scene)
+    return positionForMove(point, scene, snapToGrid)
   }
   return <div className="map-canvas-wrap"><div className="map-viewport-controls" aria-label="Map viewport controls"><button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>Fit / Reset view</button><button type="button" aria-label="Zoom in" onClick={() => setZoom(value => Math.min(4, value + .1))}>+</button><label>Zoom<input aria-label="Zoom level" type="number" min="0.5" max="4" step="0.1" value={zoom.toFixed(1)} onChange={event => setZoom(Math.max(.5, Math.min(4, Number(event.target.value))))} /></label><button type="button" aria-label="Zoom out" onClick={() => setZoom(value => Math.max(.5, value - .1))}>−</button>{onDropPiece && scene.grid.type !== 'none' && <label><input type="checkbox" checked={snapToGrid} onChange={event => onSnapToGridChange?.(event.target.checked)} /> Snap to grid</label>}<small>Use arrow keys to pan; + and − to zoom.</small></div><svg className="map-canvas" viewBox={`0 0 ${scene.width} ${scene.height}`} role="img" aria-label={`${scene.name} map`} tabIndex={0} onKeyDown={event => { const amount = scene.grid.type === 'square' ? scene.grid.size : 5; if (event.key === '+' || event.key === '=') setZoom(value => Math.min(4, value * 1.2)); else if (event.key === '-') setZoom(value => Math.max(.5, value / 1.2)); else if (event.key === 'ArrowLeft') setPan(value => ({ ...value, x: value.x + amount })); else if (event.key === 'ArrowRight') setPan(value => ({ ...value, x: value.x - amount })); else if (event.key === 'ArrowUp') setPan(value => ({ ...value, y: value.y + amount })); else if (event.key === 'ArrowDown') setPan(value => ({ ...value, y: value.y - amount })) }} onWheel={event => { event.preventDefault(); setZoom(value => Math.max(.5, Math.min(4, value * (event.deltaY < 0 ? 1.1 : .9)))) }} onPointerDown={event => { if (event.target === event.currentTarget || (event.target as Element).classList.contains('map-background')) { event.currentTarget.setPointerCapture(event.pointerId); setPanStart({ x: event.clientX, y: event.clientY, originX: pan.x, originY: pan.y }) } }} onPointerMove={event => {
     if (!dragging || !onDropPiece) return
-    setDragPoint(position(event))
-  }} onPointerMoveCapture={event => { if (panStart) { const bounds = event.currentTarget.getBoundingClientRect(); setPan({ x: panStart.originX + (event.clientX - panStart.x) / bounds.width * scene.width / zoom, y: panStart.originY + (event.clientY - panStart.y) / bounds.height * scene.height / zoom }) } }} onPointerUp={() => { setPanStart(undefined)
+    const next = position(event)
+    dragPointRef.current = next
+    setDragPoint(next)
+  }} onPointerMoveCapture={event => { if (panStart) { const bounds = event.currentTarget.getBoundingClientRect(); setPan({ x: panStart.originX + (event.clientX - panStart.x) / bounds.width * scene.width / zoom, y: panStart.originY + (event.clientY - panStart.y) / bounds.height * scene.height / zoom }) } }} onPointerUp={event => { setPanStart(undefined)
     const piece = scene.pieces.find(item => item.id === dragging)
-    if (piece && dragPoint) onDropPiece?.(piece, dragPoint)
+    const finalPoint = piece ? position(event) : dragPointRef.current
+    if (piece && finalPoint && (finalPoint.x !== piece.x || finalPoint.y !== piece.y)) onDropPiece?.(piece, finalPoint)
+    dragPointRef.current = undefined
     setDragging(undefined); setDragPoint(undefined)
   }}>
     <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}><rect width={scene.width} height={scene.height} fill="#101d27" />
     {backgroundUrl && <image className="map-background" href={backgroundUrl} x="0" y="0" width={scene.width} height={scene.height} preserveAspectRatio="xMidYMid meet" />}
     {scene.grid.type === 'square' && <g className="map-square-grid">{Array.from({ length: Math.ceil(scene.width / scene.grid.size) + 1 }, (_, index) => <line key={`x${index}`} x1={index * scene.grid.size} y1={0} x2={index * scene.grid.size} y2={scene.height} />)}{Array.from({ length: Math.ceil(scene.height / scene.grid.size) + 1 }, (_, index) => <line key={`y${index}`} x1={0} y1={index * scene.grid.size} x2={scene.width} y2={index * scene.grid.size} />)}</g>}
     {scene.grid.type === 'hex' && <g className="map-hex-grid">{points.map((point, index) => <polygon key={index} points={Array.from({ length: 6 }, (_, side) => `${point.x + scene.grid.size / Math.sqrt(3) * Math.cos(Math.PI / 3 * side)},${point.y + scene.grid.size / Math.sqrt(3) * Math.sin(Math.PI / 3 * side)}`).join(' ')} />)}</g>}
-    {scene.pieces.filter(piece => piece.visible || showPrivate).map(piece => <g key={piece.id} className={`map-piece map-piece-${piece.kind}`} transform={`translate(${dragging === piece.id && dragPoint ? dragPoint.x : piece.x} ${dragging === piece.id && dragPoint ? dragPoint.y : piece.y})`} tabIndex={0} role="button" aria-label={pieceDisplayLabel(piece, actorNames)} onClick={() => onSelect?.(piece)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') onSelect?.(piece) }} onPointerDown={event => { if (!onDropPiece) return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setDragging(piece.id); setDragPoint({ x: piece.x, y: piece.y }) }}>
+    {scene.pieces.filter(piece => piece.visible || showPrivate).map(piece => <g key={piece.id} className={`map-piece map-piece-${piece.kind}`} transform={`translate(${dragging === piece.id && dragPoint ? dragPoint.x : piece.x} ${dragging === piece.id && dragPoint ? dragPoint.y : piece.y})`} tabIndex={0} role="button" aria-label={`${pieceDisplayLabel(piece, actorNames)}, ${piece.kind}, coordinates ${piece.x}, ${piece.y}${onDropPiece ? ', draggable; numeric coordinate controls are available' : ', read only'}`} aria-keyshortcuts="Enter Space ArrowLeft ArrowRight ArrowUp ArrowDown" onClick={() => onSelect?.(piece)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onSelect?.(piece) } else if (onDropPiece && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); const amount = event.shiftKey ? 1 : scene.grid.type === 'square' ? scene.grid.size : 1; const point = positionForMove({ x: piece.x + (event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0), y: piece.y + (event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0) }, scene, snapToGrid); onDropPiece(piece, point) } }} onPointerDown={event => { onSelect?.(piece); if (!onDropPiece) return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setDragging(piece.id); dragPointRef.current = { x: piece.x, y: piece.y }; setDragPoint({ x: piece.x, y: piece.y }) }}>
       <circle r={Math.max(1.5, scene.grid.size * .38)} />
       <text y={Math.max(1, scene.grid.size * .58)} textAnchor="middle">{pieceDisplayLabel(piece, actorNames)}</text>
     </g>)}</g>
