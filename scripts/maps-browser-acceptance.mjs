@@ -601,6 +601,8 @@ try {
   await clickText(playerB.sessionId, 'Western cove marker', '.map-piece-row button')
   assert.ok(await evaluate(playerB.sessionId, "[...document.querySelectorAll('.map-piece-row')].some(row=>row.classList.contains('active')&&row.textContent.includes('Western cove marker'))"), 'player can select an authorized World map piece through the read-only list')
   assert.equal(await evaluate(playerB.sessionId, "document.querySelectorAll('.map-piece-row input[aria-label^=\\\"X coordinate\\\"]').length"), 0, 'player selection does not expose coordinate editing')
+  await selectValue(playerB.sessionId, 'select[aria-label="Filter scenes"]', 'all')
+  await waitExpr(playerB.sessionId, "document.querySelector('select[aria-label=\\\"Filter scenes\\\"]')?.value==='all' && [...document.querySelectorAll('.map-browser button strong')].some(item=>item.textContent==='Flooded Observatory')", 'authorized Battle scene is available after resetting the scene filter to All')
   await clickText(playerB.sessionId, 'Flooded Observatory', '.map-browser button')
   await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'Player B opens authorized Battle scene')
   assert.equal(await evaluate(playerB.sessionId, "document.querySelectorAll('.map-piece-row input[aria-label^=\\\"X coordinate\\\"]').length"), 0, 'player Battle scene exposes no coordinate editor')
