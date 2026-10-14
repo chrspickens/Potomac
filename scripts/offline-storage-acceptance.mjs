@@ -77,7 +77,7 @@ async function waitFor(url, label) {
   throw new Error(`${label} did not become ready`);
 }
 
-async function connectBrowser() {
+async function connectBrowser(blockApplicationStartup = false) {
   const response = await waitFor(`http://127.0.0.1:${debugPort}/json/version`, 'browser debug endpoint');
   const version = await response.json();
   const socketUrl = new URL(version.webSocketDebuggerUrl);
@@ -102,6 +102,13 @@ async function connectBrowser() {
   const attached = await command('Target.attachToTarget', { targetId: page.targetId, flatten: true });
   await command('Page.enable', {}, attached.sessionId);
   await command('Runtime.enable', {}, attached.sessionId);
+  if (blockApplicationStartup) {
+    // Seed the legacy v2 IndexedDB before React mounts and opens the current v4
+    // database. This makes the migration fixture deterministic rather than
+    // racing App startup against deleteDatabase/open(version 2).
+    await command('Network.enable', {}, attached.sessionId);
+    await command('Network.setBlockedURLs', { urls: ['*src/main.tsx*'] }, attached.sessionId);
+  }
   await command('Page.navigate', { url: webUrl }, attached.sessionId);
   const started = Date.now();
   while (Date.now() - started < 15000) {
@@ -147,7 +154,7 @@ try {
   const web = startWeb();
   await waitFor(webUrl, 'Vite client');
   let browser = startBrowser();
-  let sessionId = await connectBrowser();
+  let sessionId = await connectBrowser(true);
   await command('Runtime.enable', {}, sessionId);
   const setup = await evaluate(sessionId, `(async () => {
     const storageModule = await import('/src/offline/storage.ts');

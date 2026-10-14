@@ -1,4 +1,5 @@
 import { initialActors, type Actor, type GameModule } from './modules'
+import { fixturesForCampaign } from './fixture-bootstrap'
 import { loadRememberedIdentity, rememberIdentity } from './identity'
 import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 import type { MapScene, MapPiece, MapSceneCreate } from '@potomac/contracts'
@@ -148,6 +149,10 @@ let demo: Snapshot = {
   context: { campaignId: 'foundation-demo', activeEncounter: demoEncounters[0], cursor: 1 }, activity: [],
 }
 let fixtureBootstrap: Promise<void> | undefined
+const subscriptionDiagnostics = import.meta.env.DEV && import.meta.env.VITE_POTOMAC_SUBSCRIPTION_DIAGNOSTICS === '1'
+function subscriptionLog(event: string, detail: Record<string, unknown> = {}) {
+  if (subscriptionDiagnostics) console.info(`[potomac-subscription] ${JSON.stringify({ at: new Date().toISOString(), event, ...detail })}`)
+}
 
 function tokenFor(role: Role) {
   return role === 'gm' ? (import.meta.env.VITE_POTOMAC_GM_TOKEN || 'local-gm') : (baseUrl && loadRememberedIdentity(baseUrl)?.credential || import.meta.env.VITE_POTOMAC_PLAYER_TOKEN || 'local-player')
@@ -353,16 +358,38 @@ function fromHost(body: HostState, role: Role): Snapshot {
   return { role, memberId: body.memberId ?? null, actors, encounters, modules: installedModules, context: { campaignId: body.campaignId, activeEncounter: encounters.find(item => item.id === body.context?.activeEncounter) || null, cursor: body.revision || 0 }, activity, ...(body.session ? { session: body.session } : {}) }
 }
 async function loadHost(role: Role) {
+  subscriptionLog('loadHost.start', { role })
+  try { return await loadHostSnapshot(role) }
+  catch (error) {
+    subscriptionLog('loadHost.failure', { role, message: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined })
+    throw error
+  }
+}
+async function loadHostSnapshot(role: Role) {
   const body = await http<HostState>('/api/state', role)
   const snapshot = fromHost(body, role)
-  if (role !== 'gm' || snapshot.actors.length && !snapshot.actors.some(actor => initialActors.some(fixture => fixture.entityId === actor.entityId))) return snapshot
-  if (initialActors.every(fixture => snapshot.actors.some(actor => actor.entityId === fixture.entityId))) return snapshot
+  if (role !== 'gm' || snapshot.actors.length && !snapshot.actors.some(actor => initialActors.some(fixture => fixture.entityId === actor.entityId))) {
+    subscriptionLog('loadHost.success', { role, cursor: snapshot.context.cursor })
+    return snapshot
+  }
+  if (initialActors.every(fixture => snapshot.actors.some(actor => actor.entityId === fixture.entityId))) {
+    subscriptionLog('loadHost.success', { role, cursor: snapshot.context.cursor })
+    return snapshot
+  }
   // A genuinely fresh host is intentionally unpinned and must not receive the
   // legacy demo actors until GM setup chooses a module.
   const campaign = await http<CampaignConfig>('/api/campaign', 'gm')
-  if (!campaign.systemModuleId || !campaign.systemModuleVersion) return snapshot
+  if (!campaign.systemModuleId || !campaign.systemModuleVersion) {
+    subscriptionLog('loadHost.success', { role, cursor: snapshot.context.cursor })
+    return snapshot
+  }
+  const campaignFixtures = fixturesForCampaign(initialActors, campaign)
+  if (campaignFixtures.every(fixture => snapshot.actors.some(actor => actor.entityId === fixture.entityId))) {
+    subscriptionLog('loadHost.success', { role, cursor: snapshot.context.cursor })
+    return snapshot
+  }
   if (!fixtureBootstrap) fixtureBootstrap = (async () => {
-    for (const fixture of initialActors) {
+    for (const fixture of campaignFixtures) {
       const current = await http<HostState>('/api/state', 'gm')
       if (current.actors?.some(actor => actor.id === fixture.entityId)) continue
       const data = structuredClone({ ...fixture.data, name: fixture.name, epithet: fixture.epithet })
@@ -375,7 +402,9 @@ async function loadHost(role: Role) {
     }
   })().finally(() => { fixtureBootstrap = undefined })
   await fixtureBootstrap
-  return fromHost(await http<HostState>('/api/state', role), role)
+  const refreshedSnapshot = fromHost(await http<HostState>('/api/state', role), role)
+  subscriptionLog('loadHost.success', { role, cursor: refreshedSnapshot.context.cursor })
+  return refreshedSnapshot
 }
 
 export const host: HostAdapter = hostConfigured ? {
@@ -387,24 +416,30 @@ export const host: HostAdapter = hostConfigured ? {
     let stopped = false
     let controller: AbortController | undefined
     let cursor = 0
+    let lastStatus: ConnectionStatus | undefined
+    const status = (next: ConnectionStatus) => { subscriptionLog('status', { role, from: lastStatus, to: next, stopped, aborted: controller?.signal.aborted || false }); lastStatus = next; onStatus(next) }
     const run = async () => {
       while (!stopped) {
         controller = new AbortController()
-        onStatus('connecting')
+        status('connecting')
         try {
           const fresh = await loadHost(role)
           if (stopped) break
           cursor = fresh.context.cursor
           onSnapshot(fresh)
           const response = await fetch(`${baseUrl}/api/stream?since=${cursor}`, { headers: { authorization: `Bearer ${tokenFor(role)}` }, signal: controller.signal })
-          if (!response.ok || !response.body) throw new Error('Stream unavailable')
-          onStatus('connected')
+          subscriptionLog('stream.response', { role, status: response.status, ok: response.ok, hasBody: Boolean(response.body), cursor })
+          if (!response.ok || !response.body) throw new Error(`Stream unavailable (${response.status})`)
+          status('connected')
           const reader = response.body.getReader()
           const decoder = new TextDecoder()
           let buffer = ''
           while (!stopped) {
-            const { value, done } = await reader.read()
-            if (done) break
+            let readResult: ReadableStreamReadResult<Uint8Array>
+            try { readResult = await reader.read() }
+            catch (error) { subscriptionLog('stream.read.failure', { role, message: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, stopped, aborted: controller.signal.aborted }); throw error }
+            const { value, done } = readResult
+            if (done) { subscriptionLog('stream.read.done', { role, stopped, aborted: controller.signal.aborted }); break }
             buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
             const blocks = buffer.split('\n\n')
             buffer = blocks.pop() || ''
@@ -415,14 +450,20 @@ export const host: HostAdapter = hostConfigured ? {
               onSnapshot(next)
             }
           }
-        } catch {
+        } catch (error) {
+          subscriptionLog('subscription.exception', { role, message: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, stopped, aborted: controller.signal.aborted })
           // Fresh snapshot on reconnect closes stream gaps.
         }
-        if (!stopped) { onStatus('disconnected'); await new Promise(resolve => setTimeout(resolve, 1200)) }
+        if (!stopped) { status('disconnected'); await new Promise(resolve => setTimeout(resolve, 1200)) }
       }
     }
     void run()
-    return () => { stopped = true; controller?.abort() }
+    return () => {
+      stopped = true
+      const alreadyAborted = controller?.signal.aborted || false
+      controller?.abort()
+      subscriptionLog('subscription.stop', { role, explicitlyStopped: true, aborted: controller?.signal.aborted || false, alreadyAborted })
+    }
   },
 } : {
   mode: 'demo',

@@ -1170,14 +1170,16 @@ test('0.4 character field edit is revisioned, host-validated, idempotent and GM-
   });
 });
 
-test('localhost browser preflight permits revisioned PUT mutations', async () => {
+test('localhost browser preflight permits revisioned JSON and map-image mutations', async () => {
   await withHost(async ({ request }) => {
-    const response = await request('/api/campaign', 'gm', {
+    const response = await request('/api/maps/map-preflight/background', 'gm', {
       method: 'OPTIONS',
-      headers: { origin: 'http://127.0.0.1:5173', 'access-control-request-method': 'PUT' }
+      headers: { origin: 'http://127.0.0.1:5173', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization,content-type,x-file-name,x-operation-id,x-base-revision' }
     });
     assert.equal(response.status, 204);
-    assert.match(response.headers.get('access-control-allow-methods') || '', /PUT/);
+    assert.match(response.headers.get('access-control-allow-methods') || '', /POST/);
+    const allowedHeaders = response.headers.get('access-control-allow-headers') || '';
+    for (const header of ['authorization', 'content-type', 'x-file-name', 'x-operation-id', 'x-base-revision']) assert.match(allowedHeaders, new RegExp(header, 'i'));
     assert.equal(response.headers.get('access-control-allow-origin'), 'http://127.0.0.1:5173');
   });
 });

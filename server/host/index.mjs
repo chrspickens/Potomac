@@ -472,7 +472,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('vary', 'origin');
     }
-    if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-headers': 'authorization,content-type,x-file-name', 'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS' }); return res.end(); }
+    if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-headers': 'authorization,content-type,x-file-name,x-operation-id,x-base-revision', 'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS' }); return res.end(); }
     const auth = authFor(req);
     if (url.pathname === '/health') return json(res, 200, { ok: true });
     if (!auth) return json(res, 401, { error: 'Bearer token required' });

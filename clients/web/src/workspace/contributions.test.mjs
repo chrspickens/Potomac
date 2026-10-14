@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAuthorizedBrickAdapter, resolveMapSceneBinding, resolveTableParticipants } from './authorized-adapter.ts';
+import { getBrickDefinition } from './registry.ts';
+import { resolveBindingMode } from './binding.ts';
 
 const actor = (entityId, name) => ({ entityId, name });
 const encounter = (id, participants) => ({ id, name: id, summary: '', participants });
@@ -56,4 +58,15 @@ test('map brick follow resolves the active encounter authorized scene while pinn
   assert.equal(resolveMapSceneBinding({ mode: 'pinned', entityId: world.id }, switched), world);
   assert.equal(resolveMapSceneBinding({ mode: 'pinned', entityId: 'revoked-map' }, switched), undefined);
   assert.equal(resolveMapSceneBinding({ mode: 'follow', contextKey: 'session.activeEncounter' }, createAuthorizedBrickAdapter([], [], null, [], undefined, 'player', [], [world])), undefined);
+});
+
+test('selecting pinned mode resolves the first authorized map instead of retaining the default follow binding', () => {
+  const world = { id: 'world-1', name: 'World', kind: 'world', encounterId: 'encounter-1', archived: false, pieces: [] };
+  const battle = { id: 'battle-1', name: 'Battle', kind: 'battle', encounterId: 'encounter-2', archived: false, pieces: [] };
+  const active = encounter('encounter-2', []);
+  const adapter = createAuthorizedBrickAdapter([], [active], active, [], undefined, 'gm', [], [world, battle]);
+  const definition = getBrickDefinition('maps.scene');
+  assert.ok(definition);
+  assert.deepEqual(resolveBindingMode('pinned', definition, adapter), { mode: 'pinned', entityId: world.id });
+  assert.deepEqual(resolveBindingMode('follow', definition, adapter), { mode: 'follow', contextKey: 'session.activeEncounter' });
 });
