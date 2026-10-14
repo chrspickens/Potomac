@@ -447,6 +447,10 @@ try {
   await clickText(gm.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.character-list button'))", 'character app participant grant selection');
   await clickText(gm.sessionId, 'Mira Vell', '.character-list button');
+  const orchardBeforeLinkList = await (await request('/api/encounters', gmToken)).json();
+  const orchardBeforeLink = orchardBeforeLinkList.encounters.find(item => item.name === 'The Orchard Ruins');
+  assert.ok(orchardBeforeLink, 'encounter exists before character linking');
+  const preLinkDetail = await (await request(`/api/encounters/${encodeURIComponent(orchardBeforeLink.id)}`, gmToken)).json();
   await evaluate(gm.sessionId, "document.querySelector('.gm-admin').open = true");
   await evaluate(gm.sessionId, "window.prompt = (_message, fallback) => fallback || ''");
   await clickText(gm.sessionId, 'Grant selected character');
@@ -548,7 +552,7 @@ try {
   assert.equal(duplicateDetailResponse.status, 200, 'GM rereads host-authoritative encounter detail after duplicate link attempt');
   const duplicateDetail = await duplicateDetailResponse.json();
   assert.equal(duplicateDetail.participants.filter(item => item.actorId === 'actor-emberfall-01').length, 1, 'duplicate link attempt leaves exactly one character in the authoritative roster');
-  const staleLinkResponse = await request(`/api/encounters/${encodeURIComponent(orchardSummary.id)}/participants`, gmToken, { method: 'PUT', body: jsonBody({ baseRevision: linkedDetail.revision, participants: [] }) });
+  const staleLinkResponse = await request(`/api/encounters/${encodeURIComponent(orchardSummary.id)}/participants`, gmToken, { method: 'PUT', body: jsonBody({ baseRevision: preLinkDetail.revision, participants: [] }) });
   assert.equal(staleLinkResponse.status, 409, 'roster update from the pre-link revision is rejected as stale');
   const afterStaleLink = await (await request(`/api/encounters/${encodeURIComponent(orchardSummary.id)}`, gmToken)).json();
   assert.equal(afterStaleLink.participants.filter(item => item.actorId === 'actor-emberfall-01').length, 1, 'stale update rejection preserves the accepted character link');
