@@ -385,8 +385,8 @@ try {
 
   // Exercise the registered Table bricks in three isolated browser profiles.
   // The GM and Player A have authorized roster entries; Player B has no grants.
-  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
-  await waitForExpression(player.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
+  await waitForExpression(gm.sessionId, "document.querySelector('.table-context-strip strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
+  await waitForExpression(player.sessionId, "document.querySelector('.table-context-strip strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
   await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No participants'))", 'Player B empty authorized Table roster');
   const tableRoster = await evaluate(player.sessionId, "[...document.querySelectorAll('.table-participants article strong')].map(item=>item.textContent)");
   assert.deepEqual(tableRoster.sort(), ['Mira Vell', 'Tarin Vale'], 'Player A Table shows only its two granted participants from the active encounter');
@@ -407,6 +407,14 @@ try {
   await clickText(gm.sessionId, 'Resume session', '.table-session-panel button');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
+  }
+  await waitForExpression(player.sessionId, "document.querySelector('.player-session-banner strong')?.textContent === 'Session live' && /Your character: (Mira Vell|Tarin Vale)/.test(document.querySelector('.player-session-banner small')?.textContent || '')", 'Player A sees the live status and an authorized character in the player-session banner');
+  await waitForExpression(secondPlayer.sessionId, "document.querySelector('.player-session-banner strong')?.textContent === 'Session live' && document.querySelector('.player-session-banner small')?.textContent.includes('No authorized character yet.')", 'Player B sees the live status without an ungranted character');
+  for (const [label, client] of [['Player A', player], ['Player B', secondPlayer]]) {
+    await clickText(client.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
+    await waitForExpression(client.sessionId, "document.querySelector('.player-session-banner button')?.textContent === 'Return to Table'", `${label} has a Return to Table action outside Table`);
+    await clickText(client.sessionId, 'Return to Table', '.player-session-banner button');
+    await waitForExpression(client.sessionId, "document.querySelector('.table-context-strip') && !document.querySelector('.player-session-banner button')", `${label} returns to Table and the action is no longer shown`);
   }
   assert.equal(await evaluate(player.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.')"), true, 'player Table view has no GM session controls');
   await clickText(gm.sessionId, 'Return to preparation');
