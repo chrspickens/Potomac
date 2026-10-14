@@ -481,11 +481,19 @@ try {
   await cdp('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, gm)
   await selectValue(gm, '.topbar-right select', 'gm')
   await waitExpr(gm, "document.querySelector('.topbar-right select')?.value==='gm' && document.querySelector('.status')?.textContent.includes('CONNECTED')", 'GM client regains its authorized scope')
-  await cdp('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, playerA.sessionId)
+  // Chromium offline emulation can leave an established SSE socket open and
+  // mask its close notification. Stop the disposable host while the browser is
+  // online so the real stream reader sees EOF before emulating offline mode.
+  await stopHost()
   await waitExpr(playerA.sessionId, "document.querySelector('.status')?.textContent.includes('DISCONNECTED')", 'Player A search disconnects')
+  await cdp('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, playerA.sessionId)
   assert.ok(await evaluate(playerA.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('Search requires a live host connection.')"), 'offline search shows no cached result list')
+  hostProcess = launchHost(db)
+  await waitFor(`${hostUrl}/health`, 'host restored after simulated offline search')
   await cdp('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, playerA.sessionId)
   await waitExpr(playerA.sessionId, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'Player A reconnects and refreshes authorized state')
+  await waitExpr(gm, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'GM stream reconnects after host restart')
+  await waitExpr(playerB.sessionId, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'Player B stream reconnects after host restart')
   await screenshot(playerA.sessionId, 'campaign-search-player-a-revocation-reconnect.png')
   mark('Stage 4b: GM + Player A + Player B browser search/open/back/privacy/revocation/reconnect', 'PASS')
   await clickText(gm, 'Dashboard', 'nav[aria-label="Applications"] button')
