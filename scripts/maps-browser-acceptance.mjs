@@ -445,9 +445,20 @@ try {
   await waitExpr(systemB.sessionId, "document.querySelector('.campaign-select')?.textContent.includes('example.system-b@0.1.0')", 'System B system pin committed through the UI')
   const systemBCampaign = (await bApi('/api/campaign')).body
   assert.equal(systemBCampaign.systemModuleId, 'example.system-b'); assert.equal(systemBCampaign.systemModuleVersion, '0.1.0')
-  const systemBState = (await bApi('/api/state')).body
-  assert.ok(systemBState.actors.some(actor => actor.id === 'actor-tidebound-01'), 'System B bootstrap seeds its compatible actor fixture')
-  assert.ok(!systemBState.actors.some(actor => actor.id === 'actor-emberfall-01'), 'System B bootstrap excludes the System A fixture')
+  // Campaign save is synchronous; fixture bootstrap runs from the client's
+  // subsequent snapshot subscription. Wait for the real async result instead
+  // of racing it on slower CI runners.
+  const systemBFixtureStarted = Date.now()
+  let systemBState
+  while (Date.now() - systemBFixtureStarted < 15000) {
+    const result = await bApi('/api/state')
+    assert.equal(result.response.status, 200, 'System B state stays readable during fixture bootstrap')
+    systemBState = result.body
+    assert.ok(!systemBState.actors.some(actor => actor.id === 'actor-emberfall-01'), 'System B bootstrap excludes the System A fixture')
+    if (systemBState.actors.some(actor => actor.id === 'actor-tidebound-01')) break
+    await delay(120)
+  }
+  assert.ok(systemBState?.actors.some(actor => actor.id === 'actor-tidebound-01'), 'System B bootstrap eventually seeds its compatible actor fixture')
   const systemBWorldImage = join(scratch, 'sable-reach.png'); const systemBBattleImage = join(scratch, 'starboard-deck.png')
   await writeFile(systemBWorldImage, mapImage('world')); await writeFile(systemBBattleImage, mapImage('battle'))
   await clickText(systemB.sessionId, 'Maps', 'nav[aria-label="Applications"] button')
