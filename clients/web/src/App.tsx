@@ -533,10 +533,9 @@ export default function App() {
       // changes this browser's local app selection; it never activates a
       // target implicitly.
       await host.setEncounter(role, encounter.id)
-      setEncounterDetails(encounter)
-      setEncounterNameInput(encounter.name)
-      setEncounterSummaryInput(encounter.summary)
-      setEncounterStatusInput(encounter.status || 'prepared')
+      // The encounter rail is a summary projection. Do not seed the editable
+      // preparation form from it: participant details are loaded separately.
+      setEncounterDetails(null)
       setSnapshot(await host.load(role))
       setSection('table')
       setActionState(`Prepared ${encounter.name}; ready to start the Table session.`)
@@ -544,10 +543,9 @@ export default function App() {
     finally { setBusy(false) }
   }
   const openTableForEncounter = (encounter: Encounter) => {
-    setEncounterDetails(encounter)
-    setEncounterNameInput(encounter.name)
-    setEncounterSummaryInput(encounter.summary)
-    setEncounterStatusInput(encounter.status || 'prepared')
+    // Opening Table is local navigation only. Encounter cards are summaries
+    // and must never become the source for a participant roster save.
+    setEncounterDetails(null)
     setSection('table')
     setActionState(`Opened Table for ${encounter.name}; shared session context was not changed.`)
   }

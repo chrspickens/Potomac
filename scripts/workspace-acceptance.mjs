@@ -517,6 +517,20 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Encounters application activates the selected encounter and opens Table');
   const uiEncounterActivation = await (await request('/api/state', gmToken)).json();
   assert.equal(uiEncounterActivation.context.activeEncounter, createdEncounter.id, 'Encounters application activation commits shared campaign context');
+  const rosterBeforeTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
+  assert.equal(rosterBeforeTableNavigation.participants.length, 3, 'active encounter roster is fully populated before Table navigation');
+  await clickText(gm.sessionId, 'Encounters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='Edited Acceptance Encounter')", 'encounter rail returns to preparation list');
+  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Open Table') button.click() })");
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Open Table navigates without seeding an editable summary-only form');
+  await clickText(gm.sessionId, 'Encounters', 'nav[aria-label="Applications"] button');
+  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Prepare / edit') button.click() })");
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'return through Encounters rail hydrates full preparation details');
+  assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 3, 'all participants remain selected after returning from Table');
+  await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Encounter and participants saved on host.')", 'encounter saves after Table re-entry');
+  const rosterAfterTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
+  assert.deepEqual(rosterAfterTableNavigation.participants.map(item=>item.actorId).sort(), rosterBeforeTableNavigation.participants.map(item=>item.actorId).sort(), 'saving after Table navigation preserves the authoritative participant roster');
   await clickText(gm.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.session-strip'))", 'dashboard after encounter app activation');
 
