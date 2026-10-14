@@ -517,6 +517,17 @@ try {
   await clickText(gm.sessionId, 'Create on host', '.encounters-page .schema-form button');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='The Orchard Ruins')", 'encounter created through app');
   assert.ok((await (await request('/api/encounters', gmToken)).json()).encounters.some(e=>e.name==='The Orchard Ruins'), 'encounter creation via GM app persisted to host');
+  await clickText(gm.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.character-encounter-link select option'))", 'character encounter link options');
+  await clickText(gm.sessionId, 'Mira Vell', '.character-list button');
+  await evaluate(gm.sessionId, "(() => { const select=document.querySelector('.character-encounter-link select'); select.value=[...select.options].find(option=>option.textContent==='The Orchard Ruins')?.value; select.dispatchEvent(new Event('change',{bubbles:true})); })()");
+  await clickText(gm.sessionId, 'Add as participant', '.character-encounter-link button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('linked to The Orchard Ruins on the host.')", 'character linked through host participant command');
+  const linkedPreparation = await (await request('/api/encounters', gmToken)).json();
+  const orchardPreparation = linkedPreparation.encounters.find(item => item.name === 'The Orchard Ruins');
+  assert.ok(orchardPreparation?.participants?.some(item => item.actorId === 'actor-emberfall-01'), 'Character app links the selected character to the encounter');
+  await clickText(gm.sessionId, 'Add as participant', '.character-encounter-link button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('is already linked to The Orchard Ruins.')", 'duplicate character link is reported without another roster entry');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation and Table handoff enabled');
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Activate and open Table') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('The Glass Bridge')", 'Encounters application hands off to Table with shared context');
