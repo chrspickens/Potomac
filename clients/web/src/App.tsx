@@ -135,6 +135,7 @@ export default function App() {
   const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
   const [creatingEncounter, setCreatingEncounter] = useState(false)
   const [openedLoreEncounterId, setOpenedLoreEncounterId] = useState('')
+  const [preparationSource, setPreparationSource] = useState<'encounters' | null>(null)
   const [searchReturn, setSearchReturn] = useState<{ section: 'dashboard' | 'table' | 'characters' | 'encounters' | 'lore' | 'maps'; actorId: string; mapId?: string; loreId?: string } | null>(null)
 
   useEffect(() => {
@@ -552,6 +553,18 @@ export default function App() {
     setSection('table')
     setActionState(`Opened Table for ${encounter.name}; shared session context was not changed.`)
   }
+  const openPreparationRelated = (target: 'characters' | 'lore' | 'maps') => {
+    setPreparationSource('encounters')
+    if (target === 'lore') setLoreTargetId(undefined)
+    if (target === 'maps') setMapTargetId(undefined)
+    setSection(target)
+    setActionState('Preparation context preserved. Return to Encounters when the related record is ready.')
+  }
+  const returnToPreparationSource = () => {
+    if (!preparationSource) return
+    setSection(preparationSource)
+    setPreparationSource(null)
+  }
   const returnToPreparation = async () => {
     const encounterId = snapshot?.context.activeEncounter?.id
     setSection('encounters')
@@ -725,6 +738,7 @@ export default function App() {
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {role === 'player' && <section className="session-strip player-session-focus player-session-banner" aria-label="Your live session"><div><p className="eyebrow">PLAYER SESSION</p><strong>{sessionSnapshot?.current?.status === 'paused' ? 'Session paused' : sessionSnapshot?.current?.status === 'active' ? 'Session live' : 'No live session'}</strong><small>{activeEncounter ? `Current encounter: ${activeEncounter.name}` : 'No current encounter is published.'}{playerCharacter ? ` · Your character: ${playerCharacter.name}` : ' · No authorized character yet.'}</small></div>{section !== 'table' && <button type="button" onClick={returnToTable}>Return to Table</button>}</section>}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
+    {role === 'gm' && preparationSource === 'encounters' && section !== 'encounters' && <div className="action-status" role="status"><button type="button" onClick={returnToPreparationSource}>Return to encounter preparation</button></div>}
     {role === 'gm' && configuredHost && campaign && <section className="campaign-setup" aria-label="Campaign setup">
       <form onSubmit={event => void saveCampaignSetup(event)}>
         <strong>Campaign setup</strong>
@@ -805,6 +819,7 @@ export default function App() {
       </div>
       {role === 'gm' && encounterDetails && !creatingEncounter && <form className="schema-form" onSubmit={event => void saveEncounterEdits(event)}>
         <h2>Prepare {encounterDetails.name}</h2>
+        <div className="prep-related-actions" aria-label="Related preparation"><strong>Prepare related content</strong><button type="button" onClick={() => openPreparationRelated('characters')}>Characters</button><button type="button" onClick={() => openPreparationRelated('lore')}>Lore</button><button type="button" onClick={() => openPreparationRelated('maps')}>Maps</button></div>
         <label>Encounter name <input required maxLength={160} value={encounterNameInput} onChange={event => setEncounterNameInput(event.target.value)} /></label>
         <label>Player-visible summary <textarea maxLength={4000} value={encounterSummaryInput} onChange={event => setEncounterSummaryInput(event.target.value)} /></label>
         <label>Lifecycle <select value={encounterStatusInput} onChange={event => setEncounterStatusInput(event.target.value as 'prepared' | 'active' | 'completed')}>
@@ -817,6 +832,7 @@ export default function App() {
         <button disabled={busy || connection !== 'connected'}>Save encounter and participants</button>
         <button type="button" onClick={() => setEncounterDetails(null)}>Close</button>
       </form>}
+      {role === 'gm' && preparationSource === 'encounters' && <button type="button" onClick={returnToPreparationSource}>Return to encounter preparation</button>}
       {role === 'gm' && snapshot?.context.activeEncounter && <button disabled={busy || connection !== 'connected'}
         onClick={async () => {
           setBusy(true); setError('')
