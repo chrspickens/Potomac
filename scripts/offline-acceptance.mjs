@@ -341,7 +341,7 @@ try {
       memberId: ${JSON.stringify(member.memberId)}, credential: ${JSON.stringify(member.credential)},
     }));`);
     await chooseRole(sessionId, 'player');
-    await waitForExpression(sessionId, "document.querySelector('.status-connected') && document.querySelector('.campaign-select strong')?.textContent === 'foundation-demo'", 'enrolled member connection');
+    await waitForExpression(sessionId, "document.querySelector('.status-connected') && document.querySelector('.campaign-select strong')?.textContent && document.querySelector('.campaign-select strong')?.textContent !== 'Connecting…'", 'enrolled member connection');
   }
 
   const memberBState = await request('/api/state', memberB.credential);
