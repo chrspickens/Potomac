@@ -577,7 +577,7 @@ try {
   await delay(200)
   const afterClick = await api(`/api/maps/${battle.id}`, gmToken)
   assert.equal(afterClick.body.revision, revisionBeforeClick, 'stationary piece click only selects and does not commit or snap')
-  await evaluate(gm, `document.querySelector('.map-piece')?.focus()`)
+  await evaluate(gm, `[...document.querySelectorAll('.map-piece')].find(piece=>piece.getAttribute('aria-label')?.startsWith(${JSON.stringify(actorA.name)}))?.focus()`)
   await pressKey(gm, 'ArrowRight'); await pressKey(gm, 'ArrowRight'); await pressKey(gm, 'ArrowRight')
   const keyboardMoved = await waitMap(battle.id, gmToken, map => map.pieces?.some(piece => piece.id === tokenA && piece.x === 100), 'three rapid keyboard moves serialize without stale revisions')
   assert.ok(keyboardMoved.revision > movedToken.revision, 'rapid keyboard movement commits with refreshed host revisions')
