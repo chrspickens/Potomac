@@ -428,7 +428,7 @@ try {
   await clickText(playerA.sessionId, 'Back to origin', '.topbar-right button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'Player A returns to the selected local Maps origin')
   await browserSearch(playerB, 'Flooded Observatory')
-  await clickText(playerB.sessionId, 'Flooded Observatory', '.campaign-search-results button')
+  await evaluate(playerB.sessionId, `(() => { const button=[...document.querySelectorAll('.campaign-search-results button')].find(item=>item.querySelector('strong')?.textContent==='Flooded Observatory'&&item.querySelector('small')?.textContent.startsWith('map')); if(!button) throw new Error('Flooded Observatory map search result is missing'); button.click(); return true })()`)
   await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'Player B pointer search opens a different authorized map')
   await clickText(playerB.sessionId, 'Back to origin', '.topbar-right button')
   await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'Player B returns to the selected local Maps origin')
