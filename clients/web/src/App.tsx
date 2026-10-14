@@ -1,5 +1,5 @@
 import { Component, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { configuredHost, commandSession, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, fetchMapBackground, getCampaignConfig, grantActorToMember, host, listLore, listLoreLinkedToEncounter, listMaps, listMyOfflineReceipts, listReviewProposals, loadAuthorizedEncounter, loadCampaignEncounter, loadMap, loadReviewProposal, loadSessionSnapshot, saveCampaignConfig, saveEncounterParticipants, submitOfflineOperation, submitSessionAction, type CampaignConfig, type Encounter, type ConnectionStatus, type LoreArticle, type MapPieceView, type MapSceneView, type ReviewProposal, type Role, type SessionSnapshot, type Snapshot } from './api'
+import { configuredHost, commandSession, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, fetchMapBackground, getCampaignConfig, grantActorToMember, host, listLore, listLoreLinkedToEncounter, listMaps, listMyOfflineReceipts, listReviewProposals, loadAuthorizedEncounter, loadCampaignEncounter, loadMap, loadReviewProposal, loadSessionSnapshot, saveCampaignConfig, saveEncounterParticipants, submitOfflineOperation, submitSessionAction, type CampaignSearchResult, type CampaignConfig, type Encounter, type ConnectionStatus, type LoreArticle, type MapPieceView, type MapSceneView, type ReviewProposal, type Role, type SessionSnapshot, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import { openOfflineStorage, type OfflineOperation, type PrivateDraft, type QueuedOperation } from './offline/storage'
@@ -17,6 +17,7 @@ import { LoreApp, LoreArticlesContext, LoreRelationsContext, LoreTargetContext }
 import './workspace/brick-canvas.css'
 import { MapsApp } from './maps-app.tsx'
 import './maps.css'
+import { CampaignSearch } from './campaign-search'
 
 const profileKey = 'potomac.workspace.demo-profile'
 const newId = () => crypto.randomUUID()
@@ -133,6 +134,7 @@ export default function App() {
   const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
   const [creatingEncounter, setCreatingEncounter] = useState(false)
   const [openedLoreEncounterId, setOpenedLoreEncounterId] = useState('')
+  const [searchReturn, setSearchReturn] = useState<{ section: 'dashboard' | 'table' | 'characters' | 'encounters' | 'lore' | 'maps'; actorId: string; mapId?: string; loreId?: string } | null>(null)
 
   useEffect(() => {
     let stopped = false
@@ -697,9 +699,21 @@ export default function App() {
   } as Record<string, string>)[code] || 'The host could not apply this edit; review it against current authorized state.'
 
   const activeEncounter = snapshot?.context.activeEncounter
+  const openSearchResult = (result: CampaignSearchResult) => {
+    if (!snapshot) return
+    setSearchReturn({ section, actorId: selectedActorId, mapId: mapTargetId, loreId: loreTargetId })
+    if (result.kind === 'actor') { setSelectedActorId(result.id); setSection('characters') }
+    else if (result.kind === 'encounter') { setOpenedLoreEncounterId(result.id); setSection('encounters') }
+    else if (result.kind === 'map') { setMapTargetId(result.id); setSection('maps') }
+    else { setLoreTargetId(result.id); setSection('lore') }
+  }
+  const returnFromSearchResult = () => {
+    if (!searchReturn) return
+    setSection(searchReturn.section); setSelectedActorId(searchReturn.actorId); setMapTargetId(searchReturn.mapId); setLoreTargetId(searchReturn.loreId); setSearchReturn(null)
+  }
   return <LoreTargetContext.Provider value={setLoreTargetId}><LoreRelationsContext.Provider value={loreRelations}><LoreArticlesContext.Provider value={loreArticles}><div className="app-shell">
     <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{campaign?.name || snapshot?.context.campaignId || 'Connecting…'}</strong><small>{campaign?.systemModuleId ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : 'Configure campaign in GM setup'}</small></div><nav aria-label="Applications"><button className={section === 'table' ? 'active' : ''} onClick={() => setSection('table')}>▦ <span>Table</span></button><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▤ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><button className={section === 'encounters' ? 'active' : ''} onClick={() => setSection('encounters')}>⚑ <span>Encounters</span></button><button className={section === 'maps' ? 'active' : ''} onClick={() => { setMapTargetId(undefined); setSection('maps') }}>⌖ <span>Maps</span></button><button className={section === 'lore' ? 'active' : ''} onClick={() => { setLoreTargetId(undefined); setSection('lore') }}>▤ <span>Lore</span></button></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
-    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'table' ? 'Table' : section === 'characters' ? 'Characters' : section === 'lore' ? 'Lore' : section === 'maps' ? 'Maps' : 'Encounters'}</strong></div><div className="topbar-right"><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId('') }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
+    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'table' ? 'Table' : section === 'characters' ? 'Characters' : section === 'lore' ? 'Lore' : section === 'maps' ? 'Maps' : 'Encounters'}</strong></div><div className="topbar-right">{searchReturn && <button type="button" onClick={returnFromSearchResult}>Back to origin</button>}<CampaignSearch role={role} connected={connection === 'connected' && Boolean(snapshot)} onOpen={openSearchResult} /><span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId(''); setSearchReturn(null) }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
     {role === 'gm' && configuredHost && campaign && <section className="campaign-setup" aria-label="Campaign setup">
