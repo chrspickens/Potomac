@@ -1,6 +1,6 @@
 # ADR-0015: Model map navigation and encounter association as typed authorized links
 
-- Status: Accepted for the 0.7 requirements baseline
+- Status: Accepted; implemented in the v0.7 Maps slice
 - Date: 2026-10-13
 
 ## Context
@@ -27,4 +27,4 @@ Stable IDs survive target renames. Every resolver must apply authorization at re
 
 ## Follow-up / validation
 
-Test all four map-kind link combinations, cycles, hidden/missing/archived and cross-campaign IDs, target rename stability, multiple encounter links with one default, archive/restore and default resolution after revocation. See [Workspace 0.7 requirements](../workspace-0.7-requirements.md) and [issue #70](https://github.com/chrspickens/Potomac/issues/70).
+The automated acceptance evidence covers World→Battle navigation, return navigation, Map→Lore→Back, unchanged active encounter, encounter associations, authorized/unavailable targets, restart and v5 persistence; see [Maps manual QA](../maps-manual-qa.md). The full combinatorial matrix (all four map-kind link directions, cycles and every archive/missing combination) is not claimed as human testing. See [Workspace 0.7 requirements](../workspace-0.7-requirements.md) and [issue #70](https://github.com/chrspickens/Potomac/issues/70).
