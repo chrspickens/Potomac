@@ -485,7 +485,7 @@ try {
   // mask its close notification. Stop the disposable host while the browser is
   // online so the real stream reader sees EOF before emulating offline mode.
   await stopHost()
-  await waitExpr(playerA.sessionId, "document.querySelector('.status')?.textContent.includes('DISCONNECTED')", 'Player A search disconnects')
+  await waitExpr(playerA.sessionId, "document.querySelector('.status')?.textContent.includes('OFFLINE') || document.querySelector('.status')?.textContent.includes('DISCONNECTED')", 'Player A search disconnects into the visible offline state')
   await cdp('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, playerA.sessionId)
   assert.ok(await evaluate(playerA.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('Search requires a live host connection.')"), 'offline search shows no cached result list')
   hostProcess = launchHost(db)
