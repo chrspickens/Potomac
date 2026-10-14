@@ -414,9 +414,32 @@ try {
     await inputText(client.sessionId, searchInput, query)
     await waitExpr(client.sessionId, `Boolean([...document.querySelectorAll('.campaign-search-results strong')].find(item=>item.textContent===${JSON.stringify(query)}))`, `${client.label} authorized search result for ${query}`)
   }
-  const browserSearchForNoResults = async (client, query) => {
-    await evaluate(client.sessionId, `(() => { const input=document.querySelector(${JSON.stringify(searchInput)}); if(!input) throw new Error('campaign search input is missing'); input.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(query)}); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); return true })()`)
-    await waitExpr(client.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('No matching authorized results.')", `${client.label} authorized search has no results for ${query}`)
+  const browserSearchForNoResults = async (client, identity, query) => {
+    const response = await api(`/api/search?q=${encodeURIComponent(query)}&limit=25`, identity.credential)
+    assert.equal(response.response.status, 200, `${client.label} host search remains authorized after revocation`)
+    assert.deepEqual(response.body.results, [], `${client.label} host search excludes revoked Lore`)
+    // Revocation arrives over SSE and can remount the keyed search control. Let
+    // that scope refresh settle, then use the same real-Chrome input path as
+    // positive searches and verify the controlled value survived the handoff.
+    await delay(300)
+    let queryEntered = false
+    for (let attempt = 0; attempt < 3 && !queryEntered; attempt += 1) {
+      await inputText(client.sessionId, searchInput, query)
+      const deadline = Date.now() + 1200
+      while (Date.now() < deadline) {
+        if (await evaluate(client.sessionId, `document.querySelector(${JSON.stringify(searchInput)})?.value===${JSON.stringify(query)} && document.querySelector(${JSON.stringify(searchInput)})?.getAttribute('aria-expanded')==='true'`)) { queryEntered = true; break }
+        await delay(100)
+      }
+    }
+    if (!queryEntered) throw new Error(`${client.label} search input did not retain ${query} after revocation refresh`)
+    try {
+      await waitExpr(client.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('No matching authorized results.')", `${client.label} authorized search has no results for ${query}`)
+    } catch (error) {
+      const ui = await evaluate(client.sessionId, `(() => { const input=document.querySelector(${JSON.stringify(searchInput)}); const results=document.querySelector('.campaign-search-results'); return { inputValue:input?.value ?? null, inputExpanded:input?.getAttribute('aria-expanded') ?? null, resultsText:results?.innerText ?? null, connection:document.querySelector('.status')?.innerText ?? null, role:document.querySelector('.topbar-right select')?.value ?? null } })()`).catch(() => ({ evaluation: 'failed' }))
+      const failure = { client: client.label, query, hostStatus: response.response.status, hostResultCount: response.body.results.length, ui }
+      diagnostics.probes[`${client.label}-revoked-search-failure`] = failure
+      throw new Error(`${error.message}; search diagnostics=${JSON.stringify(failure)}`)
+    }
   }
   const contextBeforeSearch = (await api('/api/state', gmToken)).body.context
   await browserSearchForResult(gmClient, 'Sunken Archive')
@@ -442,7 +465,7 @@ try {
   const revokedLore = await api(`/api/lore/${sunkenArchive.id}/publication`, gmToken, { method: 'PUT', body: JSON.stringify({ operationId: `browser-search-revoke-${process.pid}`, baseRevision: sunkenArchive.revision, published: false }) })
   assert.equal(revokedLore.response.status, 200, 'GM revokes the shared Lore target')
   for (const [client, identity] of [[playerA, playerAIdentity], [playerB, playerBIdentity]]) {
-    await browserSearchForNoResults(client, 'Sunken Archive')
+    await browserSearchForNoResults(client, identity, 'Sunken Archive')
     assert.ok(!await evaluate(client.sessionId, "document.body.innerText.includes('Sunken Archive')"), `${client.label} DOM omits revoked title after refresh`)
     assert.equal((await api(`/api/navigation/lore/${sunkenArchive.id}`, identity.credential)).response.status, 404, `${client.label} cannot resolve revoked stable ID`)
     const replay = await api('/api/state?since=0', identity.credential)
