@@ -487,11 +487,17 @@ try {
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Prepare / edit') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'encounter preparation controls');
   await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.encounters-page .schema-form textarea'); field.focus(); field.select(); })()");
-  await cdp('Input.insertText', { text: 'Prepared in the Encounters app' }, gm.sessionId);
+  await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.encounters-page .schema-form textarea'); const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; setter.call(field, 'Prepared in the Encounters app'); field.dispatchEvent(new Event('input', { bubbles:true })); })()");
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form textarea')?.value === 'Prepared in the Encounters app'", 'encounter preparation summary input updated');
   await evaluate(gm.sessionId, "(() => { const item=[...document.querySelectorAll('.encounters-page .schema-form fieldset label')].find(label=>label.textContent.includes('UI Created Character')); if (!item) throw new Error('Created actor missing from participant selector'); const input=item.querySelector('input'); if (!input.checked) input.click(); })()");
   await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
   await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Encounter and participants saved on host.')", 'encounter update result');
-  const preparedEncounter = await (await request('/api/encounters/' + encodeURIComponent(createdEncounter.id), gmToken)).json();
+  let preparedEncounter;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    preparedEncounter = await (await request('/api/encounters/' + encodeURIComponent(createdEncounter.id), gmToken)).json();
+    if (preparedEncounter.summary === 'Prepared in the Encounters app') break;
+    await delay(100);
+  }
   assert.equal(preparedEncounter.summary, 'Prepared in the Encounters app', 'GM encounter editing persisted to the host');
   assert.equal(preparedEncounter.participants.length, 3, 'GM UI added the created character to the encounter roster');
   await clickText(gm.sessionId, 'Create encounter');
