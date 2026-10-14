@@ -533,15 +533,21 @@ export default function App() {
       // changes this browser's local app selection; it never activates a
       // target implicitly.
       await host.setEncounter(role, encounter.id)
-      setEncounterDetails(encounter)
-      setEncounterNameInput(encounter.name)
-      setEncounterSummaryInput(encounter.summary)
-      setEncounterStatusInput(encounter.status || 'prepared')
+      // The encounter rail is a summary projection. Do not seed the editable
+      // preparation form from it: participant details are loaded separately.
+      setEncounterDetails(null)
       setSnapshot(await host.load(role))
       setSection('table')
       setActionState(`Prepared ${encounter.name}; ready to start the Table session.`)
     } catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
+  }
+  const openTableForEncounter = (encounter: Encounter) => {
+    // Opening Table is local navigation only. Encounter cards are summaries
+    // and must never become the source for a participant roster save.
+    setEncounterDetails(null)
+    setSection('table')
+    setActionState(`Opened Table for ${encounter.name}; shared session context was not changed.`)
   }
   const returnToPreparation = async () => {
     const encounterId = snapshot?.context.activeEncounter?.id
@@ -768,8 +774,8 @@ export default function App() {
           <div><p className="eyebrow">ENCOUNTER · {encounter.id}</p><h2>{encounter.name}</h2><p>{encounter.summary}</p>{openedLoreEncounterId === encounter.id && <small role="status">Opened from Lore</small>}</div>
           <div>{role === 'gm' && <button disabled={busy || connection !== 'connected'}
             onClick={() => { setCreatingEncounter(false); void chooseEncounter(encounter.id) }}>Prepare / edit</button>}
-            {role === 'gm' && <button disabled={busy || connection !== 'connected' || snapshot.context.activeEncounter?.id === encounter.id}
-              onClick={() => void activateEncounterAndOpenTable(encounter)}>Activate and open Table</button>}
+            {role === 'gm' && <button disabled={busy || connection !== 'connected'}
+              onClick={() => snapshot.context.activeEncounter?.id === encounter.id ? openTableForEncounter(encounter) : void activateEncounterAndOpenTable(encounter)}>{snapshot.context.activeEncounter?.id === encounter.id ? 'Open Table' : 'Activate and open Table'}</button>}
             {snapshot?.context.activeEncounter?.id === encounter.id && <span className="active-label">Active for campaign</span>}
           </div>
         </article>)}

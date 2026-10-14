@@ -390,8 +390,12 @@ try {
   await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No participants'))", 'Player B empty authorized Table roster');
   const tableRoster = await evaluate(player.sessionId, "[...document.querySelectorAll('.table-participants article strong')].map(item=>item.textContent)");
   assert.deepEqual(tableRoster.sort(), ['Mira Vell', 'Tarin Vale'], 'Player A Table shows only its two granted participants from the active encounter');
-  await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel button')?.textContent === 'Start session' && !document.querySelector('.table-session-panel button').disabled", 'GM Table start control enabled for active encounter');
-  await clickText(gm.sessionId, 'Start session', '.table-session-panel button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent === 'Start Table session' && !document.querySelector('.session-strip[aria-label=\"Table workflow\"] button').disabled", 'GM Table workflow start control enabled for active encounter');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent || ''"), '', 'player Table workflow has no GM start control');
+  await clickText(gm.sessionId, 'Start Table session', '.session-strip[aria-label="Table workflow"] button');
+  const startedSession = await (await request('/api/session', gmToken)).json();
+  assert.equal(startedSession.current.status, 'active', 'workflow banner creates an authoritative active session');
+  assert.equal(startedSession.current.encounterId, createdEncounter.id, 'workflow banner starts the selected encounter');
   await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", 'GM starts the live Table session against the committed active encounter');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed active Table session`);
@@ -405,6 +409,11 @@ try {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
   }
   assert.equal(await evaluate(player.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.')"), true, 'player Table view has no GM session controls');
+  await clickText(gm.sessionId, 'Return to preparation');
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .active-encounter h2')?.textContent === 'Edited Acceptance Encounter'", 'GM returns to the active encounter preparation while session remains active');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').length === 2", 'active encounter offers non-mutating Open Table re-entry');
+  await clickText(gm.sessionId, 'Open Table', '.encounter-card button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'GM reopens Table without reactivating the encounter');
 
   const gmState = await evaluate(gm.sessionId, `(() => { const e = document.querySelector('.gm-note'); return {note:e?.textContent || '', actor:document.querySelector('.character-view h3')?.textContent || '', key:Object.keys(localStorage).find(k=>k.startsWith('potomac:workspace:')), body:document.body.innerText.slice(0,900)} })()`);
   assert.match(gmState.note, /The magistrate recognizes Mira\./, `GM sees the fixture secret note: ${JSON.stringify(gmState)}`);
@@ -478,11 +487,17 @@ try {
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Prepare / edit') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'encounter preparation controls');
   await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.encounters-page .schema-form textarea'); field.focus(); field.select(); })()");
-  await cdp('Input.insertText', { text: 'Prepared in the Encounters app' }, gm.sessionId);
+  await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.encounters-page .schema-form textarea'); const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; setter.call(field, 'Prepared in the Encounters app'); field.dispatchEvent(new Event('input', { bubbles:true })); })()");
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form textarea')?.value === 'Prepared in the Encounters app'", 'encounter preparation summary input updated');
   await evaluate(gm.sessionId, "(() => { const item=[...document.querySelectorAll('.encounters-page .schema-form fieldset label')].find(label=>label.textContent.includes('UI Created Character')); if (!item) throw new Error('Created actor missing from participant selector'); const input=item.querySelector('input'); if (!input.checked) input.click(); })()");
   await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
   await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Encounter and participants saved on host.')", 'encounter update result');
-  const preparedEncounter = await (await request('/api/encounters/' + encodeURIComponent(createdEncounter.id), gmToken)).json();
+  let preparedEncounter;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    preparedEncounter = await (await request('/api/encounters/' + encodeURIComponent(createdEncounter.id), gmToken)).json();
+    if (preparedEncounter.summary === 'Prepared in the Encounters app') break;
+    await delay(100);
+  }
   assert.equal(preparedEncounter.summary, 'Prepared in the Encounters app', 'GM encounter editing persisted to the host');
   assert.equal(preparedEncounter.participants.length, 3, 'GM UI added the created character to the encounter roster');
   await clickText(gm.sessionId, 'Create encounter');
@@ -502,6 +517,20 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Encounters application activates the selected encounter and opens Table');
   const uiEncounterActivation = await (await request('/api/state', gmToken)).json();
   assert.equal(uiEncounterActivation.context.activeEncounter, createdEncounter.id, 'Encounters application activation commits shared campaign context');
+  const rosterBeforeTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
+  assert.equal(rosterBeforeTableNavigation.participants.length, 3, 'active encounter roster is fully populated before Table navigation');
+  await clickText(gm.sessionId, 'Encounters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card h2')].some(heading=>heading.textContent==='Edited Acceptance Encounter')", 'encounter rail returns to preparation list');
+  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Open Table') button.click() })");
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Open Table navigates without seeding an editable summary-only form');
+  await clickText(gm.sessionId, 'Encounters', 'nav[aria-label="Applications"] button');
+  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Prepare / edit') button.click() })");
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'return through Encounters rail hydrates full preparation details');
+  assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 3, 'all participants remain selected after returning from Table');
+  await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Encounter and participants saved on host.')", 'encounter saves after Table re-entry');
+  const rosterAfterTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
+  assert.deepEqual(rosterAfterTableNavigation.participants.map(item=>item.actorId).sort(), rosterBeforeTableNavigation.participants.map(item=>item.actorId).sort(), 'saving after Table navigation preserves the authoritative participant roster');
   await clickText(gm.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.session-strip'))", 'dashboard after encounter app activation');
 
