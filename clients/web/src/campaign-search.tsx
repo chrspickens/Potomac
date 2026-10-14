@@ -1,42 +1,58 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { resolveCampaignNavigation, searchCampaign, type CampaignSearchResult, type Role } from './api'
 import './campaign-search.css'
 
-export function CampaignSearch({ role, connected, onOpen }: { role: Role; connected: boolean; onOpen: (result: CampaignSearchResult) => void }) {
+export function CampaignSearch({ role, identityKey, connected, onOpen }: { role: Role; identityKey: string; connected: boolean; onOpen: (result: CampaignSearchResult) => void }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<CampaignSearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [open, setOpen] = useState(false)
   const [next, setNext] = useState<string | null>(null)
+  const requestEpoch = useRef(0)
+  const scope = useRef({ role, identityKey, connected, query, open })
+  scope.current = { role, identityKey, connected, query, open }
+  useEffect(() => {
+    requestEpoch.current += 1
+    return () => { requestEpoch.current += 1 }
+  }, [role, identityKey, connected, query, open])
   useEffect(() => {
     if (!open || !connected || !query.trim()) { setResults([]); setMessage(''); setNext(null); return }
     let current = true
+    const epoch = requestEpoch.current
+    const isCurrent = () => current && epoch === requestEpoch.current && scope.current.role === role && scope.current.identityKey === identityKey && scope.current.connected && scope.current.query === query && scope.current.open
     const timer = window.setTimeout(() => {
       setLoading(true)
       void searchCampaign(role, query, { limit: 25 }).then(page => {
-        if (current) { setResults(page.results); setNext(page.next); setMessage(page.results.length ? '' : 'No matching authorized results.') }
-      }).catch(() => { if (current) { setResults([]); setMessage('Search is unavailable. Reconnect and try again.') } })
-        .finally(() => { if (current) setLoading(false) })
+        if (isCurrent()) { setResults(page.results); setNext(page.next); setMessage(page.results.length ? '' : 'No matching authorized results.') }
+      }).catch(() => { if (isCurrent()) { setResults([]); setMessage('Search is unavailable. Reconnect and try again.') } })
+        .finally(() => { if (isCurrent()) setLoading(false) })
     }, 180)
     return () => { current = false; window.clearTimeout(timer) }
-  }, [open, connected, role, query])
+  }, [open, connected, identityKey, role, query])
   const loadMore = async () => {
     if (!next || loading) return
+    const epoch = requestEpoch.current
+    const expectedScope = { role, identityKey, query }
+    const isCurrent = () => epoch === requestEpoch.current && scope.current.role === expectedScope.role && scope.current.identityKey === expectedScope.identityKey && scope.current.query === expectedScope.query && scope.current.connected && scope.current.open
     setLoading(true)
-    try { const page = await searchCampaign(role, query, { after: next, limit: 25 }); setResults(current => [...current, ...page.results]); setNext(page.next) }
-    catch { setMessage('Search is unavailable. Reconnect and try again.') }
-    finally { setLoading(false) }
+    try { const page = await searchCampaign(role, query, { after: next, limit: 25 }); if (isCurrent()) { setResults(current => [...current, ...page.results]); setNext(page.next) } }
+    catch { if (isCurrent()) setMessage('Search is unavailable. Reconnect and try again.') }
+    finally { if (isCurrent()) setLoading(false) }
   }
   const activate = async (result: CampaignSearchResult) => {
     if (!connected) { setMessage('Reconnect to open a current result.'); return }
+    const epoch = requestEpoch.current
+    const expectedScope = { role, identityKey, query }
+    const isCurrent = () => epoch === requestEpoch.current && scope.current.role === expectedScope.role && scope.current.identityKey === expectedScope.identityKey && scope.current.query === expectedScope.query && scope.current.connected
     setLoading(true)
     try {
       // Recheck current authorization by stable ID immediately before handoff.
       const current = await resolveCampaignNavigation(role, result)
+      if (!isCurrent()) return
       setOpen(false); setQuery(''); setResults([]); onOpen(current)
-    } catch { setMessage('This item is unavailable.') }
-    finally { setLoading(false) }
+    } catch { if (isCurrent()) setMessage('This item is unavailable.') }
+    finally { if (isCurrent()) setLoading(false) }
   }
   return <div className="campaign-search">
     <label htmlFor="campaign-search-input">Search campaign</label>

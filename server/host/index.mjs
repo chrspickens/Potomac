@@ -431,6 +431,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }).map(({ actor_id, initiative, status, activation_order }) => ({ actorId: actor_id, initiative, status, activationOrder: activation_order }))
   });
   const publicEncounters = (auth) => db.prepare('SELECT * FROM encounters ORDER BY id').all().filter(row => auth.role === 'gm' || row.visibility === 'public').map(row => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, revision: row.revision, ...(auth.role === 'gm' ? { gmNotes: row.gm_notes || '' } : {}) }));
+  const searchKey = result => `${result.kind}:${result.id}`;
+  const compareSearchKeys = (left, right) => left < right ? -1 : left > right ? 1 : 0;
   const searchCampaign = (auth, query, after, requestedLimit) => {
     const normalized = query.trim();
     if (normalized.length > 200) return { error: 'invalid_campaign_search_query', status: 400 };
@@ -451,7 +453,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       .all(...actorScope, ...(normalized ? [pattern] : []));
     for (const row of actorRows) {
       if (!canReadActor(row, auth)) continue;
-      const name = JSON.parse(row.data).name;
+      const name = projectActor(row, auth).data.name;
       if (typeof name === 'string' && name) add('actor', row.id, name);
     }
     const encounterVisibility = auth.role === 'gm' ? '1=1' : "visibility='public'";
@@ -481,8 +483,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       if (!canReadMap(row, auth)) continue;
       add('map', row.id, row.name, row.kind);
     }
-    rows.sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
-    const remaining = after ? rows.filter(row => `${row.kind}:${row.id}` > after) : rows;
+    rows.sort((a, b) => compareSearchKeys(searchKey(a), searchKey(b)));
+    const remaining = after ? rows.filter(row => compareSearchKeys(searchKey(row), after) > 0) : rows;
     const page = remaining.slice(0, limit);
     return { results: page, next: remaining.length > page.length && page.length ? `${page.at(-1).kind}:${page.at(-1).id}` : null, hasMore: remaining.length > page.length };
   };
@@ -727,7 +729,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         let result = null;
         if (kind === 'actor') {
           const row = actorRow.get(id);
-          if (row && !row.archived && canReadActor(row, auth)) { const name = JSON.parse(row.data).name; if (typeof name === 'string' && name) result = { kind, id, label: name }; }
+          if (row && !row.archived && canReadActor(row, auth)) { const name = projectActor(row, auth).data.name; if (typeof name === 'string' && name) result = { kind, id, label: name }; }
         } else if (kind === 'encounter') {
           const row = db.prepare('SELECT * FROM encounters WHERE id=?').get(id);
           if (row && (auth.role === 'gm' || row.visibility === 'public')) result = { kind, id, label: row.name, status: row.status };

@@ -120,7 +120,9 @@ test('campaign search returns bounded role-authorized stable-ID projections with
     for (const [id, name, owner] of [['alice-actor', 'Authorized Ranger', alice.memberId], ['bob-actor', 'Hidden Ranger', bob.memberId]]) {
       await postJson(request, '/api/actors', { id, moduleId, moduleVersion, data: { name }, visibility: {}, ownerRole: 'player', ownerMemberId: owner });
     }
+    await postJson(request, '/api/actors', { id: 'redacted-name-actor', moduleId, moduleVersion, data: { name: 'CLASSIFIED Ranger Name' }, visibility: { gmOnly: ['name'] }, ownerRole: 'gm' });
     await request('/api/actors/alice-actor/grants', 'gm', { method: 'POST', body: JSON.stringify({ memberId: alice.memberId, permissions: ['read', 'act'] }) });
+    await request('/api/actors/redacted-name-actor/grants', 'gm', { method: 'POST', body: JSON.stringify({ memberId: alice.memberId, permissions: ['read'] }) });
     const now = new Date().toISOString();
     host.db.prepare('INSERT INTO lore_entries(id,campaign_id,type,title,summary,body,gm_notes,tags,published,visibility,archived,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run('shared-lore','foundation-demo','note','Shared Ranger Notes','','','', '[]',1,'shared',0,now,now);
@@ -140,9 +142,13 @@ test('campaign search returns bounded role-authorized stable-ID projections with
     assert.deepEqual(alicePage.results.map(row => `${row.kind}:${row.id}`).sort(), ['actor:alice-actor','encounter:shared-encounter','lore:shared-lore','map:shared-map']);
     assert.deepEqual(bobPage.results.map(row => `${row.kind}:${row.id}`).sort(), ['actor:bob-actor','encounter:shared-encounter','lore:shared-lore','map:shared-map']);
     assert.ok(gmPage.results.some(row => row.id === 'secret-lore') && gmPage.results.some(row => row.id === 'bob-actor'));
-    for (const forbidden of ['secret-lore','CLASSIFIED','SECRET-CAMPAIGN-MARKER','secret-map','secret-encounter','bob-actor']) assert.equal(JSON.stringify(alicePage).includes(forbidden), false, `search leaked ${forbidden}`);
+    for (const forbidden of ['secret-lore','CLASSIFIED','SECRET-CAMPAIGN-MARKER','secret-map','secret-encounter','bob-actor','redacted-name-actor']) assert.equal(JSON.stringify(alicePage).includes(forbidden), false, `search leaked ${forbidden}`);
+    assert.equal(await (await search(alice.credential, 'CLASSIFIED')).json().then(body => body.results.length), 0);
+    const aliceState = await (await request('/api/state', alice.credential)).json();
+    assert.equal(JSON.stringify(aliceState.actors.find(actor => actor.id === 'redacted-name-actor')).includes('CLASSIFIED'), false, 'authorized actor projection removes a GM-only name');
     const resolve = (token, target) => request(`/api/navigation/${target.kind}/${target.id}`, token);
     assert.equal((await resolve(alice.credential, { kind: 'actor', id: 'bob-actor' })).status, 404);
+    assert.equal((await resolve(alice.credential, { kind: 'actor', id: 'redacted-name-actor' })).status, 404, 'target without an authorized label is unavailable');
     assert.equal((await resolve(alice.credential, { kind: 'lore', id: 'secret-lore' })).status, 404);
     assert.equal((await resolve(alice.credential, { kind: 'map', id: 'secret-map' })).status, 404);
     assert.equal((await resolve(alice.credential, { kind: 'encounter', id: 'secret-encounter' })).status, 404);
@@ -153,6 +159,16 @@ test('campaign search returns bounded role-authorized stable-ID projections with
     assert.ok(pageOne.next);
     const pageTwo = await (await search('gm', 'Ranger', `&limit=1&after=${encodeURIComponent(pageOne.next)}`)).json();
     assert.equal(pageTwo.results.length, 1);
+    for (const [id, name] of [['case-a','Ranger lower'],['case-b','Ranger middle'],['case-Z','Ranger upper']])
+      host.db.prepare("INSERT INTO encounters(id,name,summary,status,revision,created_at,updated_at,visibility,gm_notes) VALUES(?,?, '', 'prepared',1,?,?, 'public','')").run(id,name,now,now);
+    const keys = [];
+    let pageCursor = null;
+    do {
+      const page = await (await search('gm', 'Ranger', `&limit=1${pageCursor ? `&after=${encodeURIComponent(pageCursor)}` : ''}`)).json();
+      keys.push(...page.results.map(row => `${row.kind}:${row.id}`)); pageCursor = page.next;
+    } while (pageCursor);
+    assert.deepEqual(keys, [...keys].sort((a, b) => a < b ? -1 : a > b ? 1 : 0), 'cursor ordering uses the same codepoint comparator as result sorting');
+    assert.ok(keys.includes('encounter:case-Z') && keys.includes('encounter:case-a') && keys.includes('encounter:case-b'), 'mixed-case IDs are not skipped between pages');
     assert.equal((await search('gm', 'Ranger', '&limit=0')).status, 400);
     assert.equal((await search('gm', 'x'.repeat(201))).status, 400);
     assert.equal((await request('/api/search?q=Ranger', 'unknown-token')).status, 401);
