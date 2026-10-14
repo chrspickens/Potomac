@@ -398,13 +398,13 @@ try {
   // the shared context strip and live-session bricks.
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await clickText(client.sessionId, 'Table', 'nav[aria-label="Applications"] button');
-    await waitForExpression(client.sessionId, "document.querySelector('.dashboard-page') && document.querySelector('.session-strip')", `${label} explicitly navigates from Campaign Home to Table`);
+    await waitForExpression(client.sessionId, "Boolean(document.querySelector('.dashboard-page') && document.querySelector('.session-strip'))", `${label} explicitly navigates from Campaign Home to Table`);
   }
 
   // Exercise the registered Table bricks in three isolated browser profiles.
   // The GM and Player A have authorized roster entries; Player B has no grants.
-  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
-  await waitForExpression(player.sessionId, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.session-strip')].at(-1)?.querySelector('strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.session-strip')].at(-1)?.querySelector('strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
   await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No participants'))", 'Player B empty authorized Table roster');
   const tableRoster = await evaluate(player.sessionId, "[...document.querySelectorAll('.table-participants article strong')].map(item=>item.textContent)");
   assert.deepEqual(tableRoster.sort(), ['Mira Vell', 'Tarin Vale'], 'Player A Table shows only its two granted participants from the active encounter');
