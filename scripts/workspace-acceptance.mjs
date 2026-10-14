@@ -687,6 +687,7 @@ try {
   await cdp('Page.reload', { ignoreCache: true }, gm.sessionId);
   await delay(300);
   await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent !== 'Connecting…'", 'GM reload');
+  await clickText(gm.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.intro-actions button')].some(button => button.textContent.includes('Edit layout'))", 'GM view mode after reload');
   assert.equal(await evaluate(gm.sessionId, `localStorage.getItem(${JSON.stringify(gmState.key)})`), gmSavedWorkspace, 'GM dashboard, group and brick layouts persist across reload');
   await clickText(gm.sessionId, 'Edit layout');
