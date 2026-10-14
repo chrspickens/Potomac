@@ -96,11 +96,13 @@ export type MapScene = {
 export type MapPiece = {
   id: string; sceneId: string; kind: "actor" | "pin"; x: number; y: number;
   visible: boolean; revision: number; actorId?: string; label?: string;
-  destination?: { sceneId: string; name: string; label: string };
+  destination?:
+    | { kind: "map_scene"; sceneId: string; name: string; label: string }
+    | { kind: "lore_entry"; entryId: string; title: string; label: string };
 };
 export type MapSceneCommand = { operationId: string; baseRevision: number };
 export type MapSceneCreate = MapSceneCommand & Pick<MapScene, "id" | "name" | "kind" | "width" | "height"> & Partial<Pick<MapScene, "grid" | "gmNotes">> & { campaignId?: string; visibility?: "gm" };
-export type MapSceneOperation = "update" | "archive" | "restore" | "publish" | "revoke" | "piece.put" | "piece.delete" | "link.put" | "link.delete" | "encounter.set" | "background.remove";
+export type MapSceneOperation = "update" | "archive" | "restore" | "publish" | "revoke" | "piece.put" | "piece.delete" | "link.put" | "link.delete" | "lore-link.put" | "lore-link.delete" | "encounter.set" | "background.remove";
 export type MapPieceCommand = MapSceneCommand & {
   pieceId?: string; piece?: Omit<MapPiece, "revision">;
 };

@@ -507,7 +507,15 @@ export function validateAuthorizedMapCache(entries: CachedMapScene[], campaignId
 
 function validateMapScene(scene: MapSceneView, campaignId: string): void {
   if (!isRecord(scene) || !isNonEmptyString(scene.id) || scene.campaignId !== campaignId || !isNonEmptyString(scene.name) || !['world', 'battle'].includes(scene.kind) || !Number.isSafeInteger(scene.revision) || scene.revision < 1 || !Number.isFinite(scene.width) || scene.width < 1 || !Number.isFinite(scene.height) || scene.height < 1 || !isRecord(scene.grid) || !['none', 'square', 'hex'].includes(String(scene.grid.type)) || !Number.isFinite(scene.grid.size) || !['gm', 'shared'].includes(scene.visibility) || !Array.isArray(scene.pieces) || typeof scene.archived !== 'boolean') throw new Error('Invalid authorized map scene');
-  for (const piece of scene.pieces) if (!isRecord(piece) || !isNonEmptyString(piece.id) || piece.sceneId !== scene.id || !['actor', 'pin'].includes(piece.kind) || !Number.isFinite(piece.x) || !Number.isFinite(piece.y) || piece.x < 0 || piece.y < 0 || piece.x > scene.width || piece.y > scene.height || !Number.isSafeInteger(piece.revision) || piece.revision < 1) throw new Error('Invalid authorized map piece');
+  for (const piece of scene.pieces) {
+    if (!isRecord(piece) || !isNonEmptyString(piece.id) || piece.sceneId !== scene.id || !['actor', 'pin'].includes(piece.kind) || !Number.isFinite(piece.x) || !Number.isFinite(piece.y) || piece.x < 0 || piece.y < 0 || piece.x > scene.width || piece.y > scene.height || !Number.isSafeInteger(piece.revision) || piece.revision < 1) throw new Error('Invalid authorized map piece');
+    if (piece.destination !== undefined) {
+      const destination = piece.destination;
+      const mapTarget = isRecord(destination) && Object.keys(destination).every(key => ['kind', 'sceneId', 'name', 'label'].includes(key)) && (destination.kind === 'map_scene' || destination.kind === undefined) && isNonEmptyString(destination.sceneId) && isNonEmptyString(destination.name) && typeof destination.label === 'string';
+      const loreTarget = isRecord(destination) && Object.keys(destination).every(key => ['kind', 'entryId', 'title', 'label'].includes(key)) && destination.kind === 'lore_entry' && isNonEmptyString(destination.entryId) && isNonEmptyString(destination.title) && typeof destination.label === 'string';
+      if (piece.kind !== 'pin' || (!mapTarget && !loreTarget)) throw new Error('Invalid authorized map destination');
+    }
+  }
   assertJson(scene);
 }
 function isMapRecord(value: unknown, scope: OfflineScope): value is Stored<CachedMapScene> {

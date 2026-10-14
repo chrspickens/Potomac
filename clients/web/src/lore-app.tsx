@@ -11,9 +11,10 @@ export const LoreArticlesContext = createContext<LoreArticle[]>([])
 export const LoreTargetContext = createContext<(id?: string) => void>(() => {})
 export const LoreRelationsContext = createContext<Record<string, string[]>>({})
 
-export function LoreApp({ role, connection, targetId, initialArticles = [], onArticlesChange, hostAvailable, availableActors = [], availableEncounters = [], onOpenTarget }: {
+export function LoreApp({ role, connection, targetId, initialArticles = [], onArticlesChange, hostAvailable, onBackToMap, availableActors = [], availableEncounters = [], onOpenTarget }: {
   role: Role; connection: ConnectionStatus; targetId?: string; initialArticles?: LoreArticle[];
   onArticlesChange?: (articles: LoreArticle[]) => void; hostAvailable: boolean;
+  onBackToMap?: () => void;
   availableActors?: Actor[]; availableEncounters?: Encounter[];
   onOpenTarget?: (kind: 'actor' | 'encounter', id: string) => void
 }) {
@@ -105,8 +106,10 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   const visible = useMemo(() => filterLore(articles, query, kind, tag, showArchived), [articles, query, kind, tag, showArchived])
   const selected = articles.find(item => item.id === selectedId)
   useEffect(() => {
-    if (selectedId && !visible.some(item => item.id === selectedId)) setSelectedId('')
-  }, [selectedId, visible])
+    // A deep-linked target can arrive before the offline Lore projection has
+    // finished loading. Do not discard it against the temporary empty list.
+    if (!loading && selectedId && !visible.some(item => item.id === selectedId)) setSelectedId('')
+  }, [selectedId, visible, loading])
 
   const startEdit = (article?: LoreArticle) => {
     setForm(article ? { title: article.title, kind: article.kind, tags: [...article.tags], body: article.body, visibility: article.visibility, gmNotes: role === 'gm' ? article.gmNotes || '' : '' } : emptyForm())
@@ -121,11 +124,13 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
       const saved = selected && editing && selectedId === selected.id ? await updateLore(selected.id, selected.revision, input) : await createLore(input)
       // Persist the article first: publishing is a distinct, audited host
       // operation. A failed publication must never be represented as shared.
-      setArticles(current => { const next = [...current.filter(item => item.id !== saved.id), saved]; onArticlesChange?.(next); return next })
+      const next = [...articles.filter(item => item.id !== saved.id), saved]
+      setArticles(next); onArticlesChange?.(next)
       setSelectedId(saved.id); setEditing(false)
       if (saved.visibility !== input.visibility) {
         const published = await setLorePublication(saved.id, saved.revision, input.visibility === 'shared')
-        setArticles(current => { const next = current.map(item => item.id === saved.id ? { ...item, ...published } : item); onArticlesChange?.(next); return next })
+        const next = articles.map(item => item.id === saved.id ? { ...item, ...published } : item)
+        setArticles(next); onArticlesChange?.(next)
       }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore could not be saved') }
     finally { setBusy(false) }
@@ -133,7 +138,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   const archive = async () => {
     if (!selected || !canEdit) return
     setBusy(true); setError('')
-    try { const latest = await readLore('gm', selected.id); const saved = await setLoreArchived(selected.id, latest.article.revision, !selected.archived); setArticles(current => { const next = current.map(item => item.id === saved.id ? { ...item, ...saved } : item); onArticlesChange?.(next); return next }); setSelectedId('') }
+    try { const latest = await readLore('gm', selected.id); const saved = await setLoreArchived(selected.id, latest.article.revision, !selected.archived); const next = articles.map(item => item.id === saved.id ? { ...item, ...saved } : item); setArticles(next); onArticlesChange?.(next); setSelectedId('') }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Lore archive state could not be changed') }
     finally { setBusy(false) }
   }
@@ -145,7 +150,8 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
       // catches up. Resolve the current GM-authorized revision at click time.
       const latest = await readLore('gm', selected.id)
       const publication = await setLorePublication(selected.id, latest.article.revision, selected.visibility !== 'shared')
-      setArticles(current => { const next = current.map(item => item.id === selected.id ? { ...item, ...publication } : item); onArticlesChange?.(next); return next })
+      const next = articles.map(item => item.id === selected.id ? { ...item, ...publication } : item)
+      setArticles(next); onArticlesChange?.(next)
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not change article sharing') }
     finally { setBusy(false) }
   }
@@ -202,7 +208,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   }
 
   return <main className="lore-page">
-      <div className="page-intro"><div><p className="eyebrow">APPLICATION / LORE</p><h1>Lore &amp; handouts</h1><p>Browse campaign articles by type and tag. The host filters content by visibility.</p></div>{canEdit && <button className="primary" onClick={() => { setSelectedId(''); startEdit() }}>New article</button>}</div>
+      <div className="page-intro"><div><p className="eyebrow">APPLICATION / LORE</p><h1>Lore &amp; handouts</h1><p>Browse campaign articles by type and tag. The host filters content by visibility.</p></div><div>{onBackToMap && <button type="button" onClick={onBackToMap}>Back to map</button>}{canEdit && <button className="primary" onClick={() => { setSelectedId(''); startEdit() }}>New article</button>}</div></div>
     {connection === 'disconnected' && <p role="status" className="capability-note">Host disconnected. Previously authorized Lore is read-only and stale{offlineCachedAt ? ` (last synchronized ${new Date(offlineCachedAt).toLocaleString()})` : ' (sync date unavailable)'}. Previously downloaded data may remain on this device after access is revoked.</p>}
     {!hostAvailable && <p role="status" className="capability-note">Lore requires a configured host; local preview has no Lore storage.</p>}
     {error && <p role="alert" className="error-banner">{error}{/revision|conflict|stale/i.test(error) ? ' Reload the latest article before editing again.' : ''}<button onClick={() => void reload()}>Retry</button></p>}

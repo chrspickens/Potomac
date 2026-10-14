@@ -134,7 +134,7 @@ try {
   assert.equal(playerWorld.status, 200);
   assert.equal(playerWorld.body.visibility, 'shared');
   assert.equal(Object.hasOwn(playerWorld.body, 'gmNotes'), false, 'shared player projection omits GM notes');
-  assert.deepEqual(playerWorld.body.pieces[0].destination, { sceneId: 'acceptance-battle', name: 'The Tide Cavern', label: 'To the cavern' });
+  assert.deepEqual(playerWorld.body.pieces[0].destination, { kind: 'map_scene', sceneId: 'acceptance-battle', name: 'The Tide Cavern', label: 'To the cavern' });
   assert.ok(!JSON.stringify(playerWorld.body).includes('MAPS_GM_ONLY'));
   const playerBattle = await readJson(await request('/api/maps/acceptance-battle', playerB));
   assert.equal(playerBattle.status, 200, 'player B independently receives shared battle projection');
