@@ -263,6 +263,9 @@ try {
   }
   await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
   await clickText(gm, 'Ashen Coast', '.map-browser button')
+  // A scene button click schedules React state work: wait for the chosen scene
+  // and its enabled mutation control before clicking Publish.
+  await waitExpr(gm, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast' && [...document.querySelectorAll('.map-toolbar button')].some(button=>button.textContent==='Publish to players'&&!button.disabled)", 'Ashen Coast selected and publish control ready')
   await clickText(gm, 'Publish to players', '.map-toolbar button')
   const publishedWorldByHost = await waitMap(world.id, gmToken, map => map.visibility === 'shared', 'Ashen Coast publication')
   await waitExpr(gm, `document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast' && document.querySelector('.map-toolbar button')?.textContent==='Revoke from players' && document.querySelector('.map-revision')?.textContent===${JSON.stringify(`Host revision ${publishedWorldByHost.revision}`)}`, 'Ashen Coast publication reflected in GM UI')
