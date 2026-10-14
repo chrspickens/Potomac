@@ -524,7 +524,9 @@ try {
   await clickText(gm.sessionId, 'Add as participant', '.character-encounter-link button');
   await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('linked to The Orchard Ruins on the host.')", 'character linked through host participant command');
   const linkedPreparation = await (await request('/api/encounters', gmToken)).json();
-  const orchardPreparation = linkedPreparation.encounters.find(item => item.name === 'The Orchard Ruins');
+  const orchardSummary = linkedPreparation.encounters.find(item => item.name === 'The Orchard Ruins');
+  assert.ok(orchardSummary, 'linked encounter remains in the authorized summary list');
+  const orchardPreparation = await (await request(`/api/encounters/${encodeURIComponent(orchardSummary.id)}`, gmToken)).json();
   assert.ok(orchardPreparation?.participants?.some(item => item.actorId === 'actor-emberfall-01'), 'Character app links the selected character to the encounter');
   await clickText(gm.sessionId, 'Add as participant', '.character-encounter-link button');
   await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('is already linked to The Orchard Ruins.')", 'duplicate character link is reported without another roster entry');
