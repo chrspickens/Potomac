@@ -1,0 +1,12 @@
+.maps-page,.maps-layout,.map-browser,.map-workspace,.map-canvas-wrap{min-width:0;max-width:100%}
+.map-canvas{width:100%;height:auto}
+.map-toolbar>div:last-child,.map-controls,.map-viewport-controls{min-width:0;max-width:100%;flex-wrap:wrap}
+.map-links form>*{min-width:0;max-width:100%}
+.map-piece-row>*{min-width:0;max-width:100%}
+@media(max-width:600px){
+  .maps-page{padding-inline:12px}
+  .map-workspace{padding:8px}
+  .map-links form{grid-template-columns:minmax(0,1fr)}
+  .map-piece-row{align-items:flex-start}
+  .map-viewport-controls small{flex-basis:100%}
+}
