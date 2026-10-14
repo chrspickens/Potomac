@@ -560,6 +560,19 @@ try {
   await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
   await waitExpr(gm, "Boolean(document.querySelector('.maps-page'))", 'GM Maps UI after backup restore')
   await clickText(gm, 'Flooded Observatory', '.map-browser button')
+  await waitExpr(gm, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'GM selects restored Battle map after Stage 8b')
+  let battleAccess = await api(`/api/maps/${battle.id}`, gmToken)
+  assert.equal(battleAccess.response.status, 200, 'GM retains access to restored Battle map')
+  if (battleAccess.body.visibility === 'shared') {
+    await clickText(gm, 'Revoke from players', '.map-toolbar button')
+    await waitMap(battle.id, gmToken, map => map.visibility !== 'shared', 'Battle map is private before fresh Stage 9 publication')
+    await waitExpr(gm, "document.querySelector('.map-toolbar button')?.textContent==='Publish to players'", 'GM UI confirms Battle map revocation before republication')
+  }
+  await clickText(gm, 'Publish to players', '.map-toolbar button')
+  const republishedBattle = await waitMap(battle.id, gmToken, map => map.visibility === 'shared', 'Battle map is republished after Stage 8b privacy assertions')
+  await waitExpr(gm, `document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory' && document.querySelector('.map-toolbar button')?.textContent==='Revoke from players' && document.querySelector('.map-revision')?.textContent===${JSON.stringify(`Host revision ${republishedBattle.revision}`)}`, 'GM UI confirms republished Battle map host revision')
+  battleAccess = await api(`/api/maps/${battle.id}`, gmToken)
+  assert.equal(battleAccess.body.visibility, 'shared', 'Battle map host projection confirms publication')
   const coordinateSelector = `input[aria-label="X coordinate for ${tokenA}"]`
   await inputText(gm, coordinateSelector, '5.5')
   await pressKey(gm, 'Tab')
