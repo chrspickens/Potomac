@@ -20,7 +20,16 @@ const children = []; const start = (cmd, args, options = {}) => { const child = 
 const api = async (path, token, init = {}) => { const response = await fetch(`${hostUrl}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } }); return { response, body: await response.json().catch(() => undefined) } }
 let socket; let nextId = 0; const pending = new Map(); const diagnostics = { startedAt: new Date().toISOString(), events: [], requests: {}, statuses: [], probes: {}, stages: [] }; let gmSession; let diagnosticsPath; const clients = {}; const traceWaiters = new Map(); const acceptanceLoreIds = new Set(); const acceptancePinIds = new Set()
 const cdp = (method, params = {}, sessionId) => new Promise((resolvePromise, reject) => { const id = ++nextId; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout ${method}`)) }, 15000); pending.set(id, message => { clearTimeout(timer); message.error ? reject(new Error(`${method}: ${message.error.message}`)) : resolvePromise(message.result) }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })) })
-const evaluate = (session, expression) => cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, session).then(result => { if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value })
+const evaluate = (session, expression) => {
+  const serializedExpression = `(() => { const value = (${expression}); if (value === undefined) return JSON.stringify({ type: 'undefined' }); const type = typeof value; if (type === 'object' && value !== null && value.nodeType) return JSON.stringify({ type: 'dom', value: value.textContent || value.nodeName }); return JSON.stringify({ type, value: type === 'object' ? JSON.stringify(value) : value }) })()`
+  return cdp('Runtime.evaluate', { expression: serializedExpression, returnByValue: true, awaitPromise: true }, session).then(result => {
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
+    const serialized = JSON.parse(result.result.value)
+    if (serialized.type === 'undefined') return undefined
+    if (serialized.type === 'dom') return serialized.value
+    return serialized.type === 'object' ? JSON.parse(serialized.value) : serialized.value
+  })
+}
 const waitExpr = async (session, expression, label) => { const started = Date.now(); while (Date.now() - started < 15000) { if (await evaluate(session, expression)) return; await delay(100) } throw new Error(`Timed out: ${label}`) }
 const clickText = (session, text, selector = 'button') => evaluate(session, `(() => { const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(x=>x.textContent.includes(${JSON.stringify(text)})&&!x.disabled); if(!e) throw new Error('missing enabled ${text}; body='+document.body.innerText.slice(0,900)); e.click(); return true })()`)
 const inputText = async (session, selector, value) => { await evaluate(session, `(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e) throw new Error('missing input'); e.focus(); e.select(); return true })()`); await cdp('Input.insertText', { text: value }, session) }
@@ -560,6 +569,19 @@ try {
   await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
   await waitExpr(gm, "Boolean(document.querySelector('.maps-page'))", 'GM Maps UI after backup restore')
   await clickText(gm, 'Flooded Observatory', '.map-browser button')
+  await waitExpr(gm, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'GM selects restored Battle map after Stage 8b')
+  let battleAccess = await api(`/api/maps/${battle.id}`, gmToken)
+  assert.equal(battleAccess.response.status, 200, 'GM retains access to restored Battle map')
+  if (battleAccess.body.visibility === 'shared') {
+    await clickText(gm, 'Revoke from players', '.map-toolbar button')
+    await waitMap(battle.id, gmToken, map => map.visibility !== 'shared', 'Battle map is private before fresh Stage 9 publication')
+    await waitExpr(gm, "document.querySelector('.map-toolbar button')?.textContent==='Publish to players'", 'GM UI confirms Battle map revocation before republication')
+  }
+  await clickText(gm, 'Publish to players', '.map-toolbar button')
+  const republishedBattle = await waitMap(battle.id, gmToken, map => map.visibility === 'shared', 'Battle map is republished after Stage 8b privacy assertions')
+  await waitExpr(gm, `document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory' && document.querySelector('.map-toolbar button')?.textContent==='Revoke from players' && document.querySelector('.map-revision')?.textContent===${JSON.stringify(`Host revision ${republishedBattle.revision}`)}`, 'GM UI confirms republished Battle map host revision')
+  battleAccess = await api(`/api/maps/${battle.id}`, gmToken)
+  assert.equal(battleAccess.body.visibility, 'shared', 'Battle map host projection confirms publication')
   const coordinateSelector = `input[aria-label="X coordinate for ${tokenA}"]`
   await inputText(gm, coordinateSelector, '5.5')
   await pressKey(gm, 'Tab')
@@ -569,7 +591,19 @@ try {
   assert.equal(focusedControl.label, `Y coordinate for ${tokenA}`, 'Tab advances to the next labeled numeric position control')
   assert.equal(focusedControl.focusVisible, true, 'keyboard navigation exposes a visible focus indicator')
   const mapRect = await evaluate(gm, "(() => { const r=document.querySelector('.map-canvas').getBoundingClientRect(); return {left:r.left,top:r.top,width:r.width,height:r.height} })()")
-  const dragStart = { x: mapRect.left + 5.5 / 100 * mapRect.width, y: mapRect.top + 35 / 70 * mapRect.height }
+  const revisionBeforeClick = movedToken.revision
+  const clickPoint = { x: mapRect.left + 5.5 / 100 * mapRect.width, y: mapRect.top + 35 / 70 * mapRect.height }
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...clickPoint }, gm)
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', ...clickPoint, button: 'left', buttons: 1, clickCount: 1 }, gm)
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', ...clickPoint, button: 'left', buttons: 0, clickCount: 1 }, gm)
+  await delay(200)
+  const afterClick = await api(`/api/maps/${battle.id}`, gmToken)
+  assert.equal(afterClick.body.revision, revisionBeforeClick, 'stationary piece click only selects and does not commit or snap')
+  await evaluate(gm, `[...document.querySelectorAll('.map-piece')].find(piece=>piece.getAttribute('aria-label')?.startsWith(${JSON.stringify(actorA.name)}))?.focus()`)
+  await pressKey(gm, 'ArrowRight'); await pressKey(gm, 'ArrowRight'); await pressKey(gm, 'ArrowRight')
+  const keyboardMoved = await waitMap(battle.id, gmToken, map => map.pieces?.some(piece => piece.id === tokenA && piece.x === 100), 'three rapid keyboard moves serialize without stale revisions')
+  assert.ok(keyboardMoved.revision > movedToken.revision, 'rapid keyboard movement commits with refreshed host revisions')
+  const dragStart = { x: mapRect.left + keyboardMoved.pieces.find(piece => piece.id === tokenA).x / 100 * mapRect.width, y: mapRect.top + 35 / 70 * mapRect.height }
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...dragStart }, gm)
   await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', ...dragStart, button: 'left', buttons: 1, clickCount: 1 }, gm)
   await delay(120)
@@ -582,6 +616,27 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, playerB.sessionId)
   await clickText(playerB.sessionId, 'Maps', 'nav[aria-label="Applications"] button')
   await waitExpr(playerB.sessionId, "Boolean(document.querySelector('.maps-page'))", 'Player B maps layout at narrow viewport')
+  await clickText(playerB.sessionId, 'Ashen Coast', '.map-browser button')
+  await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'Player B opens authorized World scene')
+  assert.equal(await evaluate(playerB.sessionId, "document.querySelectorAll('.map-piece-row input[aria-label^=\\\"X coordinate\\\"]').length"), 0, 'player World scene exposes no coordinate editor')
+  assert.equal(await evaluate(playerB.sessionId, "document.querySelector('.map-canvas')?.getAttribute('role')"), 'img', 'map canvas retains image semantics for assistive technology')
+  await clickText(playerB.sessionId, 'Western cove marker', '.map-piece-row button')
+  assert.ok(await evaluate(playerB.sessionId, "[...document.querySelectorAll('.map-piece-row')].some(row=>row.classList.contains('active')&&row.textContent.includes('Western cove marker'))"), 'player can select an authorized World map piece through the read-only list')
+  assert.equal(await evaluate(playerB.sessionId, "document.querySelectorAll('.map-piece-row input[aria-label^=\\\"X coordinate\\\"]').length"), 0, 'player selection does not expose coordinate editing')
+  const authorizedScenes = await api('/api/maps', playerBIdentity.credential)
+  assert.equal(authorizedScenes.response.status, 200, 'Player B can query current authorized Maps')
+  assert.ok(authorizedScenes.body.maps.some(scene => scene.id === battle.id && scene.name === 'Flooded Observatory' && scene.visibility === 'shared'), 'Flooded Observatory is present in Player B current authorized host projection')
+  await clickText(playerB.sessionId, 'Table', 'nav[aria-label="Applications"] button')
+  await waitExpr(playerB.sessionId, "[...document.querySelectorAll('h1')].some(heading=>heading.textContent==='Table')", 'Player B leaves Maps before refreshing its authorized scene list')
+  await clickText(playerB.sessionId, 'Maps', 'nav[aria-label="Applications"] button')
+  await waitExpr(playerB.sessionId, "Boolean(document.querySelector('.maps-page')) && document.querySelector('.map-browser button strong')", 'Player B remounts Maps to refresh authorized scenes')
+  await selectValue(playerB.sessionId, 'select[aria-label="Filter scenes"]', 'world')
+  await waitExpr(playerB.sessionId, "document.querySelector('select[aria-label=\\\"Filter scenes\\\"]')?.value==='world'", 'scene filter switches to World')
+  await selectValue(playerB.sessionId, 'select[aria-label="Filter scenes"]', 'all')
+  await waitExpr(playerB.sessionId, "document.querySelector('select[aria-label=\\\"Filter scenes\\\"]')?.value==='all' && [...document.querySelectorAll('.map-browser button strong')].some(item=>item.textContent==='Flooded Observatory')", 'authorized Battle scene is available after resetting the scene filter to All')
+  await clickText(playerB.sessionId, 'Flooded Observatory', '.map-browser button')
+  await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'Player B opens authorized Battle scene')
+  assert.equal(await evaluate(playerB.sessionId, "document.querySelectorAll('.map-piece-row input[aria-label^=\\\"X coordinate\\\"]').length"), 0, 'player Battle scene exposes no coordinate editor')
   const narrowLayout = await evaluate(playerB.sessionId, "({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,viewport:document.querySelector('.maps-layout')?.getBoundingClientRect().width,columns:getComputedStyle(document.querySelector('.maps-layout')).gridTemplateColumns})")
   assert.equal(narrowLayout.width, 390); assert.ok(narrowLayout.scrollWidth <= 391, `narrow Maps viewport has no horizontal overflow (${narrowLayout.scrollWidth}px)`)
   await screenshot(playerB.sessionId, 'player-b-narrow-viewport.png')

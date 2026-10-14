@@ -35,6 +35,10 @@ export function nearestGridPoint(point: Point, grid: MapGrid): Point {
   return { x: grid.size * (3 / 2 * rx), y: grid.size * (Math.sqrt(3) * (rz + rx / 2)) }
 }
 
+export function positionForMove(point: Point, scene: Pick<MapSceneView, 'width' | 'height' | 'grid'>, snap: boolean): Point {
+  return clampPoint(snap ? nearestGridPoint(point, scene.grid) : point, scene)
+}
+
 export function clampPoint(point: Point, scene: Pick<MapSceneView, 'width' | 'height'>): Point {
   return { x: Math.min(scene.width, Math.max(0, point.x)), y: Math.min(scene.height, Math.max(0, point.y)) }
 }
