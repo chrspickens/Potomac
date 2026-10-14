@@ -740,6 +740,7 @@ try {
   await cdp('Page.reload', { ignoreCache: true }, gm.sessionId);
   await waitForExpression(gm.sessionId, "document.querySelector('.error-banner')?.textContent.includes('safe layout was recovered')", 'invalid layout recovery banner');
   await click(gm.sessionId, '.error-banner button');
+  await clickText(gm.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.brick') || document.querySelector('.empty-dashboard'))", 'recovered dashboard remains usable');
 
   // Reload validates per-profile persistence in both isolated browser contexts.
