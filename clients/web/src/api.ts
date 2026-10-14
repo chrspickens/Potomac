@@ -85,7 +85,7 @@ function projectLoreArticle(wire: LoreWireArticle & { type?: LoreKind; published
 export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
-export type SessionRecord = { id: string; status: 'active' | 'paused' | 'finished'; revision: number; startedAt: string; updatedAt: string; finishedAt: string | null }
+export type SessionRecord = { id: string; encounterId: string | null; status: 'active' | 'paused' | 'finished'; revision: number; startedAt: string; updatedAt: string; finishedAt: string | null }
 export type SessionSnapshot = { revision: number; current: SessionRecord | null; history: SessionRecord[] }
 export type Snapshot = { role: Role; memberId: string | null; actors: Actor[]; encounters: Encounter[]; context: SessionContext; activity: Activity[]; modules?: GameModule[]; session?: SessionSnapshot }
 export type ActionRequest = { operationId: string; entityId: string; baseRevision: number; actionId: string; parameters: Record<string, unknown> }

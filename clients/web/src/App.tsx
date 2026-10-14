@@ -198,9 +198,21 @@ export default function App() {
   useEffect(() => {
     if (!configuredHost || !snapshot) { setCampaign(null); return }
     let active = true
-    void getCampaignConfig(role).then(next => { if (active) setCampaign(next) }).catch(cause => { if (active) setError(displayError(cause)) })
+    const cacheKey = `potomac.campaign-config.${snapshot.context.campaignId}`
+    if (connection !== 'connected') {
+      try {
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null') as CampaignConfig | null
+        if (cached && cached.id === snapshot.context.campaignId) setCampaign(cached)
+      } catch { /* stale or malformed metadata is ignored while offline */ }
+      return () => { active = false }
+    }
+    void getCampaignConfig(role).then(next => {
+      if (!active) return
+      setCampaign(next)
+      try { localStorage.setItem(cacheKey, JSON.stringify(next)) } catch { /* metadata cache is optional */ }
+    }).catch(cause => { if (active) setError(displayError(cause)) })
     return () => { active = false }
-  }, [role, snapshot?.context.campaignId, snapshot?.context.cursor])
+  }, [role, connection, snapshot?.context.campaignId, snapshot?.context.cursor])
   useEffect(() => {
     if (!campaign) return
     setCampaignNameDraft(campaign.name)
