@@ -390,8 +390,12 @@ try {
   await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No participants'))", 'Player B empty authorized Table roster');
   const tableRoster = await evaluate(player.sessionId, "[...document.querySelectorAll('.table-participants article strong')].map(item=>item.textContent)");
   assert.deepEqual(tableRoster.sort(), ['Mira Vell', 'Tarin Vale'], 'Player A Table shows only its two granted participants from the active encounter');
-  await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel button')?.textContent === 'Start session' && !document.querySelector('.table-session-panel button').disabled", 'GM Table start control enabled for active encounter');
-  await clickText(gm.sessionId, 'Start session', '.table-session-panel button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent === 'Start Table session' && !document.querySelector('.session-strip[aria-label=\"Table workflow\"] button').disabled", 'GM Table workflow start control enabled for active encounter');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent || ''"), '', 'player Table workflow has no GM start control');
+  await clickText(gm.sessionId, 'Start Table session', '.session-strip[aria-label="Table workflow"] button');
+  const startedSession = await (await request('/api/session', gmToken)).json();
+  assert.equal(startedSession.current.status, 'active', 'workflow banner creates an authoritative active session');
+  assert.equal(startedSession.current.encounterId, createdEncounter.id, 'workflow banner starts the selected encounter');
   await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", 'GM starts the live Table session against the committed active encounter');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed active Table session`);
