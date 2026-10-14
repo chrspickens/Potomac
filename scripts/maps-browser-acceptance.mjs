@@ -21,11 +21,12 @@ const api = async (path, token, init = {}) => { const response = await fetch(`${
 let socket; let nextId = 0; const pending = new Map(); const diagnostics = { startedAt: new Date().toISOString(), events: [], requests: {}, statuses: [], probes: {}, stages: [] }; let gmSession; let diagnosticsPath; const clients = {}; const traceWaiters = new Map(); const acceptanceLoreIds = new Set(); const acceptancePinIds = new Set()
 const cdp = (method, params = {}, sessionId) => new Promise((resolvePromise, reject) => { const id = ++nextId; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout ${method}`)) }, 15000); pending.set(id, message => { clearTimeout(timer); message.error ? reject(new Error(`${method}: ${message.error.message}`)) : resolvePromise(message.result) }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })) })
 const evaluate = (session, expression) => {
-  const serializedExpression = `(() => { const value = (${expression}); if (value === undefined) return JSON.stringify({ type: 'undefined' }); const type = typeof value; return JSON.stringify({ type, value: type === 'object' ? JSON.stringify(value) : value }) })()`
+  const serializedExpression = `(() => { const value = (${expression}); if (value === undefined) return JSON.stringify({ type: 'undefined' }); const type = typeof value; if (type === 'object' && value !== null && value.nodeType) return JSON.stringify({ type: 'dom', value: value.textContent || value.nodeName }); return JSON.stringify({ type, value: type === 'object' ? JSON.stringify(value) : value }) })()`
   return cdp('Runtime.evaluate', { expression: serializedExpression, returnByValue: true, awaitPromise: true }, session).then(result => {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
     const serialized = JSON.parse(result.result.value)
     if (serialized.type === 'undefined') return undefined
+    if (serialized.type === 'dom') return serialized.value
     return serialized.type === 'object' ? JSON.parse(serialized.value) : serialized.value
   })
 }
