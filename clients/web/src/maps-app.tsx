@@ -16,7 +16,7 @@ export function MapCanvas({ scene, actors, onSelect, onDropPiece, backgroundUrl,
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [panStart, setPanStart] = useState<{ x: number; y: number; originX: number; originY: number }>()
-  const dragPointRef = useRef<{ x: number; y: number }>()
+  const dragPointRef = useRef<{ x: number; y: number } | undefined>(undefined)
   const points = useMemo(() => gridPoints(scene.width, scene.height, scene.grid), [scene.width, scene.height, scene.grid])
   const position = (event: React.PointerEvent<SVGSVGElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect()
