@@ -290,7 +290,7 @@ try {
   await clickText(gm, 'Table', 'nav[aria-label="Applications"] button')
   await selectValue(gm, '#encounter-select', 'acceptance-observatory-encounter')
   await clickText(gm, 'Set active', '.context-control button')
-  await waitExpr(gm, "document.querySelector('.session-strip strong')?.textContent==='Flooded Observatory'", 'active Observatory encounter set through the Table UI')
+  await waitExpr(gm, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent==='Flooded Observatory'", 'active Observatory encounter set through the Table UI')
   const activeEncounterBeforeNavigation = (await api('/api/state', gmToken)).body.context.activeEncounter
   assert.equal(activeEncounterBeforeNavigation, 'acceptance-observatory-encounter')
   const putGmNote = async scene => {
@@ -415,14 +415,14 @@ try {
   await clickText(gm, 'Table', 'nav[aria-label="Applications"] button')
   await selectValue(gm, '#encounter-select', 'acceptance-coast-encounter')
   await clickText(gm, 'Set active', '.context-control button')
-  await waitExpr(gm, "document.querySelector('.session-strip strong')?.textContent==='Coast Watch'", 'switch active encounter to Coast Watch')
+  await waitExpr(gm, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent==='Coast Watch'", 'switch active encounter to Coast Watch')
   await clickText(gm, 'Dashboard', 'nav[aria-label="Applications"] button')
   await waitExpr(gm, "[...document.querySelectorAll('.map-brick button')].filter(item=>item.textContent==='Open Maps app · Ashen Coast').length===2", 'pinned stays Ashen Coast while following brick changes to Ashen Coast')
   await screenshot(gm, 'gm-workspace-pinned-following-maps.png')
   await clickText(gm, 'Table', 'nav[aria-label="Applications"] button')
   await selectValue(gm, '#encounter-select', 'acceptance-observatory-encounter')
   await clickText(gm, 'Set active', '.context-control button')
-  await waitExpr(gm, "document.querySelector('.session-strip strong')?.textContent==='Flooded Observatory'", 'restore Observatory active encounter')
+  await waitExpr(gm, "document.querySelector('.session-strip:not([aria-label=\\\"Table workflow\\\"]) strong')?.textContent==='Flooded Observatory'", 'restore Observatory active encounter')
   mark('Stage 5: Workspace pinned and encounter-following Map Scene bricks update independently', 'PASS')
   for (const client of [playerA, playerB]) {
     await clickText(client.sessionId, 'Maps', 'nav[aria-label="Applications"] button')
