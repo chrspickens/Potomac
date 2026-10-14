@@ -535,11 +535,7 @@ try {
   await clickText(playerA.sessionId, 'Ashen Coast', '.map-browser button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-canvas image.map-background')?.href.baseVal.startsWith('blob:')", 'cached World image rendered offline after reload')
   assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('GM-only Tide Ledger')"), 'offline map cache contains no private Lore title')
-  assert.ok(await evaluate(playerA.sessionId, "[...document.querySelectorAll('.map-piece-row button')].some(button=>button.textContent.includes('Open Sunken Archive'))"), 'previously authorized Lore destination survives in scoped offline map cache')
-  await clickText(playerA.sessionId, 'Open Sunken Archive', '.map-piece-row button')
-  await waitExpr(playerA.sessionId, "document.querySelector('.lore-page h2')?.textContent==='Sunken Archive' && document.body.innerText.includes('Host disconnected')", 'previously authorized Lore article opens from scoped offline cache as stale read-only content')
-  await clickText(playerA.sessionId, 'Back to map', '.lore-page .page-intro button')
-  await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'offline Lore returns to originating World Map')
+  assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('Sunken Archive') || [...document.querySelectorAll('.map-piece-row button')].some(button=>button.textContent.includes('Open Sunken Archive'))"), 'revoked Lore title and destination stay absent from the refreshed offline cache')
   await clickText(playerA.sessionId, 'Go to Flooded Observatory', '.map-piece-row button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory' && document.querySelector('.map-canvas image.map-background')?.href.baseVal.startsWith('blob:')", 'offline cached cross-map navigation and image')
   await screenshot(playerA.sessionId, 'player-a-offline-cached-observatory.png')
@@ -560,6 +556,12 @@ try {
   assert.equal((await api(`/api/maps/${battle.id}`, playerAIdentity.credential)).response.status, 404, 'reconnected Player A direct map ID access is revoked')
   assert.equal((await fetch(`${hostUrl}/api/maps/${battle.id}/background/content`, { headers: { authorization: `Bearer ${playerAIdentity.credential}` } })).status, 404, 'reconnected Player A image authorization is revoked')
   await screenshot(playerA.sessionId, 'player-a-after-revocation-reconnect.png')
+  // Later backup-restore coverage starts from a published Lore fixture; restore
+  // that fixture only after the revoked target was proven absent offline.
+  const gmLoreForBackup = await api(`/api/lore/${sunkenArchive.id}`, gmToken)
+  assert.equal(gmLoreForBackup.response.status, 200)
+  const republishedLore = await api(`/api/lore/${sunkenArchive.id}/publication`, gmToken, { method: 'PUT', body: JSON.stringify({ operationId: `browser-search-republish-${process.pid}`, baseRevision: gmLoreForBackup.body.article.revision, published: true }) })
+  assert.equal(republishedLore.response.status, 200, 'restore the published Lore fixture for backup/restore acceptance')
   mark('Stage 6: real browser offline reload, authorized image cache, reconnection, revocation and refreshed access', 'PASS')
   await stopHost()
   diagnostics.hostRestarts = [{ at: new Date().toISOString(), pid: hostProcess.pid, exitCode: hostProcess.exitCode, database: 'disposable System A database' }]
