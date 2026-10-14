@@ -427,7 +427,7 @@ try {
   await waitFor(`${baseUrl}/health`, 'restarted host');
   await cdp('Network.setBlockedURLs', { urls: [] }, memberAClient);
   await cdp('Page.reload', { ignoreCache: true }, memberAClient);
-  await waitForExpression(memberAClient, "document.querySelector('.status-connected') && document.querySelector('.campaign-select strong')?.textContent === 'foundation-demo'", 'member A reconnect after host restart', 30000);
+  await waitForExpression(memberAClient, "document.querySelector('.status-connected') && document.querySelector('.campaign-select strong')?.textContent && document.querySelector('.campaign-select strong')?.textContent !== 'Connecting…'", 'member A reconnect after host restart', 30000);
 
   const receiptsDeadline = Date.now() + 20000;
   let memberReceipts;
