@@ -47,6 +47,16 @@ export type Encounter = { id: string; name: string; summary: string; status?: 'p
 export type LoreKind = 'location' | 'person' | 'faction' | 'quest' | 'item' | 'handout' | 'note'
 export type LoreVisibility = 'gm' | 'shared'
 export type LoreArticle = { id: string; campaignId?: string; title: string; summary?: string; kind: LoreKind; tags: string[]; body: string; revision: number; visibility: LoreVisibility; archived: boolean; updatedAt?: string; gmNotes?: string; linkedEncounterIds?: string[] }
+export type CampaignSearchResult = { kind: 'actor' | 'encounter' | 'lore' | 'map'; id: string; label: string; status?: string }
+export async function searchCampaign(role: Role, query: string, options: { after?: string; limit?: number } = {}): Promise<{ campaignId: string; results: CampaignSearchResult[]; next: string | null; hasMore: boolean }> {
+  const params = new URLSearchParams({ q: query, limit: String(options.limit ?? 25) })
+  if (options.after) params.set('after', options.after)
+  return http(`/api/search?${params}`, role)
+}
+export async function resolveCampaignNavigation(role: Role, target: Pick<CampaignSearchResult, 'kind' | 'id'>): Promise<CampaignSearchResult> {
+  const result = await http<{ target: CampaignSearchResult }>(`/api/navigation/${target.kind}/${encodeURIComponent(target.id)}`, role)
+  return result.target
+}
 export type LoreInput = Pick<LoreArticle, 'title' | 'kind' | 'tags' | 'body' | 'visibility' | 'gmNotes'>
 export type LoreTargetKind = 'lore' | 'actor' | 'encounter'
 export type LoreLink = { id: string; linkId?: string; targetKind: LoreTargetKind; targetId: string; targetTitle?: string; label?: string }

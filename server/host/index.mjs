@@ -431,6 +431,63 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       }).map(({ actor_id, initiative, status, activation_order }) => ({ actorId: actor_id, initiative, status, activationOrder: activation_order }))
   });
   const publicEncounters = (auth) => db.prepare('SELECT * FROM encounters ORDER BY id').all().filter(row => auth.role === 'gm' || row.visibility === 'public').map(row => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, revision: row.revision, ...(auth.role === 'gm' ? { gmNotes: row.gm_notes || '' } : {}) }));
+  const searchKey = result => `${result.kind}:${result.id}`;
+  const compareSearchKeys = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+  const searchCampaign = (auth, query, after, requestedLimit) => {
+    const normalized = query.trim();
+    if (normalized.length > 200) return { error: 'invalid_campaign_search_query', status: 400 };
+    if (after && !/^(actor|encounter|lore|map):[A-Za-z0-9_-]{1,128}$/.test(after)) return { error: 'invalid_campaign_search_cursor', status: 400 };
+    const limit = Math.min(requestedLimit, 50);
+    if (!Number.isInteger(requestedLimit) || requestedLimit < 1) return { error: 'invalid_campaign_search_limit', status: 400 };
+    const pattern = `%${normalized.replace(/[\\%_]/g, '\\$&')}%`;
+    const rows = [];
+    const add = (kind, id, label, status = null) => rows.push({ kind, id, label, ...(status ? { status } : {}) });
+    // Each source applies its host authorization predicate before any label or ID
+    // is added to the wire projection. Sort and paginate only this filtered set.
+    const actorVisibility = auth.role === 'gm'
+      ? '1=1'
+      : '( (?=1 AND owner_role=\'player\' AND owner_member_id IS NULL AND legacy_shared=1) OR (? IS NOT NULL AND (owner_member_id=? OR EXISTS (SELECT 1 FROM actor_grants g WHERE g.actor_id=actors.id AND g.member_id=? AND (g.can_read=1 OR g.can_act=1)))) )';
+    const actorScope = auth.role === 'gm' ? [] : [auth.legacy ? 1 : 0, auth.memberId, auth.memberId, auth.memberId];
+    const actorSearch = normalized ? " AND json_extract(data,'$.name') LIKE ? ESCAPE '\\'" : '';
+    const actorRows = db.prepare(`SELECT * FROM actors WHERE archived=0 AND ${actorVisibility}${actorSearch} ORDER BY id LIMIT 500`)
+      .all(...actorScope, ...(normalized ? [pattern] : []));
+    for (const row of actorRows) {
+      if (!canReadActor(row, auth)) continue;
+      const name = projectActor(row, auth).data.name;
+      if (typeof name === 'string' && name) add('actor', row.id, name);
+    }
+    const encounterVisibility = auth.role === 'gm' ? '1=1' : "visibility='public'";
+    const encounterSearch = normalized ? " AND (name LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')" : '';
+    const encounterRows = db.prepare(`SELECT * FROM encounters WHERE ${encounterVisibility}${encounterSearch} ORDER BY id LIMIT 500`)
+      .all(...(normalized ? [pattern, pattern] : []));
+    for (const row of encounterRows) {
+      add('encounter', row.id, row.name, row.status);
+    }
+    const loreVisibility = auth.role === 'gm' ? '1=1' : "archived=0 AND visibility='shared'";
+    const loreSearch = auth.role === 'gm'
+      ? " AND (title LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' OR gm_notes LIKE ? ESCAPE '\\')"
+      : " AND (title LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')";
+    const loreRows = normalized
+      ? db.prepare(`SELECT id,title,type FROM lore_entries WHERE campaign_id=? AND ${loreVisibility}${loreSearch} ORDER BY id LIMIT 500`).all(campaignId, ...Array(auth.role === 'gm' ? 5 : 4).fill(pattern))
+      : db.prepare(`SELECT id,title,type FROM lore_entries WHERE campaign_id=? AND ${loreVisibility} ORDER BY id LIMIT 500`).all(campaignId);
+    for (const row of loreRows) {
+      if (!canReadLore(loreRow.get(row.id, campaignId), auth)) continue;
+      add('lore', row.id, row.title, row.type);
+    }
+    const mapVisibility = auth.role === 'gm' ? '1=1' : "visibility='shared' AND EXISTS (SELECT 1 FROM members WHERE id=? AND revoked_at IS NULL)";
+    const mapScope = auth.role === 'gm' ? [] : [auth.memberId];
+    const mapSearch = normalized ? " AND (name LIKE ? ESCAPE '\\' OR kind LIKE ? ESCAPE '\\')" : '';
+    const mapRows = db.prepare(`SELECT * FROM map_scenes WHERE campaign_id=? AND archived=0 AND ${mapVisibility}${mapSearch} ORDER BY id LIMIT 500`)
+      .all(campaignId, ...mapScope, ...(normalized ? [pattern, pattern] : []));
+    for (const row of mapRows) {
+      if (!canReadMap(row, auth)) continue;
+      add('map', row.id, row.name, row.kind);
+    }
+    rows.sort((a, b) => compareSearchKeys(searchKey(a), searchKey(b)));
+    const remaining = after ? rows.filter(row => compareSearchKeys(searchKey(row), after) > 0) : rows;
+    const page = remaining.slice(0, limit);
+    return { results: page, next: remaining.length > page.length && page.length ? `${page.at(-1).kind}:${page.at(-1).id}` : null, hasMore: remaining.length > page.length };
+  };
   const sessionJson = (auth) => {
     const state = db.prepare('SELECT current_session_id,revision FROM session_state WHERE campaign_id=?').get(campaignId);
     const project = row => row && ({ id: row.id, encounterId: row.encounter_id ?? null, status: row.status, revision: row.revision, startedAt: row.started_at, updatedAt: row.updated_at, finishedAt: row.finished_at });
@@ -665,6 +722,32 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         return json(res, 200, { campaignId, role: auth.role, memberId: auth.memberId, revision: currentCursor, context, session: sessionJson(auth), encounters: publicEncounters(auth), maps: mapsFor(auth), modules, actors, events, ...(recoveryReason ? { recovery: { reason: recoveryReason, cursor: currentCursor } } : {}) });
       }
       if (req.method === 'GET' && url.pathname === '/api/maps') return json(res, 200, { maps: mapsFor(auth) });
+      const navigationMatch = req.method === 'GET' && url.pathname.match(/^\/api\/navigation\/(actor|encounter|lore|map)\/([^/]+)$/);
+      if (navigationMatch) {
+        const [, kind, encodedId] = navigationMatch;
+        const id = decodeURIComponent(encodedId);
+        let result = null;
+        if (kind === 'actor') {
+          const row = actorRow.get(id);
+          if (row && !row.archived && canReadActor(row, auth)) { const name = projectActor(row, auth).data.name; if (typeof name === 'string' && name) result = { kind, id, label: name }; }
+        } else if (kind === 'encounter') {
+          const row = db.prepare('SELECT * FROM encounters WHERE id=?').get(id);
+          if (row && (auth.role === 'gm' || row.visibility === 'public')) result = { kind, id, label: row.name, status: row.status };
+        } else if (kind === 'lore') {
+          const row = loreRow.get(id, campaignId);
+          if (canReadLore(row, auth)) result = { kind, id, label: row.title, status: row.type };
+        } else {
+          const row = mapSceneRow.get(id, campaignId);
+          if (row && !row.archived && canReadMap(row, auth)) result = { kind, id, label: row.name, status: row.kind };
+        }
+        if (!result) return json(res, 404, { error: 'Item unavailable', reasonCode: 'unavailable' });
+        return json(res, 200, { contract: 'potomac.navigation.v0.8', campaignId, target: result });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/search') {
+        const result = searchCampaign(auth, url.searchParams.get('q') || '', url.searchParams.get('after') || '', url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 25);
+        if (result.error) return json(res, result.status, { error: 'Search is unavailable', reasonCode: result.error });
+        return json(res, 200, { contract: 'potomac.search.v0.8', campaignId, ...result });
+      }
       const mapMatch = url.pathname.match(/^\/api\/maps\/([^/]+)$/);
       const mapCommandMatch = url.pathname.match(/^\/api\/maps\/([^/]+)\/commands$/);
       const encounterMapMatch = url.pathname.match(/^\/api\/encounters\/([^/]+)\/map$/);

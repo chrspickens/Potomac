@@ -109,6 +109,76 @@ test('Lore search is bounded, read-only and filters unpublished entries before r
   });
 });
 
+test('campaign search returns bounded role-authorized stable-ID projections without changing session state', async () => {
+  await withHost(async ({ host, request }) => {
+    const alice = await (await postJson(request, '/api/members/enroll', { displayName: 'Search Alice' })).json();
+    const bob = await (await postJson(request, '/api/members/enroll', { displayName: 'Search Bob' })).json();
+    const moduleId = 'search.fixture', moduleVersion = '1';
+    await postJson(request, '/api/modules', { id: moduleId, version: moduleVersion, manifest: { id: moduleId, version: moduleVersion, schema: { type: 'object', properties: {}, additionalProperties: true }, actions: [] } });
+    const campaign = await (await request('/api/campaign')).json();
+    if (!campaign.systemModuleId) await request('/api/campaign', 'gm', { method: 'PUT', body: JSON.stringify({ name: 'Search campaign', systemModuleId: moduleId, systemModuleVersion: moduleVersion, baseRevision: campaign.revision }) });
+    for (const [id, name, owner] of [['alice-actor', 'Authorized Ranger', alice.memberId], ['bob-actor', 'Hidden Ranger', bob.memberId]]) {
+      await postJson(request, '/api/actors', { id, moduleId, moduleVersion, data: { name }, visibility: {}, ownerRole: 'player', ownerMemberId: owner });
+    }
+    await postJson(request, '/api/actors', { id: 'redacted-name-actor', moduleId, moduleVersion, data: { name: 'CLASSIFIED Ranger Name' }, visibility: { gmOnly: ['name'] }, ownerRole: 'gm' });
+    await request('/api/actors/alice-actor/grants', 'gm', { method: 'POST', body: JSON.stringify({ memberId: alice.memberId, permissions: ['read', 'act'] }) });
+    await request('/api/actors/redacted-name-actor/grants', 'gm', { method: 'POST', body: JSON.stringify({ memberId: alice.memberId, permissions: ['read'] }) });
+    const now = new Date().toISOString();
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,type,title,summary,body,gm_notes,tags,published,visibility,archived,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run('shared-lore','foundation-demo','note','Shared Ranger Notes','','','', '[]',1,'shared',0,now,now);
+    host.db.prepare('INSERT INTO lore_entries(id,campaign_id,type,title,summary,body,gm_notes,tags,published,visibility,archived,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run('secret-lore','foundation-demo','note','CLASSIFIED RANGER PLAN','','','SECRET-CAMPAIGN-MARKER','[]',0,'gm',0,now,now);
+    host.db.prepare('INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,gm_notes,created_at,updated_at) VALUES(?,?,?,?,1,100,100,?,?,?, ?,?)')
+      .run('shared-map','foundation-demo','Ranger Coast','world','{}','shared','',now,now);
+    host.db.prepare('INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,gm_notes,created_at,updated_at) VALUES(?,?,?,?,1,100,100,?,?,?, ?,?)')
+      .run('secret-map','foundation-demo','CLASSIFIED RANGER ROOM','battle','{}','gm','SECRET-CAMPAIGN-MARKER',now,now);
+    host.db.prepare("INSERT INTO encounters(id,name,summary,status,revision,created_at,updated_at,visibility,gm_notes) VALUES('shared-encounter','Ranger Crossing','Shared passage','prepared',1,?,?, 'public','')").run(now,now);
+    host.db.prepare("INSERT INTO encounters(id,name,summary,status,revision,created_at,updated_at,visibility,gm_notes) VALUES('secret-encounter','CLASSIFIED RANGER ENCOUNTER','Secret passage','prepared',1,?,?, 'gm','SECRET-CAMPAIGN-MARKER')").run(now,now);
+    const before = await (await request('/api/state', 'gm')).json();
+    const search = async (token, q, params = '') => request(`/api/search?q=${encodeURIComponent(q)}${params}`, token);
+    const alicePage = await (await search(alice.credential, 'Ranger')).json();
+    const bobPage = await (await search(bob.credential, 'Ranger')).json();
+    const gmPage = await (await search('gm', 'Ranger')).json();
+    assert.deepEqual(alicePage.results.map(row => `${row.kind}:${row.id}`).sort(), ['actor:alice-actor','encounter:shared-encounter','lore:shared-lore','map:shared-map']);
+    assert.deepEqual(bobPage.results.map(row => `${row.kind}:${row.id}`).sort(), ['actor:bob-actor','encounter:shared-encounter','lore:shared-lore','map:shared-map']);
+    assert.ok(gmPage.results.some(row => row.id === 'secret-lore') && gmPage.results.some(row => row.id === 'bob-actor'));
+    for (const forbidden of ['secret-lore','CLASSIFIED','SECRET-CAMPAIGN-MARKER','secret-map','secret-encounter','bob-actor','redacted-name-actor']) assert.equal(JSON.stringify(alicePage).includes(forbidden), false, `search leaked ${forbidden}`);
+    assert.equal(await (await search(alice.credential, 'CLASSIFIED')).json().then(body => body.results.length), 0);
+    const aliceState = await (await request('/api/state', alice.credential)).json();
+    assert.equal(JSON.stringify(aliceState.actors.find(actor => actor.id === 'redacted-name-actor')).includes('CLASSIFIED'), false, 'authorized actor projection removes a GM-only name');
+    const resolve = (token, target) => request(`/api/navigation/${target.kind}/${target.id}`, token);
+    assert.equal((await resolve(alice.credential, { kind: 'actor', id: 'bob-actor' })).status, 404);
+    assert.equal((await resolve(alice.credential, { kind: 'actor', id: 'redacted-name-actor' })).status, 404, 'target without an authorized label is unavailable');
+    assert.equal((await resolve(alice.credential, { kind: 'lore', id: 'secret-lore' })).status, 404);
+    assert.equal((await resolve(alice.credential, { kind: 'map', id: 'secret-map' })).status, 404);
+    assert.equal((await resolve(alice.credential, { kind: 'encounter', id: 'secret-encounter' })).status, 404);
+    assert.equal((await resolve(alice.credential, { kind: 'actor', id: 'missing-id' })).status, 404);
+    assert.deepEqual(await (await resolve(alice.credential, { kind: 'actor', id: 'alice-actor' })).json().then(body => body.target), { kind: 'actor', id: 'alice-actor', label: 'Authorized Ranger' });
+    const pageOne = await (await search('gm', 'Ranger', '&limit=1')).json();
+    assert.equal(pageOne.results.length, 1);
+    assert.ok(pageOne.next);
+    const pageTwo = await (await search('gm', 'Ranger', `&limit=1&after=${encodeURIComponent(pageOne.next)}`)).json();
+    assert.equal(pageTwo.results.length, 1);
+    for (const [id, name] of [['case-a','Ranger lower'],['case-b','Ranger middle'],['case-Z','Ranger upper']])
+      host.db.prepare("INSERT INTO encounters(id,name,summary,status,revision,created_at,updated_at,visibility,gm_notes) VALUES(?,?, '', 'prepared',1,?,?, 'public','')").run(id,name,now,now);
+    const keys = [];
+    let pageCursor = null;
+    do {
+      const page = await (await search('gm', 'Ranger', `&limit=1${pageCursor ? `&after=${encodeURIComponent(pageCursor)}` : ''}`)).json();
+      keys.push(...page.results.map(row => `${row.kind}:${row.id}`)); pageCursor = page.next;
+    } while (pageCursor);
+    assert.deepEqual(keys, [...keys].sort((a, b) => a < b ? -1 : a > b ? 1 : 0), 'cursor ordering uses the same codepoint comparator as result sorting');
+    assert.ok(keys.includes('encounter:case-Z') && keys.includes('encounter:case-a') && keys.includes('encounter:case-b'), 'mixed-case IDs are not skipped between pages');
+    assert.equal((await search('gm', 'Ranger', '&limit=0')).status, 400);
+    assert.equal((await search('gm', 'x'.repeat(201))).status, 400);
+    assert.equal((await request('/api/search?q=Ranger', 'unknown-token')).status, 401);
+    const after = await (await request('/api/state', 'gm')).json();
+    assert.equal(JSON.stringify(after.events).includes('SECRET-CAMPAIGN-MARKER'), false);
+    assert.deepEqual(after.context, before.context, 'search navigation query does not mutate shared context');
+    assert.deepEqual(after.events, before.events, 'search is read only and adds no replay events');
+  });
+});
+
 test('session start rejects stale or ineligible encounter targets without events and accepts only eligible participants', async () => {
   await withHost(async ({ request }) => {
     const target = await prepareSessionEncounter(request);

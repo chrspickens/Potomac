@@ -20,14 +20,14 @@ const children = []; const start = (cmd, args, options = {}) => { const child = 
 const api = async (path, token, init = {}) => { const response = await fetch(`${hostUrl}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } }); return { response, body: await response.json().catch(() => undefined) } }
 let socket; let nextId = 0; const pending = new Map(); const diagnostics = { startedAt: new Date().toISOString(), events: [], requests: {}, statuses: [], probes: {}, stages: [] }; let gmSession; let diagnosticsPath; const clients = {}; const traceWaiters = new Map(); const acceptanceLoreIds = new Set(); const acceptancePinIds = new Set()
 const cdp = (method, params = {}, sessionId) => new Promise((resolvePromise, reject) => { const id = ++nextId; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout ${method}`)) }, 15000); pending.set(id, message => { clearTimeout(timer); message.error ? reject(new Error(`${method}: ${message.error.message}`)) : resolvePromise(message.result) }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })) })
+// Return one JSON string over CDP, then parse locally. Convert DOM nodes and
+// cycles before serialization so Chromium never traverses React's Fiber graph.
 const evaluate = (session, expression) => {
-  const serializedExpression = `(() => { const value = (${expression}); if (value === undefined) return JSON.stringify({ type: 'undefined' }); const type = typeof value; if (type === 'object' && value !== null && value.nodeType) return JSON.stringify({ type: 'dom', value: value.textContent || value.nodeName }); return JSON.stringify({ type, value: type === 'object' ? JSON.stringify(value) : value }) })()`
+  const serializedExpression = `(() => { const value = (${expression}); const seen = new WeakSet(); return JSON.stringify(value, (_key, item) => { if (item && typeof item === 'object') { if (item.nodeType) return item.textContent || item.nodeName; if (seen.has(item)) return '[Circular]'; seen.add(item) } return item }) })()`
   return cdp('Runtime.evaluate', { expression: serializedExpression, returnByValue: true, awaitPromise: true }, session).then(result => {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
-    const serialized = JSON.parse(result.result.value)
-    if (serialized.type === 'undefined') return undefined
-    if (serialized.type === 'dom') return serialized.value
-    return serialized.type === 'object' ? JSON.parse(serialized.value) : serialized.value
+    const serialized = result.result.value
+    return serialized === undefined ? undefined : JSON.parse(serialized)
   })
 }
 const waitExpr = async (session, expression, label) => { const started = Date.now(); while (Date.now() - started < 15000) { if (await evaluate(session, expression)) return; await delay(100) } throw new Error(`Timed out: ${label}`) }
@@ -409,6 +409,93 @@ try {
   }
   await screenshot(playerA.sessionId, 'player-a-ashen-coast-published.png'); await screenshot(playerB.sessionId, 'player-b-ashen-coast-published.png'); await screenshot(gm, 'gm-battle-private-pin.png')
   mark('Stage 4: tokens, private pin, encounter relations, publication, player privacy and cross-map navigation', 'PASS', { linkPin, privatePin, tokenA, tokenB })
+  const searchInput = '#campaign-search-input'
+  const browserSearchForResult = async (client, query) => {
+    await inputText(client.sessionId, searchInput, query)
+    await waitExpr(client.sessionId, `Boolean([...document.querySelectorAll('.campaign-search-results strong')].find(item=>item.textContent===${JSON.stringify(query)}))`, `${client.label} authorized search result for ${query}`)
+  }
+  const browserSearchForNoResults = async (client, identity, query) => {
+    const response = await api(`/api/search?q=${encodeURIComponent(query)}&limit=25`, identity.credential)
+    assert.equal(response.response.status, 200, `${client.label} host search remains authorized after revocation`)
+    assert.deepEqual(response.body.results, [], `${client.label} host search excludes revoked Lore`)
+    // Revocation arrives over SSE and can remount the keyed search control. Let
+    // that scope refresh settle, then use the same real-Chrome input path as
+    // positive searches and verify the controlled value survived the handoff.
+    await delay(300)
+    let queryEntered = false
+    for (let attempt = 0; attempt < 3 && !queryEntered; attempt += 1) {
+      await inputText(client.sessionId, searchInput, query)
+      const deadline = Date.now() + 1200
+      while (Date.now() < deadline) {
+        if (await evaluate(client.sessionId, `document.querySelector(${JSON.stringify(searchInput)})?.value===${JSON.stringify(query)} && document.querySelector(${JSON.stringify(searchInput)})?.getAttribute('aria-expanded')==='true'`)) { queryEntered = true; break }
+        await delay(100)
+      }
+    }
+    if (!queryEntered) throw new Error(`${client.label} search input did not retain ${query} after revocation refresh`)
+    try {
+      await waitExpr(client.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('No matching authorized results.')", `${client.label} authorized search has no results for ${query}`)
+    } catch (error) {
+      const ui = await evaluate(client.sessionId, `(() => { const input=document.querySelector(${JSON.stringify(searchInput)}); const results=document.querySelector('.campaign-search-results'); return { inputValue:input?.value ?? null, inputExpanded:input?.getAttribute('aria-expanded') ?? null, resultsText:results?.innerText ?? null, connection:document.querySelector('.status')?.innerText ?? null, role:document.querySelector('.topbar-right select')?.value ?? null } })()`).catch(() => ({ evaluation: 'failed' }))
+      const failure = { client: client.label, query, hostStatus: response.response.status, hostResultCount: response.body.results.length, ui }
+      diagnostics.probes[`${client.label}-revoked-search-failure`] = failure
+      throw new Error(`${error.message}; search diagnostics=${JSON.stringify(failure)}`)
+    }
+  }
+  const contextBeforeSearch = (await api('/api/state', gmToken)).body.context
+  await browserSearchForResult(gmClient, 'Sunken Archive')
+  await pressKey(gm, 'Enter')
+  await waitExpr(gm, "document.querySelector('.lore-article h2')?.textContent==='Sunken Archive'", 'GM keyboard search opens Lore by stable ID')
+  await clickText(gm, 'Back to origin', '.topbar-right button')
+  await waitExpr(gm, "document.querySelector('.maps-page') && !document.querySelector('.lore-page')", 'GM returns to local origin')
+  assert.equal(JSON.stringify((await api('/api/state', gmToken)).body.context), JSON.stringify(contextBeforeSearch), 'search open/back does not mutate active encounter context')
+  await browserSearchForResult(playerA, 'Mira Vell')
+  assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('GM-only Tide Ledger')"), 'Player A DOM omits private Lore label')
+  await pressKey(playerA.sessionId, 'Enter')
+  await waitExpr(playerA.sessionId, "document.querySelector('.full-character .character-identity h3')?.textContent==='Mira Vell'", 'Player A keyboard search opens authorized character')
+  await clickText(playerA.sessionId, 'Back to origin', '.topbar-right button')
+  await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'Player A returns to the selected local Maps origin')
+  await browserSearchForResult(playerB, 'Flooded Observatory')
+  await evaluate(playerB.sessionId, `(() => { const button=[...document.querySelectorAll('.campaign-search-results button')].find(item=>item.querySelector('strong')?.textContent==='Flooded Observatory'&&item.querySelector('small')?.textContent.startsWith('map')); if(!button) throw new Error('Flooded Observatory map search result is missing'); button.click(); return true })()`)
+  await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'Player B pointer search opens a different authorized map')
+  await clickText(playerB.sessionId, 'Back to origin', '.topbar-right button')
+  await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'Player B returns to the selected local Maps origin')
+  const playerPrivateSearch = await api(`/api/search?q=${encodeURIComponent('GM-only Tide Ledger')}`, playerAIdentity.credential)
+  assert.equal(playerPrivateSearch.response.status, 200); assert.equal(playerPrivateSearch.body.results.length, 0)
+  assert.ok(!JSON.stringify(playerPrivateSearch.body).includes(privateLore.id) && !JSON.stringify(playerPrivateSearch.body).includes('GM-only Tide Ledger'), 'player HTTP search omits private IDs and labels')
+  const revokedLore = await api(`/api/lore/${sunkenArchive.id}/publication`, gmToken, { method: 'PUT', body: JSON.stringify({ operationId: `browser-search-revoke-${process.pid}`, baseRevision: sunkenArchive.revision, published: false }) })
+  assert.equal(revokedLore.response.status, 200, 'GM revokes the shared Lore target')
+  for (const [client, identity] of [[playerA, playerAIdentity], [playerB, playerBIdentity]]) {
+    await browserSearchForNoResults(client, identity, 'Sunken Archive')
+    assert.ok(!await evaluate(client.sessionId, "document.body.innerText.includes('Sunken Archive')"), `${client.label} DOM omits revoked title after refresh`)
+    assert.equal((await api(`/api/navigation/lore/${sunkenArchive.id}`, identity.credential)).response.status, 404, `${client.label} cannot resolve revoked stable ID`)
+    const replay = await api('/api/state?since=0', identity.credential)
+    assert.ok(!JSON.stringify(replay.body).includes(sunkenArchive.id) && !JSON.stringify(replay.body).includes('Sunken Archive'), `${client.label} replay omits revoked metadata`)
+  }
+  const gmPrivateTarget = (await api(`/api/search?q=${encodeURIComponent('GM-only Tide Ledger')}`, gmToken)).body.results[0]
+  assert.equal(gmPrivateTarget.id, privateLore.id)
+  await cdp('Network.emulateNetworkConditions', { offline: false, latency: 1200, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'cellular3g' }, gm)
+  await inputText(gm, searchInput, 'Tide Ledger'); await delay(260); await selectValue(gm, '.topbar-right select', 'player')
+  await waitExpr(gm, "document.querySelector('.topbar-right select')?.value==='player'", 'GM role changes while search is pending')
+  await delay(1700)
+  assert.ok(!await evaluate(gm, "document.body.innerText.includes('GM-only Tide Ledger')"), 'late GM search response is discarded after role change')
+  await cdp('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, gm)
+  await selectValue(gm, '.topbar-right select', 'gm')
+  await waitExpr(gm, "document.querySelector('.topbar-right select')?.value==='gm' && document.querySelector('.status')?.textContent.includes('CONNECTED')", 'GM client regains its authorized scope')
+  // Chromium offline emulation can leave an established SSE socket open and
+  // mask its close notification. Stop the disposable host while the browser is
+  // online so the real stream reader sees EOF before emulating offline mode.
+  await stopHost()
+  await waitExpr(playerA.sessionId, "document.querySelector('.status')?.textContent.includes('OFFLINE') || document.querySelector('.status')?.textContent.includes('DISCONNECTED')", 'Player A search disconnects into the visible offline state')
+  await cdp('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, playerA.sessionId)
+  assert.ok(await evaluate(playerA.sessionId, "document.querySelector('.campaign-search-results')?.textContent.includes('Search requires a live host connection.')"), 'offline search shows no cached result list')
+  hostProcess = launchHost(db)
+  await waitFor(`${hostUrl}/health`, 'host restored after simulated offline search')
+  await cdp('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'none' }, playerA.sessionId)
+  await waitExpr(playerA.sessionId, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'Player A reconnects and refreshes authorized state')
+  await waitExpr(gm, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'GM stream reconnects after host restart')
+  await waitExpr(playerB.sessionId, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'Player B stream reconnects after host restart')
+  await screenshot(playerA.sessionId, 'campaign-search-player-a-revocation-reconnect.png')
+  mark('Stage 4b: GM + Player A + Player B browser search/open/back/privacy/revocation/reconnect', 'PASS')
   await clickText(gm, 'Dashboard', 'nav[aria-label="Applications"] button')
   await clickText(gm, 'Edit layout')
   await clickText(gm, '+ Add brick', '.toolbar-actions button')
@@ -448,11 +535,7 @@ try {
   await clickText(playerA.sessionId, 'Ashen Coast', '.map-browser button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-canvas image.map-background')?.href.baseVal.startsWith('blob:')", 'cached World image rendered offline after reload')
   assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('GM-only Tide Ledger')"), 'offline map cache contains no private Lore title')
-  assert.ok(await evaluate(playerA.sessionId, "[...document.querySelectorAll('.map-piece-row button')].some(button=>button.textContent.includes('Open Sunken Archive'))"), 'previously authorized Lore destination survives in scoped offline map cache')
-  await clickText(playerA.sessionId, 'Open Sunken Archive', '.map-piece-row button')
-  await waitExpr(playerA.sessionId, "document.querySelector('.lore-page h2')?.textContent==='Sunken Archive' && document.body.innerText.includes('Host disconnected')", 'previously authorized Lore article opens from scoped offline cache as stale read-only content')
-  await clickText(playerA.sessionId, 'Back to map', '.lore-page .page-intro button')
-  await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Ashen Coast'", 'offline Lore returns to originating World Map')
+  assert.ok(!await evaluate(playerA.sessionId, "document.body.innerText.includes('Sunken Archive') || [...document.querySelectorAll('.map-piece-row button')].some(button=>button.textContent.includes('Open Sunken Archive'))"), 'revoked Lore title and destination stay absent from the refreshed offline cache')
   await clickText(playerA.sessionId, 'Go to Flooded Observatory', '.map-piece-row button')
   await waitExpr(playerA.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory' && document.querySelector('.map-canvas image.map-background')?.href.baseVal.startsWith('blob:')", 'offline cached cross-map navigation and image')
   await screenshot(playerA.sessionId, 'player-a-offline-cached-observatory.png')
@@ -473,6 +556,12 @@ try {
   assert.equal((await api(`/api/maps/${battle.id}`, playerAIdentity.credential)).response.status, 404, 'reconnected Player A direct map ID access is revoked')
   assert.equal((await fetch(`${hostUrl}/api/maps/${battle.id}/background/content`, { headers: { authorization: `Bearer ${playerAIdentity.credential}` } })).status, 404, 'reconnected Player A image authorization is revoked')
   await screenshot(playerA.sessionId, 'player-a-after-revocation-reconnect.png')
+  // Later backup-restore coverage starts from a published Lore fixture; restore
+  // that fixture only after the revoked target was proven absent offline.
+  const gmLoreForBackup = await api(`/api/lore/${sunkenArchive.id}`, gmToken)
+  assert.equal(gmLoreForBackup.response.status, 200)
+  const republishedLore = await api(`/api/lore/${sunkenArchive.id}/publication`, gmToken, { method: 'PUT', body: JSON.stringify({ operationId: `browser-search-republish-${process.pid}`, baseRevision: gmLoreForBackup.body.article.revision, published: true }) })
+  assert.equal(republishedLore.response.status, 200, 'restore the published Lore fixture for backup/restore acceptance')
   mark('Stage 6: real browser offline reload, authorized image cache, reconnection, revocation and refreshed access', 'PASS')
   await stopHost()
   diagnostics.hostRestarts = [{ at: new Date().toISOString(), pid: hostProcess.pid, exitCode: hostProcess.exitCode, database: 'disposable System A database' }]
@@ -637,9 +726,9 @@ try {
   await clickText(playerB.sessionId, 'Flooded Observatory', '.map-browser button')
   await waitExpr(playerB.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Flooded Observatory'", 'Player B opens authorized Battle scene')
   assert.equal(await evaluate(playerB.sessionId, "document.querySelectorAll('.map-piece-row input[aria-label^=\\\"X coordinate\\\"]').length"), 0, 'player Battle scene exposes no coordinate editor')
-  const narrowLayout = await evaluate(playerB.sessionId, "({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,viewport:document.querySelector('.maps-layout')?.getBoundingClientRect().width,columns:getComputedStyle(document.querySelector('.maps-layout')).gridTemplateColumns})")
-  assert.equal(narrowLayout.width, 390); assert.ok(narrowLayout.scrollWidth <= 391, `narrow Maps viewport has no horizontal overflow (${narrowLayout.scrollWidth}px)`)
-  await screenshot(playerB.sessionId, 'player-b-narrow-viewport.png')
+  const narrowLayout = await evaluate(playerB.sessionId, "({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,viewport:document.querySelector('.maps-layout')?.getBoundingClientRect().width,headerWidth:document.querySelector('.app-topbar')?.getBoundingClientRect().width,headerScrollWidth:document.querySelector('.app-topbar')?.scrollWidth,columns:getComputedStyle(document.querySelector('.maps-layout')).gridTemplateColumns})")
+  assert.equal(narrowLayout.width, 390); assert.ok(narrowLayout.scrollWidth <= 391, `narrow Maps viewport has no horizontal overflow (${narrowLayout.scrollWidth}px)`); assert.ok(narrowLayout.headerScrollWidth <= narrowLayout.headerWidth + 1, `search header has no horizontal overflow (${narrowLayout.headerScrollWidth}px > ${narrowLayout.headerWidth}px)`)
+  await screenshot(playerB.sessionId, 'player-b-narrow-search-header.png'); await screenshot(playerB.sessionId, 'player-b-narrow-viewport.png')
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, playerB.sessionId)
   record('accessibility', { keyboard: focusedControl, numericPosition: movedToken.pieces.find(piece => piece.id === tokenA)?.x, pointerPosition: draggedToken.pieces.find(piece => piece.id === tokenA)?.x, narrowViewport: narrowLayout })
   mark('Stage 9: keyboard focus, numeric token positioning, pointer drag and narrow Maps layout', 'PASS', { keyboard: focusedControl, narrowViewport: narrowLayout })
