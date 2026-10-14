@@ -1,8 +1,10 @@
 # Potomac design documentation
 
-Status: **proposed, v0.1 — 2026-10-10**. These documents capture a working product direction, not finished implementation or frozen specifications.
+Status: **mixed**. Versioned requirements and ADRs preserve historical design intent; executable behavior is described in the implementation notes and acceptance records. The v0.7 Maps slice is implemented, while Potomac as a whole remains a localhost-only development prototype.
 
-Implementation note (2026-10-11): the Workspace 0.2 localhost experiment uses SSE for live notifications and `localStorage` for personal layouts. Architecture references to WebSockets, IndexedDB offline edits, Electron, and production identity describe targets, not implemented behavior.
+Implementation note: the Workspace 0.2 localhost experiment used SSE for live notifications and `localStorage` for personal layouts. Later slices added IndexedDB-backed offline caches/operations. WebSockets, Electron packaging, production identity and remote hosting remain target architecture, not current behavior.
+
+Implementation note (2026-10-14): the Maps v0.7 application supports World/Battle scenes, pieces, grids, Map-to-Map/Map-to-Lore navigation, encounter and Workspace bindings, authorized publication, offline read cache, and portable v5 backup/restore. See [v0.7 requirements and status](workspace-0.7-requirements.md), [manual QA record](maps-manual-qa.md), and [host backup guide](../server/host/README.md). Physical touchscreen and actual Wi-Fi outage behavior remain unverified.
 
 | Document | Purpose |
 | --- | --- |
@@ -17,6 +19,7 @@ Implementation note (2026-10-11): the Workspace 0.2 localhost experiment uses SS
 | [Workspace 0.6 requirements](workspace-0.6-requirements.md) | Generic Lore articles, host-filtered sharing, stable links, managed assets, read-only offline access and portable backup ([issue #47](https://github.com/chrspickens/Potomac/issues/47)) |
 | [Workspace 0.7 requirements](workspace-0.7-requirements.md) | Shared World/Battle map scenes, pieces, links, encounter associations, permissions, managed raster images and archive v5 ([issue #70](https://github.com/chrspickens/Potomac/issues/70)) |
 | [Lore manual QA](lore-manual-qa.md) | GM/two-player release checklist, backup compatibility, attachment handling and recorded automated results |
+| [Maps v0.7 manual QA](maps-manual-qa.md) | Flooded Observatory browser run, Map-to-Lore acceptance, verified CI, human review and deferred device/network checks |
 | [Engineering standards](engineering-standards.md) | Code organization, module contracts, security, UX, and testing expectations |
 | [Agent and developer diagnostics](agent-debugging.md) | Localhost-only debug commands and isolated smoke checks |
 | [Architectural decision records](adr/README.md) | Template and decision-record conventions |

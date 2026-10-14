@@ -1,6 +1,6 @@
 # ADR-0014: Use one campaign-owned MapScene model for World and Battle maps
 
-- Status: Accepted for the 0.7 requirements baseline
+- Status: Accepted; implemented in the v0.7 Maps slice
 - Date: 2026-10-13
 
 ## Context
@@ -21,7 +21,7 @@ World creation defaults to no grid, location pins first and no required encounte
 
 One scene revision is the atomic conflict boundary for scene and piece changes. Every mutation is authenticated, GM-only, operation-ID-idempotent, revision checked, and commits resource changes, audit event and receipt atomically. Same ID/same canonical request replays the result; changed request conflicts. New scenes/pieces default GM-only. Publication is explicit; players receive only currently authorized shared projections filtered before serialization. Archive/restore are explicit and preserve identities/history; removal of one piece does not cascade to linked entities.
 
-Initial requirements bounds are 1–100,000 units per axis, 10,000 pieces per scene and 1 MiB scene/piece metadata. Initial grid is none or square with positive bounded cell width, origin and a defined cell-corner alignment. Limits and semantic enums are versioned contracts.
+Initial requirements bounds are 1–100,000 units per axis, 10,000 pieces per scene and 1 MiB scene/piece metadata. The baseline grid is none or square with positive bounded cell width, origin and a defined cell-corner alignment. The implemented contract additionally supports hex grids. Limits and semantic enums are versioned contracts.
 
 ## Consequences
 
@@ -29,4 +29,4 @@ The model permits both scene kinds to evolve uniformly and lets a GM change kind
 
 ## Follow-up / validation
 
-Validate bounds and grid semantics, kind changes preserving all fields/IDs, concurrent stale piece edits, operation retries, archive/restore, current-policy event filtering and keyboard/touch map interactions. See [Workspace 0.7 requirements](../workspace-0.7-requirements.md) and [issue #70](https://github.com/chrspickens/Potomac/issues/70).
+Automated browser/host coverage for scene creation, grids, pieces, persistence, authorization, keyboard/focus and pointer interaction is summarized in [Maps manual QA](../maps-manual-qa.md), with traces and screenshots under `docs/evidence/maps-v07-browser/`. Physical touchscreen interactions remain NOT VERIFIED and are recommended for explicit deferral until hardware QA is available. See [Workspace 0.7 requirements](../workspace-0.7-requirements.md) and [issue #70](https://github.com/chrspickens/Potomac/issues/70).

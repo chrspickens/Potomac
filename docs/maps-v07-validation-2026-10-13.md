@@ -52,6 +52,6 @@ The final integrated browser run `potomac-maps-browser-diagnostics-63056.json` r
 
 - A human should inspect the saved screenshots at normal scale for visual hierarchy, image legibility, and whether the GM/player distinction is clear. Automated screenshot capture and DOM assertions are not visual acceptance.
 - Physical touch hardware/browser QA remains outstanding. CDP mouse pointer drag passed; it does not prove touchscreen behavior, device-specific gestures, or real network loss.
-- No CI run URL is claimed here. Review the PR's actual CI checks after push; local `pnpm check` is not a CI result.
+- At the time this validation run was first recorded, no CI result URL was claimed; local `pnpm check` is not a CI result. Subsequent PR #83/#86 PR and post-merge CI, plus the fresh closeout rerun, are recorded in [Maps manual QA](maps-manual-qa.md).
 
 Evidence files are local artifacts committed with the PR; disposable databases and browser profiles were removed. No credentials are included in the browser traces.

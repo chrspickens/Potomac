@@ -1,12 +1,12 @@
 # Potomac Workspace 0.7 — Maps and Encounter Scenes requirements
 
-**Status:** Proposed for review; requirements baseline before implementation  
-**Version:** 0.7.0-draft.1  
+**Status:** Implemented on `main`; see [Maps manual QA](maps-manual-qa.md) for verified evidence and remaining gaps
+**Version:** 0.7.0
 **Scope:** Campaign-owned World and Battle map scenes, shared map pieces, explicit publication and authorization, encounter relationships, safe managed raster images, Workspace integration, and portable backup evolution.  
 **Parent:** [Issue #69](https://github.com/chrspickens/Potomac/issues/69) · **Specification:** [Issue #70](https://github.com/chrspickens/Potomac/issues/70)  
 **Related:** [Workspace 0.4](workspace-0.4-requirements.md) · [Workspace 0.5](workspace-0.5-requirements.md) · [Workspace 0.6](workspace-0.6-requirements.md) · [Architecture](architecture.md) · [Engineering standards](engineering-standards.md) · [ADR-0012](adr/0012-lore-sharing-and-revocation.md) · [ADR-0013](adr/0013-managed-assets-and-portable-backup.md) · [ADR-0014](adr/0014-map-scenes-and-pieces.md) · [ADR-0015](adr/0015-map-links-and-encounter-associations.md) · [ADR-0016](adr/0016-managed-map-images-and-backup.md)
 
-> This document specifies a target contract; it does not assert that Maps or Encounter Scenes are implemented. It extends the one-campaign, host-authoritative model and the 0.6 managed-asset/archive contract. Requirements-baseline ADRs authorize no implementation by themselves.
+> Historical baseline note: when authored, this document specified a target contract and did not assert implementation. Maps is now implemented on `main`; see the QA record for automated coverage, CI evidence, and remaining NOT VERIFIED/DEFERRED cases. The implementation also supports hex grids, in addition to the original none/square requirement. Original requirements and design decisions are retained for traceability.
 
 ## 1. Outcome and boundaries
 
@@ -185,7 +185,7 @@ The campaign GM retains private scene and piece access. Players can read only pu
 
 ## 4. Acceptance scenarios
 
-These are required implementation checks, not claims about current behavior.
+These acceptance scenarios remain the normative checklist. Current evidence is mapped in [Maps manual QA](maps-manual-qa.md), which distinguishes automated coverage from unverified/manual cases.
 
 1. Create a world scene using defaults; add a location pin linked to a second world scene, a Lore entry and an encounter. Create a battle scene using defaults; add an actor token. Confirm coordinates persist in scene units and viewport pan/zoom does not change them.
 2. Change each scene kind in both directions. Confirm grid, piece IDs/coordinates, background asset, links, sharing and encounter associations remain byte-for-byte/identity stable except the kind and revision/audit metadata.
@@ -201,6 +201,6 @@ These are required implementation checks, not claims about current behavior.
 
 ## 5. ADRs and implementation map
 
-The requirements baseline records key decisions in [ADR-0014](adr/0014-map-scenes-and-pieces.md), [ADR-0015](adr/0015-map-links-and-encounter-associations.md) and [ADR-0016](adr/0016-managed-map-images-and-backup.md). These define the semantic contracts before implementation; they do not claim the application supports Maps.
+The requirements baseline records key decisions in [ADR-0014](adr/0014-map-scenes-and-pieces.md), [ADR-0015](adr/0015-map-links-and-encounter-associations.md) and [ADR-0016](adr/0016-managed-map-images-and-backup.md). These preserve the semantic contracts that guided implementation; implementation and validation notes are maintained separately.
 
-Issue #70 is the specification task. Implementation tasks belong under parent [#69](https://github.com/chrspickens/Potomac/issues/69) and MUST use this reviewed, versioned contract. No implementation PR should invent coordinates, visibility behavior, image ownership or archive compatibility at the point of coding.
+Issue #70 was the specification task. Implementation tasks were tracked under parent [#69](https://github.com/chrspickens/Potomac/issues/69). This baseline remains useful for coordinate, visibility, image ownership and archive compatibility requirements; implementation evidence and explicitly open device/historical QA are recorded in [Maps manual QA](maps-manual-qa.md). Maps intentionally do not implement fog-of-war or combat automation. Deployment remains localhost-only, and offline copies already downloaded cannot be remotely erased.

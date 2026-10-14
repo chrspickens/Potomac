@@ -1,7 +1,9 @@
 # ADR-0016: Store map raster images as managed campaign assets and include bytes in v5 archives
 
-- Status: Accepted for the 0.7 requirements baseline
+- Status: Accepted (0.7 requirements decision; implementation now present)
 - Date: 2026-10-13
+
+This record preserves the accepted design decision and its original rationale. “Accepted” records the decision, not by itself proof that every requirement or follow-up has been implemented or verified. The implementation and evidence status below are maintained separately.
 
 ## Context
 
@@ -17,7 +19,7 @@ Map backgrounds and optional piece imagery need durable identity, integrity, aut
 
 `MapAsset` metadata and scene references are host-owned and campaign-scoped. Image bytes reside under opaque host-generated keys, never client paths. A map asset is readable only when the requester can currently read an active scene referencing it; Lore visibility does not grant map-image access and no Lore article is required.
 
-Initial raster allowlist is PNG, JPEG, GIF and WebP, with bounded decoding dimensions/pixels, 10 MiB per file, 100 MiB active bytes and 100 active map assets per campaign. Reject SVG, HTML, scripts, PDF, archives, unknown media and unsafe/oversized content. Detect type from bytes. Stage uploads under a hard stream limit, hash and validate before installation, and atomically coordinate installed bytes, metadata/reference, scene revision, event and receipt. Use startup recovery for interrupted intents. Identical bytes may be deduplicated only within a campaign; hash collision with different bytes fails closed. Remove orphan bytes only after at least 24 hours and through audited idempotent cleanup.
+The accepted requirements baseline specified PNG, JPEG, GIF and WebP, bounded decoding dimensions/pixels, 10 MiB per file, 100 MiB active bytes and 100 active map assets per campaign. It called for rejecting active content/unsupported media, byte-based type detection, staged and validated uploads, crash recovery, campaign-scoped deduplication, and delayed audited orphan cleanup. The implementation has a 5 MiB per-file upload limit, a 100 MiB campaign asset budget, signature and image-dimension validation (at most 20,000 pixels per dimension and 100 million pixels total), host-managed content keys and content-hash deduplication. It does not currently enforce the baseline's 100-active-Map-asset cap or 10 MiB upload size. The implementation, rather than the earlier requirements numbers, defines the current limits. Supported uploads are PNG, JPEG, GIF and WebP; arbitrary client filesystem paths are not used.
 
 Campaign backup advances to archive v5 and includes map records, encounter associations, metadata, required history and actual referenced bytes with size and SHA-256 integrity. Restore validates all content before activating into a new/empty destination. Import supported v2, both pinned v3 layouts and v4 without synthesizing map data or changing existing records. No merge or overwrite is added.
 
@@ -25,6 +27,14 @@ Campaign backup advances to archive v5 and includes map records, encounter assoc
 
 Map-image access is checked independently on every request and immediately stops after scene revocation even when the bytes remain stored. Backups grow with map images and remain sensitive. The staged upload protocol must reconcile filesystem and SQLite state after crashes. Historical compatibility depends on fixture-pinned layouts, especially the two distinct v3 shapes.
 
+## Implementation and current verification
+
+The current host schema and routes implement World/Battle scenes, grids, actor and pin pieces, typed Map/Lore pin destinations, encounter-to-map associations, publication/revocation, and managed background assets. Host authorization is applied to scene projections and image reads; this is not a production authentication or remote deployment design. Browser cache is bounded (20 scenes and 20 MiB aggregate image bytes, with a 10 MiB per-image cache bound) and scoped to authorized map projections, but content already downloaded cannot be remotely erased after revocation or disconnection. Maps do not implement fog-of-war or combat automation.
+
+The v5 exporter snapshots SQLite with `VACUUM INTO`, exports all host collections including the Map collections, and embeds bytes for referenced Lore and Map assets with size/hash metadata under a canonical SHA-256 archive integrity value. It rejects missing, altered or unsafe referenced asset files and does not overwrite an existing export. Restore validates the archive, map/Lore/encounter references, module availability, image signatures, exact bytes and checksums before restoring into a new or empty database/assets destination; it does not merge. Restore retains compatibility for supported v2, both recognized v3 layouts, and v4 archives; v2 cannot restore session history it did not contain. The fixture-based tests are in [backup.test.mjs](../../server/host/backup.test.mjs), with implementation in [backup.mjs](../../server/host/backup.mjs) and routes/schema in [index.mjs](../../server/host/index.mjs).
+
+These code and test references establish implemented behavior and automated coverage; they are not a claim of physical-device QA or production deployment validation. Check current CI and the applicable Maps acceptance/manual QA record before making a release-verification claim.
+
 ## Follow-up / validation
 
-Test MIME/signature spoofing, decompression/dimension bounds, filename traversal, quotas, deduplication, hash mismatch, interrupted uploads and cleanup. Round-trip v5 with bytes and verify corruption or invalid references leave destination empty; import supported v2/v3/v4 fixtures and verify all pre-existing data. See [Workspace 0.7 requirements](../workspace-0.7-requirements.md), [ADR-0013](0013-managed-assets-and-portable-backup.md) and [issue #70](https://github.com/chrspickens/Potomac/issues/70).
+The original follow-up list is retained as design history, not a current list of unverified work: focused host and backup tests now cover accepted image signatures/dimensions, quotas, deduplication, hash/reference validation, failure-safe restore, v5 byte round trips and supported v2/v3/v4 fixtures. See [backup.test.mjs](../../server/host/backup.test.mjs), [Workspace 0.7 requirements](../workspace-0.7-requirements.md), [ADR-0013](0013-managed-assets-and-portable-backup.md) and [issue #70](https://github.com/chrspickens/Potomac/issues/70). Test results and outstanding acceptance/manual QA are maintained in the relevant run record; this ADR does not claim that all human/device checks passed.
