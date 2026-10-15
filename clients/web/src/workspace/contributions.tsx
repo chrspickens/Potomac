@@ -1,3 +1,4 @@
+import { createContext, useContext } from 'react';
 import type { Activity, Encounter, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 import type { LoreArticle } from '../api.ts';
@@ -6,6 +7,8 @@ import { resolveMapSceneBinding, resolveTableParticipants } from './authorized-a
 import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
 import { MapCanvas } from '../maps-app.tsx';
 import type { MapSceneView } from '../api.ts';
+
+export const CharacterPreparationContext = createContext<{ encounters: Encounter[]; onLinkEncounter?: (actorId: string, encounterId: string) => void; onReturn?: () => void }>({ encounters: [] });
 
 function declaredBrickDefinition(typeId: string): BrickDefinition<unknown> {
   const definition = getBrickDefinition(typeId);
@@ -18,7 +21,10 @@ function valueAt(source: Record<string, unknown>, path: string): unknown {
     typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined, source);
 }
 
-export function CharacterView({ actor, busy, offline = false, onAction, compact, gm = false }: { actor: Actor; busy: boolean; offline?: boolean; onAction: (actor: Actor, actionId: string) => void; compact?: boolean; gm?: boolean }) {
+export function CharacterView({ actor, busy, offline = false, onAction, compact, gm = false, encounters = [], onLinkEncounter }: { actor: Actor; busy: boolean; offline?: boolean; onAction: (actor: Actor, actionId: string) => void; compact?: boolean; gm?: boolean; encounters?: Encounter[]; onLinkEncounter?: (encounterId: string) => void }) {
+  const preparation = useContext(CharacterPreparationContext);
+  const encounterOptions = encounters.length ? encounters : preparation.encounters;
+  const linkEncounter = onLinkEncounter || ((encounterId: string) => preparation.onLinkEncounter?.(actor.entityId, encounterId));
   const controls = compact ? actor.module.view.brick : actor.module.view.layout;
   const stats = controls.filter(item => item.control === 'stat');
   const resources = controls.filter(item => item.control === 'resource');
@@ -39,6 +45,8 @@ export function CharacterView({ actor, busy, offline = false, onAction, compact,
       return <button type="button" key={`${item.actionId}-${index}`} disabled={busy || offline && hostOnly} title={offline && hostOnly ? 'Host connection required' : undefined} onClick={() => item.actionId && onAction(actor, item.actionId)}>{item.label}</button>;
     })}</div>}
     {gm && actor.secretNote && <div className="gm-note"><b>GM only</b> {actor.secretNote}</div>}
+    {gm && !compact && <form className="character-encounter-link" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); linkEncounter(String(data.get('encounterId') || '')) }}><label>Link to encounter<select name="encounterId" defaultValue="" required disabled={busy || offline}><option value="" disabled>Choose an encounter</option>{encounterOptions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button type="submit" disabled={busy || offline || !encounterOptions.length}>Add as participant</button>{!encounterOptions.length && <small>No available encounters.</small>}</form>}
+    {gm && !compact && preparation.onReturn && <button type="button" onClick={preparation.onReturn}>Return to encounter preparation</button>}
   </div>;
 }
 

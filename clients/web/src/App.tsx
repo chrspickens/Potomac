@@ -7,7 +7,7 @@ import { flushOfflineQueue } from './offline/reconcile'
 import { ConflictRecovery } from './offline/conflict-recovery.tsx'
 import type { Actor } from './modules'
 import { createDefaultWorkspace, getBrickDefinition, getBrickDefinitions, isSupportedBinding, loadWorkspaceWithRecovery, saveWorkspace, type BrickInstance, type WorkspaceState } from './workspace'
-import { CharacterView, resolveDefaultBinding } from './workspace/contributions.tsx'
+import { CharacterPreparationContext, CharacterView, resolveDefaultBinding } from './workspace/contributions.tsx'
 import { resolveBindingMode } from './workspace/binding.ts'
 import { createAuthorizedBrickAdapter } from './workspace/authorized-adapter.ts'
 import { resolveBrickLayout } from './workspace/layout.ts'
@@ -135,6 +135,15 @@ export default function App() {
   const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
   const [creatingEncounter, setCreatingEncounter] = useState(false)
   const [openedLoreEncounterId, setOpenedLoreEncounterId] = useState('')
+  const [preparationReturn, setPreparationReturn] = useState<{
+    encounterId: string
+    encounterName: string
+    encounter: Encounter
+    name: string
+    summary: string
+    status: 'prepared' | 'active' | 'completed'
+    participantIds: string[]
+  } | null>(null)
   const [searchReturn, setSearchReturn] = useState<{ section: 'dashboard' | 'table' | 'characters' | 'encounters' | 'lore' | 'maps'; actorId: string; mapId?: string; loreId?: string } | null>(null)
 
   useEffect(() => {
@@ -528,6 +537,39 @@ export default function App() {
     } catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
   }
+  const returnToEncounterPreparation = async () => {
+    const target = preparationReturn
+    if (!target || role !== 'gm' || connection !== 'connected') return
+    setSection('encounters'); setPreparationReturn(null)
+    setOpenedLoreEncounterId('')
+    setEncounterDetails(target.encounter)
+    setEncounterNameInput(target.name)
+    setEncounterSummaryInput(target.summary)
+    setEncounterStatusInput(target.status)
+    setEncounterParticipantIds(target.participantIds)
+    setActionState(`Returned to preparation for ${target.encounterName}.`)
+  }
+  const openRelatedEncounter = (id: string) => {
+    setCreatingEncounter(false)
+    setOpenedLoreEncounterId(id)
+    setSection('encounters')
+    if (role === 'gm') void chooseEncounter(id)
+  }
+  const handoffFromPreparation = (target: 'characters' | 'maps' | 'lore') => {
+    if (!encounterDetails) return
+    setPreparationReturn({
+      encounterId: encounterDetails.id,
+      encounterName: encounterDetails.name,
+      encounter: structuredClone(encounterDetails),
+      name: encounterNameInput,
+      summary: encounterSummaryInput,
+      status: encounterStatusInput,
+      participantIds: [...encounterParticipantIds],
+    })
+    if (target === 'maps') setMapTargetId(undefined)
+    if (target === 'lore') setLoreTargetId(undefined)
+    setSection(target)
+  }
   const activateEncounterAndOpenTable = async (encounter: Encounter) => {
     if (role !== 'gm' || connection !== 'connected') return
     setBusy(true); setError('')
@@ -719,7 +761,19 @@ export default function App() {
     if (!searchReturn) return
     setSection(searchReturn.section); setSelectedActorId(searchReturn.actorId); setMapTargetId(searchReturn.mapId); setLoreTargetId(searchReturn.loreId); setSearchReturn(null)
   }
-  return <LoreTargetContext.Provider value={setLoreTargetId}><LoreRelationsContext.Provider value={loreRelations}><LoreArticlesContext.Provider value={loreArticles}><div className="app-shell">
+  return <CharacterPreparationContext.Provider value={{ encounters: tableEncounters, onReturn: preparationReturn ? () => void returnToEncounterPreparation() : undefined, onLinkEncounter: async (actorId, encounterId) => {
+    if (role !== 'gm' || connection !== 'connected') return
+    setBusy(true); setError('')
+    try {
+      const actor = snapshot?.actors.find(item => item.entityId === actorId)
+      const latest = await loadCampaignEncounter(encounterId)
+      const roster = latest.participants || []
+      if (roster.some(item => item.actorId === actorId)) { setActionState(`${actor?.name || 'Character'} is already linked to ${latest.name}.`); return }
+      await saveEncounterParticipants(latest.id, latest.revision || 0, [...roster, { actorId, status: 'active', activationOrder: roster.length }])
+      setActionState(`${actor?.name || 'Character'} linked to ${latest.name} on the host.`)
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  } }}><LoreTargetContext.Provider value={setLoreTargetId}><LoreRelationsContext.Provider value={loreRelations}><LoreArticlesContext.Provider value={loreArticles}><div className="app-shell">
     <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{campaign?.name || snapshot?.context.campaignId || 'Connecting…'}</strong><small>{campaign?.systemModuleId ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : 'Configure campaign in GM setup'}</small></div><nav aria-label="Applications"><button className={section === 'table' ? 'active' : ''} onClick={() => setSection('table')}>▦ <span>Table</span></button><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▤ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><button className={section === 'encounters' ? 'active' : ''} onClick={() => setSection('encounters')}>⚑ <span>Encounters</span></button><button className={section === 'maps' ? 'active' : ''} onClick={() => { setMapTargetId(undefined); setSection('maps') }}>⌖ <span>Maps</span></button><button className={section === 'lore' ? 'active' : ''} onClick={() => { setLoreTargetId(undefined); setSection('lore') }}>▤ <span>Lore</span></button></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
     <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">WORKSPACE / {section.toUpperCase()}</span><strong>{section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'table' ? 'Table' : section === 'characters' ? 'Characters' : section === 'lore' ? 'Lore' : section === 'maps' ? 'Maps' : 'Encounters'}</strong></div><div className="topbar-right">{searchReturn && <button type="button" onClick={returnFromSearchResult}>Back to origin</button>}{campaignSearchAvailable(host.mode) ? <CampaignSearch key={`${role}:${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} role={role} identityKey={`${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} connected={connection === 'connected' && Boolean(snapshot)} onOpen={openSearchResult} /> : <span className="capability-note" role="status">Campaign search requires a configured host.</span>}<span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId(''); setSearchReturn(null) }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
@@ -742,7 +796,7 @@ export default function App() {
     {role === 'player' && queued.length > 0 && <section className="action-status" aria-label="Your local operation status"><strong>Local edits</strong>{queued.slice(-8).map(row => <p key={row.operation.operationId}>{row.operation.actionId} · {row.state}{row.receipt?.reasonCode ? ` · ${row.receipt.reasonCode}` : ''}{row.lastError === 'transport' ? ' · host acknowledgement unavailable; retrying' : ''} · {row.operation.operationId.slice(0, 8)}{row.state === 'queued' && row.firstSubmittedAt === undefined && <button onClick={() => void cancelUnsentEdit(row.operation.operationId)}>Cancel unsent edit</button>}</p>)}</section>}
     {role === 'player' && snapshot?.memberId && <section className="action-status" aria-label="Private local drafts"><label><input type="checkbox" checked={draftNextEdit} onChange={event => setDraftNextEdit(event.target.checked)} /> Save next permitted action as a private draft (do not submit)</label><label>Require this authorized character to stay unchanged <select aria-label="Dependency guard" value={dependencyEntityId} onChange={event => { dependencyEntityIdRef.current = event.target.value; setDependencyEntityId(event.target.value) }}><option value="">No dependency guard</option>{snapshot.actors.filter(actor => actor.entityId !== selectedActor?.entityId).map(actor => <option key={actor.entityId} value={actor.entityId}>{actor.name} · revision {actor.revision}</option>)}</select></label>{drafts.length > 0 && <div><strong>Private drafts · {drafts.length}</strong>{drafts.map(draft => { const payload = draft.payload as { kind?: string; operation?: OfflineOperation; reason?: { code?: string; message?: string } } | null; return <div key={draft.draftId}><p>{payload?.operation?.actionId || 'Saved edit'} · local only {payload?.kind === 'offline-intent' && <button onClick={() => void submitPrivateDraft(draft)}>Queue for host</button>}{payload?.kind === 'offline-conflict' && <button onClick={() => void editPrivateDraft(draft)}>Edit private draft parameters</button>}<button onClick={() => void discardPrivateDraft(draft)}>Discard draft</button></p>{payload?.kind === 'offline-conflict' && <details><summary>Review saved intent · {payload.reason?.code || 'conflict'}</summary><p>{payload.reason?.message || 'Original offline intent retained locally.'}</p><p>Original operation <code>{payload.operation?.operationId}</code></p><pre>{JSON.stringify(payload.operation?.parameters, null, 2)}</pre></details>}</div> })}</div>}</section>}
     {role === 'player' && queued.filter(row => row.state === 'conflicted' || row.state === 'rejected').map(row => <div className="action-status" key={row.operation.operationId}><ConflictRecovery queuedOperation={row} reason={{ code: row.receipt?.reasonCode || (row.state === 'rejected' ? 'gm_rejected' : 'conflict'), message: conflictMessage(row.receipt?.reasonCode || (row.state === 'rejected' ? 'gm_rejected' : 'conflict')) }} authorizedCurrentActor={connection === 'connected' ? snapshot?.actors.find(actor => actor.entityId === row.operation.entityId) : null} authorizedCurrentDependencies={connection === 'connected' ? (row.operation.dependencies || []).map(dependency => snapshot?.actors.find(actor => actor.entityId === dependency.entityId)).filter((actor): actor is Actor => Boolean(actor)) : []} canDiscardLocalOutcome onRetainAsPrivateDraft={draft => withPlayerStorage(storage => storage.savePrivateDraft(draft).then(() => {}))} onDiscardLocalOutcome={operationId => withPlayerStorage(storage => storage.deleteLocalOutcome(operationId))} onCreateOperation={operation => withPlayerStorage(async storage => { await storage.enqueueOperation(operation); if (connection === 'connected' && snapshot) void syncPending(snapshot) })} /></div>)}
-    {section === 'maps' ? <MapsApp key={`${role}:${snapshot?.context.campaignId || 'connecting'}`} role={role} connection={connection} campaignId={snapshot?.context.campaignId || ''} actors={snapshot?.actors || []} encounters={tableEncounters} loreArticles={loreArticles} hostAvailable={Boolean(configuredHost)} initialSceneId={mapTargetId} cachedScenes={snapshot?.role === role ? mapScenes : []} cachedBackgrounds={snapshot?.role === role ? mapBackgrounds : {}} cacheTimes={snapshot?.role === role ? mapCacheTimes : {}} onSceneChange={setMapScenes} onSelectedSceneChange={setMapTargetId} onHandoff={(app, entityId, originSceneId) => { if (app === 'lore' && entityId) { setLoreReturnMapId(originSceneId); setLoreTargetId(entityId); setSection('lore'); return } setSection(app); if (app === 'characters' && entityId) setSelectedActorId(entityId); if (app === 'encounters' && entityId) { const target = tableEncounters.find(item => item.id === entityId); if (target) { setEncounterDetails(target); setEncounterNameInput(target.name); setEncounterSummaryInput(target.summary) } } }} /> : section === 'dashboard' || section === 'table' ? <main className="dashboard-page">
+    {section === 'maps' ? <MapsApp key={`${role}:${snapshot?.context.campaignId || 'connecting'}`} role={role} connection={connection} campaignId={snapshot?.context.campaignId || ''} actors={snapshot?.actors || []} encounters={tableEncounters} loreArticles={loreArticles} hostAvailable={Boolean(configuredHost)} initialSceneId={mapTargetId} cachedScenes={snapshot?.role === role ? mapScenes : []} cachedBackgrounds={snapshot?.role === role ? mapBackgrounds : {}} cacheTimes={snapshot?.role === role ? mapCacheTimes : {}} onSceneChange={setMapScenes} onSelectedSceneChange={setMapTargetId} onHandoff={(app, entityId, originSceneId) => { if (app === 'lore' && entityId) { setLoreReturnMapId(originSceneId); setLoreTargetId(entityId); setSection('lore'); return } if (app === 'encounters' && entityId) { openRelatedEncounter(entityId); return } setSection(app); if (app === 'characters' && entityId) setSelectedActorId(entityId) }} /> : section === 'dashboard' || section === 'table' ? <main className="dashboard-page">
       <div className="page-intro"><div><p className="eyebrow">{section === 'table' ? 'APPLICATION / TABLE' : 'YOUR CAMPAIGN, YOUR LAYOUT'}</p><h1>{section === 'table' ? 'Table' : dashboard?.name || 'Start a dashboard'}</h1><p>{section === 'table' ? 'Live session, authorized participants and recent activity.' : 'Personal panels follow shared play, while your arrangement stays yours.'}</p></div><div className="intro-actions">{section === 'table' && role === 'gm' && <button onClick={() => void returnToPreparation()}>Return to preparation</button>}<button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>
       {section === 'table' && <section className="session-strip" aria-label="Table workflow"><div><p className="eyebrow">GM WORKFLOW</p><strong>{sessionSnapshot?.current ? sessionSnapshot.current.status === 'finished' ? 'Session ended' : `Session ${sessionSnapshot.current.status}` : 'Ready for a session'}</strong><small>{activeEncounter ? `Current encounter: ${activeEncounter.name}` : 'Choose and activate a prepared encounter before starting.'}</small></div>{role === 'gm' && activeEncounter && !sessionSnapshot?.current && <button className="primary" disabled={busy || connection !== 'connected'} onClick={() => void changeSession('start', { id: activeEncounter.id, revision: activeEncounter.revision || 0 })}>Start Table session</button>}</section>}
       <div className="dashboard-toolbar"><label>Group <select value={activeGroup?.id || ''} onChange={event => { const group = workspace.groups.find(item => item.id === event.target.value); update({ ...workspace, activeGroupId: event.target.value, activeDashboardId: group?.dashboardIds[0] || '' }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div className="dashboard-tabs" role="tablist" aria-label="Dashboards">{groupDashboards.map(item => <button role="tab" aria-selected={item.id === dashboard?.id} className={item.id === dashboard?.id ? 'active' : ''} key={item.id} onClick={() => update({ ...workspace, activeDashboardId: item.id })}>{item.name}</button>)}</div>{editing && <div className="toolbar-actions"><label>Move to <select aria-label="Move dashboard to group" value={activeGroup?.id || ''} disabled={!dashboard} onChange={event => { if (!dashboard) return; const groupId = event.target.value; update({ ...workspace, activeGroupId: groupId, groups: workspace.groups.map(group => ({ ...group, dashboardIds: group.id === groupId ? [...group.dashboardIds.filter(id => id !== dashboard.id), dashboard.id] : group.dashboardIds.filter(id => id !== dashboard.id) })) }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><button onClick={createGroup}>+ Group</button><button onClick={renameGroup} disabled={!activeGroup}>Rename group</button><button onClick={createDashboard}>+ Dashboard</button><button onClick={renameDashboard} disabled={!dashboard}>Rename</button><button onClick={deleteDashboard} disabled={!dashboard}>Delete</button><button className="primary" onClick={() => setPicker(!picker)}>+ Add brick</button></div>}</div>
@@ -765,12 +819,7 @@ export default function App() {
       availableActors={snapshot?.actors ?? []} availableEncounters={snapshot?.encounters ?? []}
       onOpenTarget={(kind, id) => {
         if (kind === 'actor') { setSelectedActorId(id); setSection('characters') }
-        else {
-          setOpenedLoreEncounterId(id)
-          setSection('encounters')
-          // Player navigation never calls the GM-only encounter detail endpoint.
-          if (role === 'gm') void chooseEncounter(id)
-        }
+        else openRelatedEncounter(id)
        }} onBackToMap={loreReturnMapId ? () => { const source = loreReturnMapId; setLoreReturnMapId(undefined); setLoreTargetId(undefined); setMapTargetId(source); setSection('maps') } : undefined} /> : <main className="encounters-page">
       <div className="page-intro">
         <div><p className="eyebrow">APPLICATION / ENCOUNTERS</p><h1>Encounters</h1>
@@ -805,6 +854,7 @@ export default function App() {
       </div>
       {role === 'gm' && encounterDetails && !creatingEncounter && <form className="schema-form" onSubmit={event => void saveEncounterEdits(event)}>
         <h2>Prepare {encounterDetails.name}</h2>
+        <div className="preparation-handoffs" aria-label="Related preparation"><button type="button" onClick={() => handoffFromPreparation('characters')}>Create or link character</button><button type="button" onClick={() => handoffFromPreparation('maps')}>Create or link map</button><button type="button" onClick={() => handoffFromPreparation('lore')}>Create or link Lore</button>{preparationReturn && <button type="button" onClick={() => void returnToEncounterPreparation()}>Return to {preparationReturn.encounterName}</button>}</div>
         <label>Encounter name <input required maxLength={160} value={encounterNameInput} onChange={event => setEncounterNameInput(event.target.value)} /></label>
         <label>Player-visible summary <textarea maxLength={4000} value={encounterSummaryInput} onChange={event => setEncounterSummaryInput(event.target.value)} /></label>
         <label>Lifecycle <select value={encounterStatusInput} onChange={event => setEncounterStatusInput(event.target.value as 'prepared' | 'active' | 'completed')}>
@@ -824,5 +874,5 @@ export default function App() {
           catch (cause) { setError(displayError(cause)) } finally { setBusy(false) }
         }}>Clear active encounter</button>}
     </main>}</div>
-  </div></LoreArticlesContext.Provider></LoreRelationsContext.Provider></LoreTargetContext.Provider>
+  </div></LoreArticlesContext.Provider></LoreRelationsContext.Provider></LoreTargetContext.Provider></CharacterPreparationContext.Provider>
 }

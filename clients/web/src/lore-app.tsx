@@ -1,10 +1,11 @@
-import { createContext, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { addLoreLink, createLore, fetchLoreAsset, getLoreLinks, HostRequestError, listLore, listLoreAssets, readLore, removeLoreAsset, removeLoreLink, setLoreArchived, setLorePublication, updateLore, uploadLoreAsset, type ConnectionStatus, type LoreArticle, type LoreAsset, type LoreInput, type LoreKind, type LoreLink, type LoreTargetKind, type Role, type Encounter } from './api.ts'
 import { filterLore, LORE_KINDS, projectCachedPlayerLore, safeLorePreview, validateLoreImage } from './lore.ts'
 import { loadRememberedIdentity } from './identity.ts'
 import type { Actor } from './modules.ts'
 import { cacheAuthorizedLore, loadCachedAuthorizedLore } from './offline/snapshots.ts'
 import './lore.css'
+import { CharacterPreparationContext } from './workspace/contributions.tsx'
 
 const emptyForm = (): LoreInput => ({ title: '', kind: 'note', tags: [], body: '', visibility: 'gm', gmNotes: '' })
 export const LoreArticlesContext = createContext<LoreArticle[]>([])
@@ -19,6 +20,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
   onOpenTarget?: (kind: 'actor' | 'encounter', id: string) => void
 }) {
   const [articles, setArticles] = useState<LoreArticle[]>(initialArticles)
+  const preparation = useContext(CharacterPreparationContext)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
@@ -209,6 +211,7 @@ export function LoreApp({ role, connection, targetId, initialArticles = [], onAr
 
   return <main className="lore-page">
       <div className="page-intro"><div><p className="eyebrow">APPLICATION / LORE</p><h1>Lore &amp; handouts</h1><p>Browse campaign articles by type and tag. The host filters content by visibility.</p></div><div>{onBackToMap && <button type="button" onClick={onBackToMap}>Back to map</button>}{canEdit && <button className="primary" onClick={() => { setSelectedId(''); startEdit() }}>New article</button>}</div></div>
+      {role === 'gm' && preparation.onReturn && <button type="button" onClick={preparation.onReturn}>Return to encounter preparation</button>}
     {connection === 'disconnected' && <p role="status" className="capability-note">Host disconnected. Previously authorized Lore is read-only and stale{offlineCachedAt ? ` (last synchronized ${new Date(offlineCachedAt).toLocaleString()})` : ' (sync date unavailable)'}. Previously downloaded data may remain on this device after access is revoked.</p>}
     {!hostAvailable && <p role="status" className="capability-note">Lore requires a configured host; local preview has no Lore storage.</p>}
     {error && <p role="alert" className="error-banner">{error}{/revision|conflict|stale/i.test(error) ? ' Reload the latest article before editing again.' : ''}<button onClick={() => void reload()}>Retry</button></p>}
