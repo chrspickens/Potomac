@@ -49,6 +49,8 @@ Campaign backup and restore are available through `node server/host/backup-cli.m
 
 Run `pnpm acceptance:maps-browser` for the disposable three-context Chromium Maps acceptance; `pnpm check` includes it. See the [v0.7 QA record](docs/maps-manual-qa.md) for automated evidence and human/device verification gaps.
 
+The v0.8 release acceptance matrix composes the existing disposable GM, Player A and Player B campaign, offline, Lore, Maps, Table and backup journeys without duplicating them. See [v0.8 release acceptance](docs/release-acceptance-0.8.md) for the release gates, evidence mapping and explicit physical-device/screen-reader limitations.
+
 This deployment remains localhost-only and uses development bearer tokens, not production identity. Do not expose it to the internet. Maps do not implement fog-of-war, hidden regions within a shared image, or combat automation. Previously downloaded offline content cannot be remotely erased.
 
 Run `pnpm acceptance:lore` for isolated GM/two-player Lore UI and HTTP privacy coverage, `pnpm acceptance:campaign` for the campaign browser workflow, or `pnpm check` for the full suite. The local-host prototype is **not ready for internet exposure**. Development bearer credentials are not production identity; revocation prevents future host access but cannot erase already downloaded copies.
