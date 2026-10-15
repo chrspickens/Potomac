@@ -399,7 +399,7 @@ try {
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await clickText(client.sessionId, 'Table', 'nav[aria-label="Applications"] button');
     await waitForExpression(client.sessionId, "Boolean(document.querySelector('.dashboard-page') && document.querySelector('.session-strip'))", `${label} explicitly navigates from Campaign Home to Table`);
-    assert.equal(await evaluate(client.sessionId, "document.activeElement?.textContent === 'Table' || document.activeElement?.textContent?.includes('Table')"), true, `${label} navigation restores focus to the Table heading`);
+    await waitForExpression(client.sessionId, "document.activeElement === document.querySelector('.app-main h1') && document.activeElement?.textContent === 'Table'", `${label} navigation restores focus to the Table heading`);
   }
 
   // Exercise the registered Table bricks in three isolated browser profiles.
