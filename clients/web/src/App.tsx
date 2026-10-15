@@ -498,6 +498,10 @@ export default function App() {
   useEffect(() => {
     if (creatingCharacter && selectedModule && Object.keys(newCharacterData).length === 0) setNewCharacterData(createSchemaDefaults(selectedModule.schema || {}))
   }, [creatingCharacter, selectedModule?.manifest.id])
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => { const heading = document.querySelector<HTMLElement>('.app-main h1'); if (heading) { heading.tabIndex = -1; heading.focus() } })
+    return () => window.cancelAnimationFrame(frame)
+  }, [section])
   const createCharacter = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!selectedModule || role !== 'gm') return
