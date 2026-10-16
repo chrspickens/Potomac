@@ -1,110 +1,119 @@
-# Potomac v0.9 playtest checklist
+# Potomac v0.9 human playtest script
 
-Issue [#110](https://github.com/chrspickens/Potomac/issues/110), under tracker [#109](https://github.com/chrspickens/Potomac/issues/109).
+Tracks [issue #110](https://github.com/chrspickens/Potomac/issues/110) under the v0.9 tracker [#109](https://github.com/chrspickens/Potomac/issues/109). This document guides one complete, paced System A campaign session with a GM, Player A, and Player B. Automated evidence is recorded separately from human observations.
 
-This is a repeatable session script and evidence log. It deliberately separates disposable Chromium automation from observations that require a real GM and two people. A passing browser runner is not a human usability, touch, network-loss, or screen-reader result.
+## Current verification record
 
-## Status at 2026-10-15
+**Automated checks run 2026-10-15** from `codex/v08-release-acceptance-98` at `a4bd781` with Node 24.13.1, pnpm 11.25.0, and Chrome available in the environment:
 
-| Evidence class | Status | Evidence |
+| Check | Result | Scope observed |
 |---|---|---|
-| System A automated browser flow | PASS | `pnpm acceptance:campaign` completed with a fresh host, GM, and two isolated player contexts. It covered campaign setup, character/encounter preparation, grants, Table roster, start/pause/resume, restart persistence, layout reload, backup/restore, and redaction. |
-| System B automated smoke | PASS | `pnpm acceptance:system-b-table` completed with a fresh pinned System B host, generic Table start, player action, private-field HTTP/SSE/DOM redaction, and reconnect. |
-| One complete paced System A session with a human GM + Player A + Player B | PENDING | No human participants were available in this run. Do not mark complete from Chromium output. |
-| Real device, touch, screen reader, and physical network interruption | PENDING | Not exercised. Existing browser automation and request blocking are not substitutes; retain the boundary tracked by #88. |
+| `pnpm acceptance:lore` | PASS (exit 0) | Disposable host, Lore HTTP authorization/projection/event checks, real GM/Player A/Player B browser contexts, GM UI create/publish/revoke, shared article views, GM-note redaction. |
+| `pnpm check` | PASS (exit 0) | Build; 129 Node tests; debug smoke; campaign, System B Table, offline, storage, Table, Lore, Maps, and Maps browser acceptances. Maps browser stages 1–10 passed. |
+| Human GM + Player A + Player B playtest in this document | **PENDING** | Not performed in this verification run. No human observations are claimed. |
+| GitHub Actions for the playtest PR | **PENDING** | Only report a CI result after the PR workflow exists and its run has completed. |
 
-No product defect was filed from this run: the two automated commands passed and no human observation exists yet from which to derive a reproducible usability defect. When a real session finds a defect, add a follow-up issue using the template below and link it from #110; do not convert an unverified suspicion into a finding.
+### Historical Lore contract audit
 
-## Before the session
+The older Lore QA notes describe mismatches that were observed at an earlier point. Current source contracts and the successful `pnpm acceptance:lore` run show no reproduction in the checked-out build:
 
-The GM prepares a disposable loopback host and records date, Potomac commit, browser/version, viewport, OS, and role. Use generated credentials and fictional content only. Never paste bearer tokens, private campaign text, raw databases, or unsanitized network traces into an issue or screenshot.
+| Historical concern | Current contract checked | Current result |
+|---|---|---|
+| Visibility mismatch | Client article visibility is `gm` or `shared`; the host emits those projections and filters player reads/events by current access. | Not reproduced; host tests and Lore acceptance passed. |
+| Kind/type mismatch | The client uses `kind` in its app model and maps it to/from the host wire/storage field `type`. | Not reproduced; host and client tests plus Lore acceptance passed. |
+| Archive route mismatch | Client and host accept `PUT /api/lore/:id/archive` (and `/restore`) with `operationId` and `baseRevision`. | Not reproduced; the acceptance archive request passed. |
+| UI command-shape mismatch | Create/update send the host-accepted fields; publication uses `/publication` with `published`; archive sends the expected revision and operation ID. | Not reproduced; UI-driven create, publish, and revoke assertions passed. |
 
-Create three separate browser profiles or contexts:
+No bug issue was opened: there is no confirmed current defect from these checks. A later failure should be recorded with the request path, method, status, sanitized response, role, and reproducible browser steps before filing a bug.
 
-- GM: host administration and private preparation.
-- Player A: member credential A and only A's granted character/content.
-- Player B: member credential B and only B's granted character/content.
+## Coverage matrix
 
-Use a simple scenario: one System A campaign, two characters, one encounter, one Lore article, one World Map, one Battle Map, and one private GM note/pin. Agree beforehand which item is shared and which remains GM-only. Keep a timestamped observation log; the facilitator should not rescue a participant without recording the point of confusion.
+A passing automation row is evidence only for the assertions in that runner. It is not a proxy for a person completing the end-to-end session or for physical-device and assistive-technology behavior.
 
-## Human System A walkthrough
+| Area | Existing automated coverage | Human-only coverage / limit | Human result |
+|---|---|---|---|
+| Campaign Home → preparation → Table → wrap-up | `pnpm acceptance:campaign` (`scripts/workspace-acceptance.mjs`) covers fresh System A setup, character and encounter preparation, grants, three browser contexts, Table roster, session start/pause/resume, navigation, persistence, redaction, and backup. | One continuous, paced tabletop-style session with participants; discoverability, comprehension, handoffs, confusion, and recovery without facilitator rescue. | PENDING |
+| Lore create/share/privacy | `pnpm acceptance:lore`; `server/host/lore.test.mjs`, `clients/web/src/lore.test.mjs`; Maps browser covers Lore UI, linking, publication/revocation, assets, search/navigation, and privacy. | People understand draft/share/revoke state, find the article, follow links/backlinks, and understand that downloaded copies may remain after revocation. | PENDING |
+| World/Battle Maps | `pnpm acceptance:maps`, `pnpm acceptance:maps-browser`; map UI, assets, visibility, links, offline/cache/restart, keyboard and narrow viewport assertions. | Real-device map readability, touch/gesture behavior, zoom/reflow quality, and participant understanding of the selected map. | PENDING |
+| System B | `pnpm acceptance:system-b-table` runs a fresh pinned System B Table/Character smoke with API-provisioned fixtures, a player action, HTTP/SSE/DOM redaction, and reconnect. Maps browser stage 10 adds System B map bootstrap. | Human smoke on a pinned System B campaign. It is narrower than the System A walkthrough and does not establish a complete System B campaign session. | PENDING |
+| Keyboard and small viewport | Campaign and Maps browser automation asserts selected keyboard controls/focus and a 390px viewport. | Full keyboard-only task completion, focus clarity during the session, real-device reflow, and zoom at user-selected magnification. | PENDING |
+| Touch, screen reader, assistive technology | No automated acceptance here proves physical-device behavior or human announcements. | Touch ergonomics; screen-reader announcements and navigation using named assistive technologies. | PENDING |
+| Physical connectivity and recovery | Offline and reconnect suites simulate network conditions; browser runners exercise host restart and cache/reconciliation paths. | Real Wi-Fi/cellular interruption, perceived waiting, uncertainty, and recovery comprehension on participant devices. | PENDING |
+| Privacy-safe evidence | Automated assertions inspect selected DOM and actual HTTP/SSE bytes for protected values. | Human capture process must avoid credentials/private content and verify what a participant actually sees. | PENDING |
 
-For every row record: outcome (`pass`, `blocked`, or `confusing`), elapsed time if useful, exact UI wording, role/profile, browser/device, repro steps, expected behavior, actual behavior, severity, screenshot/trace filename, and privacy impact. A participant may stop or abandon a task; that is evidence, not a failed test to hide.
+## Session objective and scenario
 
-| Step | Actor | Action | Expected result | Human-only observation to capture |
-|---|---|---|---|---|
-| 1 | GM | Open Campaign Home and create/select the System A campaign | The pinned module and campaign state are clear; no unrelated campaign is shown | First-run discoverability, loading/empty/error wording |
-| 2 | GM | Create or link Character A and Character B | Stable identities are visible and edits are acknowledged as committed | Whether “create”, “link”, grant, and save concepts are understandable |
-| 3 | GM | Enroll Player A and Player B, privately deliver each credential, grant each character | Each player can join without seeing the other member’s credential or private fields | Handoff time, credential mistakes, privacy exposure in copy/screen sharing |
-| 4 | GM | Create an encounter, assign both characters, and open the encounter/Table flow | Participant roster and active context are obvious | Preparation-to-live-session handoff and duplicate/unclear controls |
-| 5 | GM | Create Lore; publish one article and keep one note private | Shared article is available only where authorized; private note stays GM-only | Publication/revocation language and whether state is visibly committed |
-| 6 | GM | Create World and Battle maps; add representative pieces/pin; publish the intended view | Players can find the shared map; private pin/note is absent from player views | Asset upload, map selection, zoom/pan, and map-to-Lore navigation |
-| 7 | GM | Activate the encounter and start the table session | GM sees an authoritative active state; players see read-only/current state | Whether the active encounter and session status are easy to locate |
-| 8 | Player A/B | Join, find Character, Table, Lore, and shared map from the landing/navigation surfaces | Each player can return to the active session without GM help | Search terms, navigation dead ends, stale loading/error states |
-| 9 | GM | Pause, resume, and finish the session | All three clients converge on the committed state; controls are role-appropriate | Latency, wording, duplicate clicks, and whether “paused” is distinguishable from offline |
-| 10 | GM | Revoke the Lore or map share; have players refresh/search/reconnect | New reads and search results omit revoked material; cached-copy limitation is understood | Whether stale content or metadata remains visible, and privacy implications |
-| 11 | Player A/B | Reload and return to the session; optionally use the offline/cache path | Pending/local state is not presented as committed; reconnect reconciles authoritatively | Recovery instructions, uncertainty, and device/browser storage concerns |
-| 12 | GM + players | Finish with a short debrief | All findings have owner, severity, repro, and evidence | What each person expected, not just whether the facilitator completed it |
+Run a fictional coastal investigation from campaign setup through session wrap-up. The GM prepares two characters, one encounter, one public Lore article, one private GM-only note, a World Map, and a Battle Map. Player A and Player B each use a separate enrolled identity and receive only the intended character/content grants. The group investigates a signal at the Flooded Observatory, uses the shared map and Lore, pauses and resumes the session, then finishes it.
 
-### Severity rubric
+Use names and content created for this test. Do not use a real campaign or a database that must be preserved. Do not expose the host beyond loopback. Local development bearer tokens are fixtures, not production credentials.
 
-- **S0 / privacy or authority:** unauthorized title, count, content, event, credential, or stale metadata is visible; a player can perform a GM-only action; or UI claims an uncommitted change is committed.
-- **S1 / session blocker:** a role cannot complete a required step, loses the active session, or cannot recover without data loss or manual database work.
-- **S2 / major friction:** the task is eventually possible but a participant is likely to abandon it, needs facilitator rescue, or repeats an error.
-- **S3 / minor friction:** wording, layout, focus, or feedback is confusing but the intended path remains discoverable.
+## Record the test environment
 
-## Representative System B smoke
+Complete this block before starting. Use one browser profile per role; do not reuse the GM profile for either player.
 
-Run this after the System A setup, preferably on a fresh host pinned to `example.system-b` so System A data cannot mask module assumptions. GM creates one System B character/encounter, enrolls one player, starts the generic Table session, and submits one System B action. Verify the GM-only field is absent from player DOM, HTTP response bytes, SSE/replay data, and refreshed state. Take the player offline using the supported browser test method, reconnect, and verify the authoritative active-session state. Repeat the same human evidence fields as above. This is a smoke test, not a second full campaign walkthrough.
+| Field | Record |
+|---|---|
+| Date/time and facilitator | PENDING |
+| Potomac commit / branch | PENDING |
+| OS and version | PENDING |
+| Host device/model | PENDING |
+| GM device/model, browser + full version, viewport, zoom, input method | PENDING |
+| Player A device/model, browser + full version, viewport, zoom, input method | PENDING |
+| Player B device/model, browser + full version, viewport, zoom, input method | PENDING |
+| Screen reader / assistive technology and version, if used | PENDING / not used (record only after asking participant) |
+| Network type and any interruption used | PENDING |
+| Disposable database confirmed; host URL is loopback | PENDING |
+| Profile separation confirmed (GM / A / B) | PENDING |
+| Evidence folder and redaction reviewer | PENDING |
 
-## Automated evidence commands
+For a developer build, use a disposable `POTOMAC_DB` path and the documented local commands (`pnpm dev:host` and `pnpm dev:web`, in separate terminals if you need to restart only the host). Confirm the host listens on loopback before enrolling players. Never paste generated credentials into the report. A human test should use credentials enrolled for Player A and Player B; do not use shared browser storage to simulate separate members.
 
-Run from the repository root with Node 22.5+ and pnpm 11.25.0:
+## How to score each step
 
-```text
-pnpm acceptance:campaign
-pnpm acceptance:system-b-table
-pnpm check
-```
+Start every item as **PENDING**. Mark **PASS** only after the participant performs the action and the expected visible/authoritative result is observed. Mark **FAIL** when the expected result does not occur or a privacy/permission boundary is violated. Mark **BLOCKED** when the participant cannot attempt the step for a recorded environment or prerequisite reason. If the action eventually succeeds but the participant hesitates, misinterprets a label, repeats it, or needs a hint, record the result and the friction; do not hide it inside a PASS.
 
-The first two commands use temporary loopback hosts, databases, credentials, and isolated browser contexts. Preserve stdout and sanitized traces only. `pnpm check` is the required integration gate; report the exit code and CI URL, and do not claim CI is green until the GitHub Actions run exists and succeeds.
+For every step, capture: role/profile; start and finish time or elapsed time; exact label/message seen; expected result; actual result; whether help was needed; severity if there is a defect; and a privacy-reviewed evidence filename. Write what the participant said or did, not what the facilitator assumes they meant. Blank fields remain blank/PENDING until observed.
 
-## Finding / follow-up issue template
+## Complete System A playtest
 
-Use one issue per defect. Link it to #110 and, if it is a v0.9 fix, to #109. Include:
+| ID | Actor | Participant task | Pass observation | Fail / friction observation | Result and notes |
+|---|---|---|---|---|---|
+| S01 | GM | Open Campaign Home, create/configure a fresh campaign, choose the exact System A module/version, and save. Refresh and confirm the selected campaign is still clear. | Campaign name and pinned module/version are visible and remain after refresh; no unrelated campaign/fixtures appear. | Missing/ambiguous setup, wrong module/version, unexpected seed data, save not acknowledged, or facilitator must use source/database edits. | PENDING |
+| S02 | GM | Create Character A and Character B through the character app. Edit one normal field and save each. Open each complete sheet. | Both distinct characters show module-defined fields/actions; saved edits appear with clear committed feedback and survive navigation. | Duplicate/unclear records, invalid edit accepted, stale state presented as committed, missing fields/actions, or rescue required. | PENDING |
+| S03 | GM | Enroll Player A and Player B separately. Give each their own credential privately. Grant A their intended character and B their intended character; keep one GM-only field/note. | Each profile authenticates as the correct member and sees only granted records. Credential delivery does not expose the other player’s identity or credential. | Wrong member/profile, unrelated character/secret visible, GM-only control available, or credential copied into shared evidence. Treat a privacy leak as S0. | PENDING |
+| S04 | GM | Create “Flooded Observatory” encounter, add both characters, edit the player-visible summary, and activate it. | Encounter detail and roster show both stable character identities; GM and players can tell which encounter is active. | Participant missing/duplicated, summary/roster not saved, stale active context, or unclear distinction between prepared and active. | PENDING |
+| S05 | GM | Create “Signal at Low Tide” Lore article. Add a tag, safe Markdown, and a GM-only note. Keep it private while preparing, then publish it. | GM can distinguish private draft from published state; players A and B can find/open the shared article, while the GM note and private articles stay absent. | Publication unclear/not committed, wrong players gain access, GM note/private title appears to players, or Markdown renders unsafe content. | PENDING |
+| S06 | GM | Create “Ashen Coast” World Map and “Flooded Observatory” Battle Map. Add one representative token/pin and connect relevant Lore or encounter context. Publish only intended content. | The intended map, token/pin, and links are visible to the right roles; GM can identify which map is active/selected. | Wrong map/context, missing asset or link, nonfunctional controls, private pin/content exposed, or share state unclear. | PENDING |
+| S07 | Player A + Player B | From each independent profile, use the landing/navigation/search surfaces to find the active encounter, character sheet, public Lore, and shared map. Open an item and return to the session. | Each player reaches only authorized records and returns to the expected encounter/session context without GM intervention. | Search reveals unauthorized metadata; navigation loses context; item opens the wrong record; participant needs a hint or retries. | PENDING |
+| S08 | GM + players | Start the live session from the Table/session UI. Have each player verify active/read-only status. Player A performs one permitted action declared by the pinned System A module. | GM sees committed active state; players see the same authoritative status with role-appropriate controls; accepted action shows committed feedback and consistent state. | Player can administer session; pending action appears committed; action is denied without explanation; views disagree beyond expected refresh time. | PENDING |
+| S09 | GM + players | Pause the session. Ask each player what they believe the state means. Resume and continue the investigation using the shared Lore/map. | All clients converge on paused then active state; participants distinguish pause from disconnect/offline; campaign context stays usable. | Confusing status, divergent state, accidental duplicate transitions/actions, or facilitator rescue. Record participant wording verbatim when useful. | PENDING |
+| S10 | GM + players | Revoke one previously shared Lore article (or map) after both players have opened it. Have each player refresh/search/reopen and explain what they expect from any already downloaded copy. | New host reads/search results are no longer available; UI indicates current access. Group understands revocation cannot reliably erase a prior local copy. | New reads still succeed, unauthorized data is re-sent, stale copy looks newly authorized/current, or UI promises physical erasure. | PENDING |
+| S11 | GM + players | Resume if needed, finish the session, then navigate back to Campaign Home and reopen the campaign/encounter summary. Optionally restart the disposable host and reload all three profiles. | Finished state is clear; return navigation preserves campaign identity; after restart, committed campaign/roster/session state remains authoritative. | Session cannot be finished/reopened, return loses identity/context, state disappears/duplicates, or a pending edit is shown as accepted. | PENDING |
+| S12 | GM + players | Debrief separately first, then together. Ask: where did you hesitate, what did you expect, what did you avoid because it seemed risky, and what would you change? | Facilitator records each person’s own words and links them to the step; no claim is inferred from silence. | Observation is missing role/source or combines different participants’ reports without attribution. | PENDING |
 
-```markdown
-## Observation
-- Severity: S0/S1/S2/S3
-- Found by: human GM / Player A / Player B / automation (name the runner)
-- Date, commit, browser/device, viewport, role/profile:
-- Privacy impact: none / describe exactly what was exposed
+### Separate System B human smoke
 
-## Reproduction
-1. Start from a fresh disposable host and state the pinned module.
-2. ...
+This is a smaller, separate fresh-host check, not a repeat of the System A walkthrough. Pin a disposable campaign to the exact System B module/version. Have the GM create or provision one character and encounter, enroll one player, start the generic Table session, and have the player perform one System B action. Confirm the player-visible state and GM-only field handling, then reconnect after a brief controlled disconnect if feasible. Record all environment and outcome fields above. Do not count API-provisioned automation as a human UI pass.
 
-## Expected
-...
+Result: **PENDING** until performed by a human GM and player. The automated System B smoke is listed in the coverage matrix only.
 
-## Actual
-...
+## Severity rubric
 
-## Evidence
-- Screenshot(s) without credentials: `docs/evidence/...`
-- Sanitized trace/log: `docs/evidence/...`
-- Automated command and exit code, if applicable:
+- **S0 — privacy / authority:** a player sees another member’s credential or unauthorized private field/title/count/event, can perform a GM-only action, or the UI claims an uncommitted change was committed. Stop the playtest, preserve only sanitized evidence, and report promptly.
+- **S1 — session blocker / data safety:** a required role cannot continue, committed state is lost/duplicated, or recovery requires database/source edits or risks data loss.
+- **S2 — major friction:** task eventually succeeds but likely abandonment, repeated errors, facilitator rescue, or substantial uncertainty is needed.
+- **S3 — minor friction:** wording, focus, layout, or feedback is confusing while the intended path remains discoverable.
 
-## Follow-up
-- Suggested owning layer: `clients/`, `server/`, `packages/`, `modules/`, or `docs/`
-- Regression test required:
-- Related issue: #110 / #109 / other
-```
+Severity describes impact, not how often the participant complained. Record frequency and participant impact separately.
 
-## Privacy and evidence rules
+## Privacy-safe evidence capture
 
-Use fictional names/content and generated credentials. Crop screenshots before commit. Inspect traces for bearer tokens, private Lore text, member IDs, request bodies, database paths, and local filesystem details. Player evidence must verify absence from rendered DOM and, for privacy findings, from actual HTTP/SSE/replay bytes; a hidden element alone is not evidence of authorization. Remember that revocation blocks new authorized reads but cannot erase a copy already downloaded to a browser profile.
+- Use fictional campaign content and generated credentials; never attach a database, credential, raw request body, or unreviewed trace.
+- Capture screenshots only after checking the whole image for bearer values, private Lore, player names the group did not consent to share, local paths, and unrelated windows. Crop/redact before saving; keep the original only in the approved private test location.
+- Store shareable evidence under a dedicated `docs/evidence/v09-playtest/` directory only after review. Prefer a short sanitized observation note over a network dump.
+- If a privacy defect is suspected, capture role, action, request method/path/status, and a redacted response excerpt. Do not include the sensitive value itself. Use a fresh disposable record and stop further exposure.
+- Label human artifacts `human`; label automation artifacts with the exact command, commit, and runner. Never combine them into a single “passed” claim.
 
-## Outstanding human signoff
+## Exit and tracking rules
 
-This checklist is ready for a facilitator, but the full System A walkthrough, System B human smoke, physical device checks, and screen-reader checks remain **PENDING**. #109 must remain open until the release owner accepts the outstanding QA debt and the required post-merge CI evidence is green.
+The playtest deliverable is ready for a facilitator, but every human row above remains **PENDING** until performed and individually recorded. Update findings using [`v09-playtest-findings-template.md`](v09-playtest-findings-template.md). Open targeted bug issues only for reproducible confirmed defects; link them to #110 and, when relevant, #109. Keep #110 open until the human-playtest deliverable and limitations have been explicitly reviewed. Keep tracker #109 open.
