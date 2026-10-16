@@ -4,27 +4,27 @@ Tracks [issue #110](https://github.com/chrspickens/Potomac/issues/110) under the
 
 ## Current verification record
 
-**Automated checks run 2026-10-15** from `codex/v08-release-acceptance-98` at `a4bd781` with Node 24.13.1, pnpm 11.25.0, and Chrome available in the environment:
+**Verification provenance:** PR #117 head `90215db09218e3ba4543dc84ff55e9d78fc4f2cb` had successful GitHub Actions. A separate isolated local rerun on the pre-correction guide revision `20dd631137c76b508773c7438fbb039f89fe9236` was incomplete: Lore acceptance could not reach client readiness, and `pnpm check` stopped during build because offline dependency links were incomplete. Those local results are not passes and do not establish a Lore product regression.
 
 | Check | Result | Scope observed |
 |---|---|---|
-| `pnpm acceptance:lore` | PASS (exit 0) | Disposable host, Lore HTTP authorization/projection/event checks, real GM/Player A/Player B browser contexts, GM UI create/publish/revoke, shared article views, GM-note redaction. |
-| `pnpm check` | PASS (exit 0) | Build; 129 Node tests; debug smoke; campaign, System B Table, offline, storage, Table, Lore, Maps, and Maps browser acceptances. Maps browser stages 1–10 passed. |
+| GitHub Actions for PR #117 head `90215db` | PASS | The PR workflow completed successfully. This is the authoritative CI evidence for that revision. |
+| Isolated local `pnpm acceptance:lore` rerun | INCOMPLETE (exit 1) | The runner could not reach Lore web-client readiness (`fetch failed` at `scripts/lore-acceptance.mjs:204`); Lore assertions did not complete. Treat as an environment/readiness limitation, not a product regression. |
+| Isolated local `pnpm check` rerun | INCOMPLETE (exit 1) | Stopped during `pnpm build` because Vite could not resolve `rolldown` (`ERR_MODULE_NOT_FOUND`); offline dependency links were incomplete, so no full-check assertions completed. |
 | Human GM + Player A + Player B playtest in this document | **PENDING** | Not performed in this verification run. No human observations are claimed. |
-| GitHub Actions for the playtest PR | **PENDING** | Only report a CI result after the PR workflow exists and its run has completed. |
 
 ### Historical Lore contract audit
 
-The older Lore QA notes describe mismatches that were observed at an earlier point. Current source contracts and the successful `pnpm acceptance:lore` run show no reproduction in the checked-out build:
+The older Lore QA notes describe mismatches that were observed at an earlier point. Source contracts were inspected at the reachable revision above. The incomplete local rerun did not reach the client assertions, so it cannot establish whether the historical behavior reproduces at runtime:
 
 | Historical concern | Current contract checked | Current result |
 |---|---|---|
-| Visibility mismatch | Client article visibility is `gm` or `shared`; the host emits those projections and filters player reads/events by current access. | Not reproduced; host tests and Lore acceptance passed. |
-| Kind/type mismatch | The client uses `kind` in its app model and maps it to/from the host wire/storage field `type`. | Not reproduced; host and client tests plus Lore acceptance passed. |
-| Archive route mismatch | Client and host accept `PUT /api/lore/:id/archive` (and `/restore`) with `operationId` and `baseRevision`. | Not reproduced; the acceptance archive request passed. |
-| UI command-shape mismatch | Create/update send the host-accepted fields; publication uses `/publication` with `published`; archive sends the expected revision and operation ID. | Not reproduced; UI-driven create, publish, and revoke assertions passed. |
+| Visibility mismatch | Client article visibility is `gm` or `shared`; host projections filter player reads/events by current access. | Source contract appears aligned; runtime reproduction **not determined** because Lore acceptance failed before assertions. |
+| Kind/type mismatch | Client uses `kind` in its app model and maps to/from host wire/storage `type`. | Source contract appears aligned; runtime reproduction **not determined**. |
+| Archive route mismatch | Client and host use `PUT /api/lore/:id/archive` (and `/restore`) with `operationId` and `baseRevision`. | Source contract appears aligned; runtime reproduction **not determined** because the archive request was not reached. |
+| UI command-shape mismatch | Create/update send host-accepted fields; publication uses `/publication` with `published`; archive sends expected revision and operation ID. | Source contract appears aligned; runtime reproduction **not determined** because UI assertions did not run. |
 
-No bug issue was opened: there is no confirmed current defect from these checks. A later failure should be recorded with the request path, method, status, sanitized response, role, and reproducible browser steps before filing a bug.
+No bug issue was opened: these reruns did not confirm a product defect. The runtime behavior remains unverified. If a future run reproduces a mismatch, record request path, method, status, sanitized response, role, and reproducible browser steps before filing a bug.
 
 ## Coverage matrix
 
