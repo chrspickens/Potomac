@@ -510,6 +510,10 @@ try {
   assert.equal(await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.validity.rangeOverflow"), true, 'out-of-range System A difficulty is blocked');
   assert.ok(await evaluate(player.sessionId, "document.querySelector('.character-action-form [role=alert]')?.textContent.includes('Difficulty')"), 'out-of-range System A difficulty has understandable validation feedback');
   assert.equal((await (await request('/api/actors/actor-emberfall-01', gmToken)).json()).revision, strengthRevisionBeforeValidation, 'invalid difficulty does not commit an actor revision');
+  await clickText(player.sessionId, 'Acceptance Created Character', '.character-list button');
+  await waitForExpression(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.value === '' && !document.querySelector('.character-action-form [role=alert]')", 'switching character resets same-ID action input and validation state');
+  await clickText(player.sessionId, 'Mira Vell', '.character-list button');
+  await waitForExpression(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.value === '' && !document.querySelector('.character-action-form [role=alert]')", 'returning to the original character starts with a clean action form');
   await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
   await cdp('Input.insertText', { text: '15' }, player.sessionId);
   await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');

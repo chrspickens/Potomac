@@ -1,5 +1,5 @@
 export type ViewControl = { control: 'text' | 'stat' | 'resource' | 'actionButton'; label: string; field?: string; actionId?: string; parameters?: Record<string, unknown> }
-export type ActionInputProperty = { type?: 'string' | 'integer' | 'number'; title?: string; description?: string; default?: unknown; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; enum?: unknown[] }
+export type ActionInputProperty = { type?: 'string' | 'integer' | 'number' | 'boolean'; title?: string; description?: string; default?: unknown; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; enum?: unknown[] }
 export type ModuleAction = { id: string; label?: string; policy?: 'selfService' | 'gmReview'; reconciliation?: 'commutative'; input?: { type?: 'object'; properties?: Record<string, ActionInputProperty>; required?: string[]; additionalProperties?: boolean }; requires?: unknown; effects?: Array<{ op: string; resource: string; amount: { literal?: number } }>; resolution?: { dice: Array<{ count: number; sides: number; role?: string }>; modifier?: unknown; targetInput?: string; compareTotals?: boolean; comparison?: string } }
 export type GameModule = {
   manifest: { id: string; version: string; name: string; tagline: string }

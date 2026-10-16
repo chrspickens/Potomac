@@ -8,6 +8,7 @@ import { resolveMapSceneBinding, resolveTableParticipants } from './authorized-a
 import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
 import { MapCanvas } from '../maps-app.tsx';
 import type { MapSceneView } from '../api.ts';
+import { getActionEnumIndex, getActionEnumValue, isSupportedActionEnum } from './action-input-schema.ts';
 
 export const CharacterPreparationContext = createContext<{ encounters: Encounter[]; onLinkEncounter?: (actorId: string, encounterId: string) => void; onReturn?: () => void }>({ encounters: [] });
 
@@ -18,7 +19,9 @@ function ActionControl({ actor, actionId, label, parameters, busy, offline, onAc
   const hostOnly = Boolean(action?.resolution) || !['selfService', 'gmReview'].includes(action?.policy || '');
   const [validationMessage, setValidationMessage] = useState('');
   const fields = Object.entries(properties);
-  const unsupported = fields.find(([, schema]) => !['string', 'integer', 'number'].includes(schema.type || '') && !Array.isArray(schema.enum));
+  const unsupported = fields.find(([, schema]) => Array.isArray(schema.enum)
+    ? !isSupportedActionEnum(schema)
+    : !['string', 'integer', 'number'].includes(schema.type || ''));
   if (parameters) return <button type="button" disabled={busy || offline && hostOnly} title={offline && hostOnly ? 'Host connection required' : undefined} onClick={() => onAction(actor, actionId, parameters)}>{label}</button>;
   if (unsupported || required.some(key => !Object.hasOwn(properties, key))) {
     return <div className="character-action-input-error" role="status">{label} is unavailable because its module input schema cannot be collected safely.</div>;
@@ -32,7 +35,13 @@ function ActionControl({ actor, actionId, label, parameters, busy, offline, onAc
     for (const [key, schema] of fields) {
       const control = event.currentTarget.elements.namedItem(key);
       if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement) || control.value === '') continue;
-      parameters[key] = schema.type === 'integer' || schema.type === 'number' ? Number(control.value) : control.value;
+      if (Array.isArray(schema.enum)) {
+        const value = getActionEnumValue(schema, control.value);
+        if (value === undefined) continue;
+        parameters[key] = value;
+      } else {
+        parameters[key] = schema.type === 'integer' || schema.type === 'number' ? Number(control.value) : control.value;
+      }
     }
     setValidationMessage('');
     onAction(actor, actionId, parameters);
@@ -46,7 +55,7 @@ function ActionControl({ actor, actionId, label, parameters, busy, offline, onAc
       const requiredField = required.includes(key);
       const constraints = [requiredField ? 'Required' : '', schema.type === 'integer' ? 'whole number' : schema.type === 'number' ? 'number' : '', schema.minimum !== undefined ? `minimum ${schema.minimum}` : '', schema.maximum !== undefined ? `maximum ${schema.maximum}` : ''].filter(Boolean).join('; ');
       return <label key={key}>{fieldLabel}{requiredField ? ' *' : ''}{Array.isArray(schema.enum)
-        ? <select name={key} required={requiredField} defaultValue={schema.default === undefined ? '' : String(schema.default)} aria-describedby={`${actionId}-${key}-hint`}><option value="" disabled>Choose {fieldLabel.toLowerCase()}</option>{schema.enum.map(value => <option key={String(value)} value={String(value)}>{String(value)}</option>)}</select>
+        ? <select name={key} required={requiredField} defaultValue={getActionEnumIndex(schema, schema.default)} aria-describedby={`${actionId}-${key}-hint`}><option value="" disabled>Choose {fieldLabel.toLowerCase()}</option>{schema.enum?.map((value, index) => <option key={index} value={String(index)}>{String(value)}</option>)}</select>
         : <input name={key} type={schema.type === 'integer' || schema.type === 'number' ? 'number' : 'text'} step={schema.type === 'integer' ? 1 : schema.type === 'number' ? 'any' : undefined} required={requiredField} min={schema.minimum} max={schema.maximum} minLength={schema.minLength} maxLength={schema.maxLength} defaultValue={schema.default === undefined ? '' : String(schema.default)} aria-describedby={`${actionId}-${key}-hint`} />}
         {schema.description && <small>{schema.description}</small>}
         <small id={`${actionId}-${key}-hint`}>{constraints || 'Enter a value declared by this action.'}</small>
@@ -86,7 +95,7 @@ export function CharacterView({ actor, busy, offline = false, onAction, compact,
       const ratio = typeof current === 'number' && typeof maximum === 'number' && maximum > 0 ? Math.max(0, Math.min(100, current / maximum * 100)) : 0;
       return <div className="resource" key={`${item.field}-${index}`}><div><span>{item.label}</span><strong>{String(current ?? '—')} / {String(maximum ?? '—')}</strong></div><div className="meter"><i style={{ width: `${ratio}%` }} /></div></div>;
     })}</div>}
-    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => item.actionId && <ActionControl key={`${item.actionId}-${index}`} actor={actor} actionId={item.actionId} label={item.label} parameters={compact ? item.parameters : undefined} busy={busy} offline={offline} onAction={onAction} />)}</div>}
+    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => item.actionId && <ActionControl key={`${actor.entityId}-${item.actionId}-${index}`} actor={actor} actionId={item.actionId} label={item.label} parameters={compact ? item.parameters : undefined} busy={busy} offline={offline} onAction={onAction} />)}</div>}
     {gm && actor.secretNote && <div className="gm-note"><b>GM only</b> {actor.secretNote}</div>}
     {gm && !compact && <form className="character-encounter-link" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); linkEncounter(String(data.get('encounterId') || '')) }}><label>Link to encounter<select name="encounterId" defaultValue="" required disabled={busy || offline}><option value="" disabled>Choose an encounter</option>{encounterOptions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button type="submit" disabled={busy || offline || !encounterOptions.length}>Add as participant</button>{!encounterOptions.length && <small>No available encounters.</small>}</form>}
     {gm && !compact && preparation.onReturn && <button type="button" onClick={preparation.onReturn}>Return to encounter preparation</button>}
