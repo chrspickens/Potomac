@@ -104,6 +104,15 @@ async function clickText(sessionId, text, selector = 'button') {
   assert.equal(clicked, true, `Enabled ${selector} containing “${text}” exists`);
 }
 
+async function pointerClickText(sessionId, text, selector = 'button') {
+  const target = await evaluate(sessionId, `(() => { const element=[...document.querySelectorAll(${JSON.stringify(selector)})].find(item=>item.textContent.trim()===${JSON.stringify(text)}); if(!element||element.disabled) return null; element.scrollIntoView({block:'center',inline:'center'}); const rect=element.getBoundingClientRect(); const x=rect.left+rect.width/2; const y=rect.top+rect.height/2; const hit=document.elementFromPoint(x,y); return {x,y,receivesPointer:Boolean(hit&&(hit===element||element.contains(hit)))} })()`);
+  assert.ok(target, `Enabled ${selector} exactly matching “${text}” exists`);
+  assert.equal(target.receivesPointer, true, `Pointer target for “${text}” is not obscured`);
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: target.x, y: target.y }, sessionId);
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: target.x, y: target.y, button: 'left', clickCount: 1 }, sessionId);
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: target.x, y: target.y, button: 'left', clickCount: 1 }, sessionId);
+}
+
 async function request(path, token, init = {}) {
   return fetch(`${baseUrl}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } });
 }
@@ -140,6 +149,11 @@ try {
   const fresh = await jsonRequest('/api/state', gmToken);
   assert.deepEqual(fresh.actors, [], 'fresh host has no seeded actors');
   assert.deepEqual(fresh.encounters, [], 'fresh host has no seeded encounters');
+  const systemBModule = fresh.modules.find(module => module.id === 'example.system-b' && module.version === '0.1.0');
+  assert.ok(systemBModule, 'fresh host preserves the installed System B module version');
+  assert.deepEqual(systemBModule.actions.find(action => action.id === 'instinct-test').input, { type: 'object', properties: { difficulty: { type: 'integer', minimum: 1, maximum: 12 } }, required: ['difficulty'], additionalProperties: false }, 'System B v0.1.0 check parameter contract remains authoritative');
+  assert.equal(systemBModule.view.layout.find(item => item.actionId === 'instinct-test').parameters, undefined, 'System B full Character view does not embed a difficulty');
+  assert.deepEqual(systemBModule.view.brick.find(item => item.actionId === 'instinct-test').parameters, { difficulty: 8 }, 'existing compact System B Table-brick parameter contract is preserved');
   const campaign = await jsonRequest('/api/campaign', gmToken);
   assert.equal(campaign.systemModuleId, null, 'fresh campaign is unpinned before explicit setup');
   await jsonRequest('/api/context', gmToken, { method: 'POST', body: JSON.stringify({ context: { activeEncounter: null } }) });
@@ -192,8 +206,31 @@ try {
   await waitForExpression(player.sessionId, "[...document.querySelectorAll('.character-list button')].some(button=>button.textContent.includes('Nia Sol'))", 'player character list');
   await clickText(player.sessionId, 'Nia Sol', '.character-list button');
   await waitForExpression(player.sessionId, "document.querySelector('.character-view h3')?.textContent === 'Nia Sol'", 'authorized System B character app');
-  await clickText(player.sessionId, 'Spend 1 Hope', '.character-view button');
-  await waitForExpression(player.sessionId, "document.querySelector('.action-status')?.textContent.includes('spend-hope accepted')", 'player submits generic System B action during active session');
+  await waitForExpression(player.sessionId, "Boolean([...document.querySelectorAll('.character-action-form')].find(form=>form.getAttribute('aria-label')==='Roll Instinct Test'))", 'System B declared difficulty input appears in Character UI');
+  const instinctRevisionBeforeValidation = (await jsonRequest(`/api/actors/${actorId}`, gmToken)).revision;
+  await pointerClickText(player.sessionId, 'Roll Instinct Test', '.character-action-form button');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.validity.valueMissing"), true, 'missing System B difficulty is blocked by required input validation');
+  assert.ok(await evaluate(player.sessionId, "document.querySelector('.character-action-form [role=alert]')?.textContent.includes('Difficulty')"), 'missing System B difficulty has understandable inline feedback');
+  assert.equal((await jsonRequest(`/api/actors/${actorId}`, gmToken)).revision, instinctRevisionBeforeValidation, 'missing System B difficulty does not commit actor state');
+  await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
+  await cdp('Input.insertText', { text: '13' }, player.sessionId);
+  await pointerClickText(player.sessionId, 'Roll Instinct Test', '.character-action-form button');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.validity.rangeOverflow"), true, 'out-of-range System B difficulty is blocked');
+  assert.ok(await evaluate(player.sessionId, "document.querySelector('.character-action-form [role=alert]')?.textContent.includes('Difficulty')"), 'out-of-range System B difficulty has understandable validation feedback');
+  assert.equal((await jsonRequest(`/api/actors/${actorId}`, gmToken)).revision, instinctRevisionBeforeValidation, 'invalid System B difficulty does not commit actor state');
+  await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
+  await cdp('Input.insertText', { text: '6' }, player.sessionId);
+  await pointerClickText(player.sessionId, 'Roll Instinct Test', '.character-action-form button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('instinct-test accepted at revision'))", 'valid System B check receives host acceptance feedback');
+  const instinctAfterCheck = await jsonRequest(`/api/actors/${actorId}`, gmToken);
+  assert.equal(instinctAfterCheck.revision, instinctRevisionBeforeValidation + 1, 'accepted System B check commits exactly one revision');
+  const systemBSessionId = (await jsonRequest('/api/session', gmToken)).current.id;
+  const instinctTimeline = await jsonRequest(`/api/session/${encodeURIComponent(systemBSessionId)}/timeline?after=0`, gmToken);
+  const instinctEvents = instinctTimeline.events.filter(event => event.payload?.actionId === 'instinct-test');
+  assert.equal(instinctEvents.length, 1, 'one real Character UI submission creates one committed System B check event');
+  assert.equal(instinctEvents[0].payload.parameters.difficulty, 6, 'host audit records the difficulty explicitly entered in Character UI');
+  await pointerClickText(player.sessionId, 'Spend 1 Hope', '.character-view button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('spend-hope accepted'))", 'player submits generic System B action during active session');
   assert.equal(await evaluate(player.sessionId, "Boolean(document.querySelector('.gm-note')?.textContent.includes('SYSTEM_B_GM_PRIVATE_STAR_CHART'))"), false, 'GM-only actor field is absent from player DOM');
 
   const playerJsonChecks = await Promise.all([
@@ -206,6 +243,10 @@ try {
     assert.equal(response.status, 200, 'authorized player HTTP projection is available');
     assert.ok(!(await response.text()).includes(secret), 'private field is absent from actual player HTTP response bytes');
   }
+  const playerTimeline = await jsonRequest(`/api/session/${encodeURIComponent(systemBSessionId)}/timeline?after=0`, enrollment.credential);
+  const playerCheckEvent = playerTimeline.events.find(event => event.payload?.actionId === 'instinct-test');
+  assert.ok(playerCheckEvent, 'player can observe its committed check event');
+  assert.equal(Object.hasOwn(playerCheckEvent.payload, 'parameters'), false, 'player event projection redacts submitted action parameters');
   const streamResponse = await request('/api/stream?since=0', enrollment.credential);
   assert.equal(streamResponse.status, 200, 'player event stream is authorized');
   const reader = streamResponse.body.getReader();
@@ -236,10 +277,26 @@ try {
   assert.ok(!refreshedBytes.includes(secret), 'reconnect snapshot bytes remain redacted');
   assert.equal((await jsonRequest('/api/state', gmToken)).actors.find(actor => actor.id === actorId).data.secretNote, secret, 'GM retains the hidden System B note');
   const playerActor = await (await request(`/api/actors/${actorId}`, enrollment.credential)).json();
-  assert.equal(playerActor.data.resources.hope.current, 3, 'player action commits the System B resource update');
+  assert.equal(playerActor.data.resources.hope.current, 3, 'no-input resource action commits without requiring unrelated parameters');
+  assert.equal(playerActor.revision, instinctRevisionBeforeValidation + 2, 'accepted check and resource action each commit once');
   assert.equal(populated.revision, 2, 'encounter has a committed System B roster revision');
 
-  console.log('PASS: fresh unseeded System B campaign; generic Table UI start; authorized player System B action; private-field HTTP/SSE/DOM redaction; reconnect to authoritative active-session state.');
+  const revokeGrant = await request(`/api/actors/${actorId}/grants/${encodeURIComponent(enrollment.memberId)}`, gmToken, { method: 'DELETE' });
+  assert.equal(revokeGrant.status, 200, 'GM revokes the player character grant through the host');
+  const revokedContext = await cdp('Target.createBrowserContext');
+  const revokedPlayer = await openBrowserClient(revokedContext.browserContextId, 'player', playerWebUrl);
+  await clickText(revokedPlayer.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(revokedPlayer.sessionId, "document.querySelector('.brick-message')?.textContent.includes('No authorized characters')", 'revoked player cannot access Character UI action controls');
+  assert.equal(await evaluate(revokedPlayer.sessionId, "document.querySelectorAll('.character-action-form').length===0 && !document.body.innerText.includes('Roll Instinct Test')"), true, 'revoked player UI exposes no check input or action');
+  const revokedAttempt = await request('/api/session/actions', enrollment.credential, { method: 'POST', body: JSON.stringify({
+    operationId: `system-b-revoked-check-${process.pid}`, sessionId: systemBSessionId, entityId: actorId,
+    baseRevision: playerActor.revision, actionId: 'instinct-test', parameters: { difficulty: 6 },
+    campaignId: pinned.id, memberId: enrollment.memberId, moduleId: 'example.system-b', moduleVersion: '0.1.0', schemaVersion: 1, dependencies: [],
+  }) });
+  assert.ok(revokedAttempt.status === 403 || revokedAttempt.status === 404, `revoked member cannot submit a Character action (${revokedAttempt.status})`);
+  assert.equal((await jsonRequest(`/api/actors/${actorId}`, gmToken)).revision, playerActor.revision, 'revoked unauthorized attempt leaves committed character state unchanged');
+
+  console.log('PASS: fresh unseeded System B campaign; generic Table UI schema-driven checks, validation, accepted check and no-input resource actions; revoked-player authorization denial; private-field HTTP/SSE/DOM redaction; reconnect to authoritative active-session state.');
   console.log(`Temporary host database: ${dbPath}`);
 } catch (error) {
   const logs = children.map(({ getOutput }) => getOutput()).filter(Boolean).join('\n');

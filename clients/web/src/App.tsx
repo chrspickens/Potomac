@@ -350,8 +350,7 @@ export default function App() {
     updateDashboard(dashboard.id, item => ({ ...item, bricks: [...item.bricks, brick] }))
     setPicker(false)
   }
-  const act = async (actor: Actor, actionId: string) => {
-    const parameters = actor.module.view.layout.concat(actor.module.view.brick).find(item => item.actionId === actionId)?.parameters || {}
+  const act = async (actor: Actor, actionId: string, parameters: Record<string, unknown> = {}) => {
     setBusy(true); setError(''); setActionState(`Sending ${actionId} for ${actor.name}…`)
     try {
       const declaredAction = actor.module.actions.find(item => item.id === actionId)
