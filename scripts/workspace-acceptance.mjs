@@ -251,6 +251,10 @@ try {
   assert.deepEqual(freshSetup.encounters, [], 'fresh campaign starts without demo encounters');
   assert.ok(freshSetup.modules.some(module => module.id === 'example.system-a' && module.version === '0.1.0')
     && freshSetup.modules.some(module => module.id === 'example.system-b' && module.version === '0.1.0'), 'fresh campaign has both versioned system modules available');
+  const systemAModule = freshSetup.modules.find(module => module.id === 'example.system-a');
+  assert.deepEqual(systemAModule.actions.find(action => action.id === 'strength-check').input, { type: 'object', properties: { difficulty: { type: 'integer', minimum: 1, maximum: 30 } }, required: ['difficulty'], additionalProperties: false }, 'System A v0.1.0 check parameter contract remains authoritative');
+  assert.equal(systemAModule.view.layout.find(item => item.actionId === 'strength-check').parameters, undefined, 'System A full Character view does not embed a difficulty');
+  assert.deepEqual(systemAModule.view.brick.find(item => item.actionId === 'strength-check').parameters, { difficulty: 12 }, 'existing compact System A Table-brick parameter contract is preserved');
   const deniedCampaignEdit = await request('/api/campaign', legacyPlayerToken, { method: 'PUT', body: jsonBody({ name: 'Denied', systemModuleId: 'example.system-a', systemModuleVersion: '0.1.0', baseRevision: 1 }) });
   if (deniedCampaignEdit.status === 403) assert.equal(deniedCampaignEdit.status, 403, 'participant cannot configure campaign metadata');
   else knownAcceptanceGaps.push(`PUT /api/campaign from a participant returns ${deniedCampaignEdit.status}, rather than reaching campaign authorization`);
@@ -491,6 +495,43 @@ try {
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed active Table session`);
   }
+  await clickText(player.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.character-list button')].some(button=>button.textContent.includes('Mira Vell'))", 'authorized Player A opens Characters during the active session');
+  await clickText(player.sessionId, 'Mira Vell', '.character-list button');
+  await waitForExpression(player.sessionId, "Boolean([...document.querySelectorAll('.character-action-form')].find(form=>form.getAttribute('aria-label')==='Roll Strength Check'))", 'System A declared difficulty input appears in Character UI');
+  const strengthRevisionBeforeValidation = (await (await request('/api/actors/actor-emberfall-01', gmToken)).json()).revision;
+  await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.validity.valueMissing"), true, 'missing System A difficulty is blocked by required input validation');
+  assert.ok(await evaluate(player.sessionId, "document.querySelector('.character-action-form [role=alert]')?.textContent.includes('Difficulty')"), 'missing System A difficulty has understandable inline feedback');
+  assert.equal((await (await request('/api/actors/actor-emberfall-01', gmToken)).json()).revision, strengthRevisionBeforeValidation, 'missing difficulty does not commit an actor revision');
+  await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
+  await cdp('Input.insertText', { text: '31' }, player.sessionId);
+  await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.validity.rangeOverflow"), true, 'out-of-range System A difficulty is blocked');
+  assert.ok(await evaluate(player.sessionId, "document.querySelector('.character-action-form [role=alert]')?.textContent.includes('Difficulty')"), 'out-of-range System A difficulty has understandable validation feedback');
+  assert.equal((await (await request('/api/actors/actor-emberfall-01', gmToken)).json()).revision, strengthRevisionBeforeValidation, 'invalid difficulty does not commit an actor revision');
+  await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
+  await cdp('Input.insertText', { text: '15' }, player.sessionId);
+  await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('strength-check accepted at revision'))", 'valid System A check receives host acceptance feedback');
+  const strengthActorAfterCheck = await (await request('/api/actors/actor-emberfall-01', gmToken)).json();
+  assert.equal(strengthActorAfterCheck.revision, strengthRevisionBeforeValidation + 1, 'accepted System A check commits exactly one actor revision');
+  const activeSessionId = (await (await request('/api/session', gmToken)).json()).current.id;
+  const strengthTimeline = await (await request(`/api/session/${encodeURIComponent(activeSessionId)}/timeline?after=0`, gmToken)).json();
+  const strengthEvents = strengthTimeline.events.filter(event => event.payload?.actionId === 'strength-check');
+  assert.equal(strengthEvents.length, 1, 'one real Character UI submission creates one committed check event');
+  assert.equal(strengthEvents[0].payload.parameters.difficulty, 15, 'host audit records the difficulty explicitly entered in Character UI');
+  const manaBeforeAction = strengthActorAfterCheck.data.resources.mana.current;
+  await pointerClickText(player.sessionId, 'Spend 1 Mana', '.character-view button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('spend-mana accepted at revision'))", 'no-input System A resource action remains a direct usable action');
+  const strengthActorAfterMana = await (await request('/api/actors/actor-emberfall-01', gmToken)).json();
+  assert.equal(strengthActorAfterMana.revision, strengthActorAfterCheck.revision + 1, 'no-input resource action commits once');
+  assert.equal(strengthActorAfterMana.data.resources.mana.current, manaBeforeAction - 1, 'no-input resource action retains its expected effect');
+  await clickText(secondPlayer.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(secondPlayer.sessionId, "document.querySelector('.brick-message')?.textContent.includes('No authorized characters')", 'ungranted Player B cannot open character action controls');
+  assert.equal(await evaluate(secondPlayer.sessionId, "document.querySelectorAll('.character-action-form').length === 0 && !document.body.innerText.includes('Roll Strength Check')"), true, 'unauthorized player UI exposes no check parameters or action control');
+  await clickText(player.sessionId, 'Table', 'nav[aria-label="Applications"] button');
+  await clickText(secondPlayer.sessionId, 'Table', 'nav[aria-label="Applications"] button');
   await clickText(gm.sessionId, 'Pause session', '.table-session-panel button');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Paused'", `${label} sees committed paused Table session`);

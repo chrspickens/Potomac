@@ -60,7 +60,7 @@ export type BrickRenderProps<TData = unknown> = {
   adapter: AuthorizedBrickDataAdapter;
   busy: boolean;
   offline?: boolean;
-  onAction: (actor: Actor, actionId: string) => void;
+  onAction: (actor: Actor, actionId: string, parameters?: Record<string, unknown>) => void;
   onSessionCommand?: (command: 'start' | 'pause' | 'resume' | 'finish', encounter?: { id: string; revision: number }) => void;
   onMoveMapPiece?: (sceneId: string, piece: MapPieceView, point: { x: number; y: number }) => void;
   onOpenApp?: (appId: 'table' | 'characters' | 'encounters' | 'lore' | 'maps', entityId?: string) => void;
