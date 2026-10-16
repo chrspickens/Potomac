@@ -29,10 +29,10 @@ The automated evidence did not establish unauthorized player data, GM-only actio
 
 Run one paced session with a real GM, Player A and Player B using [the checklist](v09-playtest-checklist.md). Record exact wording, elapsed time, confusion/rescue, role, device and viewport for S01–S12. Specifically observe first-run discoverability, credential handoff, preparation-to-live transition, publication/revocation wording, return-to-session recovery, offline uncertainty, touch targets, physical network loss and screen-reader announcements. Capture only fictional content and sanitized screenshots/traces; never commit credentials, raw private campaign data, request bodies or full local paths.
 
-The checklist’s “Finding / follow-up issue template” is the repository’s applicable findings template. The separately requested `docs/v09-playtest-findings-template.md` file is not present on `origin/main`, so this report does not duplicate it.
+Use the repository’s [findings template](v09-playtest-findings-template.md) for any confirmed defect; the [playtest checklist](v09-playtest-checklist.md) links to the same template.
 
 If a defect is observed, create one focused child issue linked to #109 and #110, classify S0–S3, include reproduction/expected/actual/evidence, map it to #111 (GM/session), #112 (player/navigation), or #113 (responsive/keyboard/status), and add a regression test before implementation.
 
 ## Repository/CI note
 
-This working tree contains pre-existing modified evidence and untracked QA artifacts. The current branch is `codex/v08-release-acceptance-98`; after fetching, `origin/main` is `6f0e8e4` and is not an ancestor of this branch. No rebase, merge, PR, issue mutation, or automatic merge was performed. Re-run this report from a clean branch based on the current `main` before release sign-off, then verify the resulting GitHub Actions run.
+The automated run provenance above is historical: it ran from acceptance checkout commit `a4bd781`. This report is published from clean PR branch `codex/v09-playtest-report`, based on `origin/main` commit `6f0e8e4`, with no pre-existing evidence or QA artifacts transferred. PR #118’s GitHub Actions must remain green before release sign-off; no merge is implied by this report.
