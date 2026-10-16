@@ -488,6 +488,8 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent === 'Start Table session' && !document.querySelector('.session-strip[aria-label=\"Table workflow\"] button').disabled", 'GM Table workflow start control enabled for active encounter');
   assert.equal(await evaluate(player.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent || ''"), '', 'player Table workflow has no GM start control');
   await clickText(gm.sessionId, 'Start Table session', '.session-strip[aria-label="Table workflow"] button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session started.'", 'GM receives start confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session started.', 'GM sees consistent start confirmation');
   const startedSession = await (await request('/api/session', gmToken)).json();
   assert.equal(startedSession.current.status, 'active', 'workflow banner creates an authoritative active session');
   assert.equal(startedSession.current.encounterId, createdEncounter.id, 'workflow banner starts the selected encounter');
@@ -540,11 +542,17 @@ try {
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Paused'", `${label} sees committed paused Table session`);
   }
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session paused.'", 'GM receives pause confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session paused.', 'GM sees correctly worded pause confirmation');
   await clickText(gm.sessionId, 'Resume session', '.table-session-panel button');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
   }
-  assert.equal(await evaluate(player.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.')"), true, 'player Table view has no GM session controls');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session resumed.'", 'GM receives resume confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session resumed.', 'GM sees correctly worded resume confirmation');
+  for (const [label, client] of [['Player A', player], ['Player B', secondPlayer]]) {
+    assert.equal(await evaluate(client.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.') && ![...document.querySelectorAll('.table-session-panel button')].some(button=>/Start session|Pause session|Resume session|End session/.test(button.textContent))"), true, `${label} has no GM session controls`);
+  }
   await clickText(gm.sessionId, 'Return to preparation');
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .active-encounter h2')?.textContent === 'Edited Acceptance Encounter'", 'GM returns to the active encounter preparation while session remains active');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').length === 2", 'active encounter offers non-mutating Open Table re-entry');
@@ -916,6 +924,13 @@ try {
   // Do not mark acceptance as successful while a requirement has only been
   // logged as a gap. Every gap is now a hard failure in pnpm check / CI.
   assert.deepEqual(knownAcceptanceGaps, [], 'all required campaign acceptance steps must pass');
+
+  await clickText(gm.sessionId, 'Table', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.table-session-panel button')].some(button=>button.textContent==='End session')", 'GM can finish the session after the rest of the active-session acceptance flow');
+  await clickText(gm.sessionId, 'End session', '.table-session-panel button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session ended.'", 'GM receives finish confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session ended.', 'GM sees consistent finish confirmation');
+  assert.equal((await (await request('/api/session', gmToken)).json()).current.status, 'finished', 'finish feedback follows the committed authoritative session transition');
 
   console.log('PASS: fresh campaign setup/configuration; schema-valid character creation by API and UI; action-based character edits; participant enrollment and character grants by API and UI; encounter create/edit, participant assignment and encounter-app activation; three isolated browsers exercise Table roster projections and session start/pause/resume; player permission denials; two-player/member visibility isolation; host restart persistence for campaign, encounter context, characters and grants; dashboard layout, browser reload, action activity and secret redaction.');
   console.log('PASS: versioned backup/restore, campaign pin, encounter participants and corruption rejection.');
