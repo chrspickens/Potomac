@@ -1,4 +1,5 @@
 import type { SystemModule } from "@potomac/contracts";
+export * from "./v2.js";
 
 export class ModuleRegistry {
   private readonly modules = new Map<string, SystemModule>();

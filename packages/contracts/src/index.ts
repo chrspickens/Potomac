@@ -1,6 +1,47 @@
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
+export type CapabilityId = string;
+export type SemVer = `${number}.${number}.${number}`;
+export type CapabilityDigest = `sha256:${string}`;
+export type CapabilityKind = "module" | "library" | "resolver" | "entity" | "ui";
+export type CapabilityTrust = "bundled-trusted" | "declarative-untrusted" | "reviewed-handler";
+export type CapabilityContractRef = { id: CapabilityId; apiVersion: SemVer };
+export type CapabilityDependency = {
+  id: CapabilityId;
+  apiRange: string;
+  optional: boolean;
+  reason?: string;
+  compatibleWith?: CapabilityId[];
+};
+export type CapabilityConflict = { id: CapabilityId; apiRange?: string; reason: string };
+export type CapabilityManifest = {
+  formatVersion: 2;
+  id: CapabilityId;
+  api: CapabilityContractRef;
+  implementationVersion: SemVer;
+  digest: CapabilityDigest;
+  kind: CapabilityKind;
+  provides: Array<{ id: CapabilityId; apiVersion: SemVer; optional?: boolean }>;
+  requires: CapabilityDependency[];
+  conflicts?: CapabilityConflict[];
+  trust: CapabilityTrust;
+};
+export type LockedCapability = {
+  id: CapabilityId;
+  apiVersion: SemVer;
+  implementationVersion: SemVer;
+  digest: CapabilityDigest;
+  source: "bundled" | "installed" | "archive";
+  optional: boolean;
+};
+export type CapabilityLock = {
+  lockVersion: 1;
+  campaignId: string;
+  entries: LockedCapability[];
+  rootModule: { id: CapabilityId; version: SemVer; digest: CapabilityDigest };
+};
+
 export type FieldDefinition = {
   path: string;
   label: string;
