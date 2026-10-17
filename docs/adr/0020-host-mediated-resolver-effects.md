@@ -21,23 +21,21 @@ Propose option 3. The host supplies authorized immutable state, intent, recorded
 
 The host must define handler contracts, conflict/isolation semantics, continuation storage and reaction ordering. Third-party executable extensions remain out of scope until a separate security decision; workers may help resource accounting but cannot be called a sandbox. Random transcript confidentiality and reaction deadlines remain critical open decisions.
 
+## Isolated spike evidence
+
+The separate draft PR [#130](https://github.com/chrspickens/Potomac/pull/130), commit `f06307b`, implements an experimental SQLite kernel without importing the V1 host or rules engine. Its nine-test suite demonstrates the following isolated properties:
+
+- Multi-entity effects use expected revisions, deterministic effect ordering, authorization and injected schema/handler validation inside one `BEGIN IMMEDIATE` transaction.
+- Invalid paths, unsupported handlers, non-finite numeric results, unauthorized targets, stale revisions, conflicting paths and later validation failures leave all entities unchanged.
+- Reaction submission, submission record, validated effects, operation receipt with canonical payload hash, terminal window transition and event are committed together. Failure injection after submission, effects, receipt, window transition and event rolls the transaction back.
+- Exact operation retries return the original receipt; the same operation ID with a different canonical payload hash is rejected.
+- Responder action IDs are checked against per-responder permitted actions. The prototype covers submission ordering, decline, expiry, duplicate/terminal retries, disconnected pending retry and stale continuation effects.
+- A pending continuation survives SQLite close/reopen and resumes using an injected host clock.
+
+These are proven properties of the isolated prototype and its SQLite tests, not production guarantees. The spike does not prove power-loss durability, filesystem recovery, distributed transactions, V1 authorization integration, shared schema validation, production backup/offline integration, encrypted hidden state, random-transcript persistence, priority-based simultaneous reactions, or final timeout policy.
+
 ## Follow-up / validation
 
-Prototype two resolvers in one module, deterministic transcript replay, handler rejection, cross-entity rollback, permission-filtered reaction windows, reconnect/expiry and GM adjudication audit tests before accepting.
+The isolated PR #130 spike now addresses the earlier P0 separation defect at commit `f06307b`: its nine focused tests cover one SQLite transaction for reaction submission, validated effects, receipt, terminal window state and event, with failure injection at five boundaries. It also covers canonical operation hashes, action eligibility, deterministic prototype ordering, decline, expiry, duplicate/terminal retry, stale revisions and SQLite reopen recovery.
 
-## Spike evidence and required corrections (2026-10-17)
-
-Experimental [PR #130](https://github.com/chrspickens/Potomac/pull/130) at commit `1c6ecbaa` adds a separate SQLite V2 execution kernel. Its reported six focused tests passed. Source review confirms an explicit `BEGIN IMMEDIATE` transaction, conditional revision updates, effect ordering and persisted operation receipts. An on-disk continuation test closes and reopens SQLite before resolving a reaction. This supports feasibility, **not** acceptance of this ADR or production readiness.
-
-**Critical gap found during code review:** `submitReaction` inserts a reaction submission, calls `applyEffects` (which commits its own transaction), and then separately marks the continuation resolved. Those steps are not one atomic transition. A crash after committing effects but before updating the continuation can leave applied effects with a pending window. Production implementation must atomically persist effects, receipt, reaction acceptance/window transition and relevant events, with recovery tests at each failure boundary. The current six tests do not exercise this crash point.
-
-**Additional correctness gates:**
-
-- Idempotency must bind an operation ID to a canonical intent/effect payload hash; reusing an ID with different content cannot silently return the original receipt.
-- Validate and bind submitted reaction `actionId` to eligible actions and the authenticated principal. The prototype only checks responder inclusion, with authorization delegated to an injected effect callback.
-- Define how multiple pending responders, duplicate submissions and disconnects interact, including canonical ordering and no-op/decline outcomes. A submitted but unresolved reaction must not remain stranded indefinitely.
-- The effect protocol needs full shared runtime schema validation, explicit semantic handler authority, structured paths, finite numeric results and conflict/isolation semantics across multiple effects and target entities.
-- Persist a redacted, access-controlled random/decision transcript and use exact capability digests for replay. Neither is implemented by the spike.
-- Use shared host authorization and backup/offline adapters before integrating the kernel with V1; continue treating third-party executable modules as explicitly trusted only.
-
-**Status stays Proposed.** The spike proves useful isolated invariants but does not establish a crash-atomic reaction lifecycle. This is a blocking test requirement for any production V2 kernel.
+Keep this ADR Proposed. Before architectural approval, a production-oriented implementation must preserve that transaction boundary and add shared host authorization/schema adapters, declared effect-handler conflict/isolation semantics, durable event/replay integration, backup/offline receipts, hidden-state projections, random-transcript persistence, and reviewed reaction priority/timeout/disconnect policy. The spike proves isolated SQLite properties, not power-loss durability, filesystem recovery, distributed coordination or production readiness.

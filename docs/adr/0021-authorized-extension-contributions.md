@@ -21,6 +21,10 @@ Propose option 3. Contributions have stable namespaced IDs, schema versions, dec
 
 Generic persistence and UI adapters must validate descriptor references and supported controls. Missing extensions leave records unavailable/read-only rather than being silently dropped. Backup archives must include descriptors, lock closure, extension records, workflow state and migration history. The minimum schema/UI dialect and query cost limits require implementation experiments.
 
+## Relationship to execution and capability decisions
+
+Commands select resolver and handler references from the exact capability lock described by ADR-0019, then enter the host-mediated transaction boundary described by ADR-0020. A contribution descriptor never authorizes itself, bypasses effect validation, or changes the requirement for idempotent offline receipts and filtered projections. The execution spike demonstrates only the transaction/continuation mechanics, not generic entity persistence, UI safety or migration behavior.
+
 ## Follow-up / validation
 
 Build a starship reactor fixture with a custom entity, command, workflow, sheet and brick. Test GM/player projections, owner/relation authorization, unsafe field/action rejection, offline conflict, migration/restore and shared app/brick command behavior before accepting.

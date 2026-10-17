@@ -21,6 +21,10 @@ Propose option 3. Registration is staged and publishes only after manifest, dige
 
 Backups must carry the lock closure and restore must fail closed on missing/mismatched digests. Garbage collection must retain capabilities referenced by campaigns, archives or pending operations. A signing/trust-root policy remains unresolved and blocks final architecture.
 
+## Relationship to execution and extension decisions
+
+The lock selects the exact resolver/effect-handler implementations used by ADR-0020 and the exact entity/UI descriptors used by ADR-0021. It does not grant those implementations permission to write state; the host execution boundary and contribution authorization remain mandatory. The separate PR #130 spike provides no evidence for lock resolution, dependency selection or digest provenance.
+
 ## Follow-up / validation
 
 Implement manifest/lock validators and tests for parallel versions, optional missing dependencies, conflicts, digest mismatch, staged failure, V1 loading and exact backup restore before accepting this ADR.

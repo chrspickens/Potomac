@@ -26,7 +26,7 @@ Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md
 | V2 contract review | **Draft complete; critical risks unresolved** | RFC covers registry, execution and extensibility alternatives, interfaces, invariants, failure, migration, examples and acceptance tests. |
 | ADR drafts | **Added in this review** | ADR-0019 through ADR-0021 record proposed exact locks, host execution boundary and authorized extension contributions. |
 | Registry implementation | Not started | Small PR 1 criteria in RFC: resolver/lock/conflict/digest/V1 tests. |
-| Resolver/host kernel | Not started | Small PRs 2–4: transcript, handlers, atomicity, continuations and reactions. |
+| Resolver/host kernel | **Isolated evidence complete; production implementation not started** | PR #130 commit `f06307b` passes 9 focused tests for SQLite atomicity, rollback, hashes, action eligibility and continuation recovery. Production adapters and policies remain required. |
 | Extension data/UI plane | Not started | Small PRs 5–6: entities, commands, workflows, migrations, apps/sheets/bricks. |
 | System probes and QA | Not started | Revised 5e-shaped, dice-pool Testbed, starship and third-module fixtures; historical archive/device QA remains separate. |
 
@@ -42,11 +42,43 @@ Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md
 
 Each step remains a small reviewable PR with the specific acceptance criteria in the RFC. Do not mark a phase complete from documentation alone.
 
+## PR #130 evidence boundary
+
+PR #130 is a separate draft spike, not a merge or production integration. The exact commit `f06307b` validates a useful transaction shape: reaction submission, multi-entity effects, receipt, terminal window state and event are one SQLite transaction, with injected failures at five boundaries. It also validates canonical operation-payload hashes, exact retry receipts, per-responder action permissions, deterministic prototype submission order, decline/expiry/duplicate behavior, and restart recovery from a persisted JSON continuation.
+
+Proven only in the isolated kernel: SQLite transaction rollback, statement-level revision checks, injected authorization/schema hooks, JSON/path/numeric validation, operation idempotency, and continuation recovery under the tested reopen scenario. Not proven: production host authorization integration, shared schema contracts, power-loss/filesystem recovery, distributed or multi-process coordination, backup/offline integration, hidden-state encryption/projection, random transcript persistence, priority/simultaneous reaction policy, or final timeout semantics.
+
+## Minimum production-ready V2 scope
+
+Before calling V2 production-ready, implement and test the smallest host-owned set below while leaving V1 unchanged:
+
+1. **Exact capability lock:** stable namespaced ID, API version, implementation version, digest, transitive dependency closure, source/trust tier, and campaign/archive pin. Resolve ranges only during explicit install/pin; never during replay or restore.
+2. **Registry validation:** staged registration, duplicate provider rejection, API incompatibility rejection, explicit conflict rejection, optional-capability fallback declaration, missing-dependency diagnostics, parallel implementation support, and V1 adapter isolation.
+3. **Resolver/effect protocol:** typed resolver references, host-supplied random transcript, bounded semantic outcomes, declared effect handlers, expected revisions for every target, authorization before commit, deterministic ordering, canonical operation hashes and idempotent receipts.
+4. **Atomic host transaction:** validated cross-entity effects, state revisions, operation receipt, audit events and reaction terminal state commit together; crash/restart tests must cover failure boundaries and durable recovery.
+5. **Serializable reactions:** explicit window/action eligibility, deterministic ordering, decline/expiry/disconnect semantics, hidden projections, bounded continuation state and offline/reconnect behavior.
+6. **Compatibility/restore:** V1 fixtures and exact campaign pins remain readable; backups include required V2 lock/provenance and continuation/event data; missing capabilities fail closed without silent conversion.
+
+This is a minimum execution/registry scope, not a complete UI/content platform. Entity/UI contributions, migration tooling and third-party executable extensions remain subsequent work.
+
+## Ordered implementation PR plan
+
+| Order | Focus | Acceptance criteria |
+| --- | --- | --- |
+| 1 | Capability manifest and exact lock | Validates IDs/API/implementation versions/digests; rejects malformed/duplicate/conflicting providers; resolves transitive dependencies; supports parallel versions and V1 adapter; serializes/restores exact locks. |
+| 2 | Pure resolver and effect contracts | Two resolvers in one module; explicit random transcript; typed handlers; bounded proposals; rejection tests for invalid payloads, handlers, targets and budgets. |
+| 3 | Host transaction integration | Shared authorization/schema adapters; multi-entity atomic state/effect/event/receipt commit; stale/conflict/idempotency tests; no V1 path changes. |
+| 4 | Durable continuation/reaction policy | Production persistence, action eligibility, ordering, decline/expiry/disconnect, hidden projections, restart/failure injection and offline receipts. |
+| 5 | Backup/migration compatibility | V1 archive regression, V2 lock/continuation provenance, backup-first migration, unavailable-module read-only/fail-closed behavior. |
+| 6 | Extension entities and UI | Starship-style entity/command/workflow/view/brick with host authorization, safe projections, accessible pending/offline states and migration tests. |
+
+The registry and transaction spike reduce uncertainty but do not satisfy these production acceptance gates. Do not create issues or milestones from this plan yet.
+
 ## Decision status and critical open questions
 
 Proposed, not final: exact lockfiles and digest pinning; separate V2 contract family; host-mediated typed effects; declarative/reviewed handlers only; extension UI as authorized projections; no ruleset switching; explicit migration and backup-first policy.
 
-Critical unresolved choices: third-party executable trust/sandbox model; atomic handler isolation/conflict semantics; dependency provenance/signing roots; hidden random transcript storage; reaction timeout/order/disconnect semantics. High/medium risks and resolution gates are ranked in the RFC. Architecture must not be called final until the first two have executable evidence and the next three have explicit operational decisions.
+Critical unresolved choices: third-party executable trust/sandbox model; production handler isolation/conflict semantics; dependency provenance/signing roots; hidden random transcript storage; reaction priority/timeout/order/disconnect semantics. The spike supplies isolated evidence for transaction shape but does not resolve these production choices. Architecture must not be called final until shared host adapters and the first two production guarantees have executable evidence, followed by explicit operational decisions for the remaining risks.
 
 ## Historical QA preservation
 
