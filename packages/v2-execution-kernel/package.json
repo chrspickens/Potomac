@@ -1,0 +1,6 @@
+{
+  "name": "@potomac/v2-execution-kernel-spike",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test src/index.test.mjs" }
+}
