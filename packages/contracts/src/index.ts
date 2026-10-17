@@ -43,6 +43,7 @@ export type CapabilityLock = {
 };
 export * from "./resolver.js";
 export * from "./effects.js";
+export * from "./reactions.js";
 
 export type FieldDefinition = {
   path: string;
