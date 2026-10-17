@@ -42,6 +42,7 @@ export type CapabilityLock = {
   rootModule: { id: CapabilityId; version: SemVer; digest: CapabilityDigest };
 };
 export * from "./resolver.js";
+export * from "./effects.js";
 
 export type FieldDefinition = {
   path: string;
