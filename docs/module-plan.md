@@ -113,3 +113,11 @@ The earlier separate-commit defect identified in review is corrected in the spik
 **Production follow-ups:** connect shared host authorization/schema adapters; prove behavior across power loss, filesystem recovery, multi-process coordination, backups and offline receipts; define durable/filtered random transcripts and hidden projections; settle reaction priority, simultaneous responses, timeout and disconnect policy; and establish the trusted-module boundary without treating Node workers as a security sandbox. Trusting a local implementation never authorizes arbitrary state changes.
 
 **Suggested approvals:** PR #129 can be reviewed as a proposed architecture with this evidence carried forward. Keep ADR-0020 Proposed and do not mark V2 production-ready until the shared production adapters and operational guarantees have executable evidence. Do not merge PR #130 into the V1 host; keep both PRs as drafts.
+
+## PR #140 registry implementation evidence
+
+PR #140 implements the registry slice of the plan while preserving the V1 `ModuleRegistry` and production host path. The V2 package adds typed manifests, explicit artifact verification, parallel implementation versions, deterministic transitive resolution, optional dependencies, conflict/cycle/incompatible-range rejection, duplicate identity protection, and immutable exact lock validation.
+
+The implementation does not persist V2 locks in campaigns, integrate lock closures into backup/archive export or restore, or implement publisher signing/trust roots. Those remain future work. It also does not add action resolution, effects, reactions, UI, executable module loading, or PR #130 integration.
+
+Focused evidence on the merged branch: `node --experimental-strip-types --test packages/module-registry/src/v2.test.mjs` passes 5/5; direct TypeScript compilation of `packages/contracts` and `packages/module-registry` passes; `git diff --check` passes. The repository workflow is configured for Node 22 and `pnpm check`, but full CI/build evidence must come from GitHub Actions after this merge update.
