@@ -1,9 +1,9 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { createTranscriptStore, executeResolver, resolverManifest } from "./resolver.ts";
+import { createTranscriptStore, executeResolver, resolverManifest, sha256Canonical } from "./resolver.ts";
 
-const digest = (seed) => `sha256:${seed.repeat(64).slice(0, 64)}`;
-const hash = (value) => digest((value.length.toString(16).padStart(2, "0"))[0]);
+const digest = (seed) => sha256Canonical({ seed });
+const hash = (value) => sha256Canonical(JSON.parse(value));
 const ref = (id, version = "1.0.0", d = digest(id[0])) => ({ id, apiVersion: "1.0.0", implementationVersion: version, digest: d });
 const lockFor = (...refs) => ({ lockVersion: 1, campaignId: "campaign-1", entries: refs.map((item) => ({ id: item.id, apiVersion: item.apiVersion, implementationVersion: item.implementationVersion, digest: item.digest, source: "bundled", optional: false })), rootModule: { id: refs[0].id, version: refs[0].implementationVersion, digest: refs[0].digest } });
 const input = (values = [17]) => ({ operationId: "op-1", campaignId: "campaign-1", principalId: "gm-1", logicalTime: "2026-10-17T00:00:00.000Z", state: { secret: "hidden", score: 2 }, input: { difficulty: 10 }, randomness: [{ requestId: "roll-1", kind: "pool", count: values.length, sides: 20, values }] });
@@ -25,8 +25,26 @@ test("replays deterministically and detects changed host inputs", () => {
 });
 
 test("rejects malformed randomness and bounded output", () => {
-  assert.throws(() => executeResolver(d20, { ...input(), randomness: [{ ...input().randomness[0], count: 2, values: [1] }] }, lockFor(d20.ref), hash), /host randomness/);
+  assert.throws(() => executeResolver(d20, { ...input(), randomness: [{ ...input().randomness[0], count: 2, values: [1] }] }, lockFor(d20.ref), hash), /randomness/);
   assert.throws(() => executeResolver({ ref: d20.ref, resolve: () => ({ outcomes: [], effects: Array.from({ length: 65 }, (_, index) => ({ effectId: String(index), handler: "resource.delta", targetId: "actor-1", payload: 1, visibility: "public" })), decisions: [] }) }, input(), lockFor(d20.ref), hash), /output exceeds execution bounds/);
+});
+
+test("rejects campaign mismatch, duplicate random requests, bad draws and tampered transcripts", () => {
+  assert.throws(() => executeResolver(d20, { ...input(), campaignId: "campaign-2" }, lockFor(d20.ref), hash), /campaign identity/);
+  assert.throws(() => executeResolver(d20, { ...input(), randomness: [{ ...input().randomness[0], requestId: "roll-1" }, { ...input().randomness[0], requestId: "roll-1" }] }, lockFor(d20.ref), hash), /duplicate/);
+  assert.throws(() => executeResolver(d20, { ...input(), randomness: [{ requestId: "draw-1", kind: "draw", count: 2, values: [1, 1] }] }, lockFor(d20.ref), hash), /invalid results/);
+  const result = executeResolver(d20, input(), lockFor(d20.ref), hash);
+  const tampered = { ...result.transcript, input: { ...result.transcript.input, state: { secret: "altered" } } };
+  assert.throws(() => result.replay(input(), tampered), /integrity verification/);
+});
+
+test("rejects duplicate output identities, mixed visibility markers and unsupported JSON", () => {
+  const duplicate = { ref: d20.ref, resolve: () => ({ outcomes: [], effects: [], decisions: [{ id: "same", data: 1, visibility: "public" }, { id: "same", data: 2, visibility: "public" }] }) };
+  assert.throws(() => executeResolver(duplicate, input(), lockFor(d20.ref), hash), /decision identity/);
+  const mixed = { ref: d20.ref, resolve: () => ({ outcomes: [{ kind: "mixed", data: { nested: { visibility: "private" } }, visibility: "public" }], effects: [], decisions: [] }) };
+  assert.throws(() => executeResolver(mixed, input(), lockFor(d20.ref), hash), /visibility/);
+  const unsupported = { ref: d20.ref, resolve: () => ({ outcomes: [{ kind: "bad", data: { value: Number.NaN }, visibility: "public" }], effects: [], decisions: [] }) };
+  assert.throws(() => executeResolver(unsupported, input(), lockFor(d20.ref), hash), /finite numbers/);
 });
 
 test("keeps private state, randomness and decisions out of public projections", () => {

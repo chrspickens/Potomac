@@ -3,7 +3,7 @@ import type { CapabilityDigest, CapabilityLock, JsonValue, SemVer } from "./inde
 export type ResolverRef = { id: string; apiVersion: SemVer; implementationVersion: SemVer; digest: CapabilityDigest };
 export type Visibility = "public" | "gm" | "private";
 export type RandomRequest = { requestId: string; kind: "die" | "pool" | "draw"; count: number; sides?: number };
-export type RandomInput = RandomRequest & { values: number[] };
+export type RandomInput = RandomRequest & { values: number[]; visibility?: Visibility };
 export type ResolutionInput = { operationId: string; campaignId: string; principalId: string; logicalTime: string; state: JsonValue; input: JsonValue; randomness: RandomInput[] };
 export type SemanticOutcome = { kind: string; data: JsonValue; visibility: Visibility };
 export type ProposedEffect = { effectId: string; handler: string; targetId: string; payload: JsonValue; visibility: Visibility };
@@ -15,8 +15,8 @@ export type ResolutionTranscript = { transcriptVersion: 1; resolver: ResolverRef
 export type PublicTranscript = Omit<ResolutionTranscript, "input" | "randomness" | "decisions" | "outcomes" | "effects" | "continuation"> & { input: { operationId: string; campaignId: string; logicalTime: string }; randomness: RandomInput[]; decisions: ResolverDecision[]; outcomes: SemanticOutcome[]; effects: ProposedEffect[]; continuation?: ContinuationRequest };
 export type TranscriptProjection = { role: "public" | "gm"; transcript: PublicTranscript };
 export type TranscriptStore = { putPrivate: (transcript: ResolutionTranscript) => void; project: (transcript: ResolutionTranscript, role: "public" | "gm") => TranscriptProjection };
-export type ResolverExecutionLimits = { maxRandomValues: number; maxOutcomes: number; maxEffects: number; maxDecisions: number; maxStateBytes: number; maxInputBytes: number };
+export type ResolverExecutionLimits = { maxRandomValues: number; maxOutcomes: number; maxEffects: number; maxDecisions: number; maxStateBytes: number; maxInputBytes: number; maxJsonDepth: number; maxTranscriptBytes: number };
 export type ResolverExecutionErrorCode = "resolver_mismatch" | "lock_mismatch" | "malformed_input" | "budget_exceeded" | "transcript_mismatch" | "invalid_output";
 export type ResolverExecutionError = { code: ResolverExecutionErrorCode; message: string };
-export type ResolverExecutionResult = { transcript: ResolutionTranscript; replay: (input: ResolutionInput) => void };
+export type ResolverExecutionResult = { transcript: ResolutionTranscript; replay: (input: ResolutionInput, storedTranscript?: ResolutionTranscript) => void };
 export type ResolverCapabilityLock = Pick<CapabilityLock, "lockVersion" | "campaignId" | "entries">;
