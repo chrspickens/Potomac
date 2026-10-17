@@ -71,3 +71,13 @@ This audit does not close existing v0.9/v0.8 usability, human-device/network/acc
 
 **New open decisions:** trusted/bundled versus untrusted/third-party extension runtime, capability manifest shape, dependency locking, deterministic executable continuation model, host-approved state mutation vocabulary, UI contribution isolation, and lifecycle/migration hooks.
 Existing v0.9/v0.8 usability, human-device/network/accessibility and archive/backup evidence remains separate. This review does not claim those checks passed. V1 archive layouts, exact module availability checks, staged restore behavior and browser cache/privacy exclusions remain compatibility requirements.
+
+## Review of experimental PR #130 (2026-10-17)
+
+[Isolated execution-kernel spike](https://github.com/chrspickens/Potomac/pull/130) provides promising evidence for all-or-nothing multi-entity effects and SQLite continuation persistence (six reported focused tests passed). It is not production integration and should remain a separate draft while gaps are resolved.
+
+**New P0 integration blocker:** the prototype's `submitReaction` writes the submission, then commits `applyEffects`, then marks the window resolved in a separate statement. A crash after the effect commit can leave a pending continuation. Require a **single atomic transaction** for effect writes, receipt, submission and terminal window status, with crash/restart injection tests before accepting ADR-0020.
+
+**P1 test/contract follow-ups:** bind operation IDs to canonical payload hashes; validate eligible reaction action and principal; define pending/declined reactions, order and expiry across multiple responders; integrate real host authorization/schema validation; enforce numeric/path constraints; persist and filter transcripts; connect backups and offline receipts. Trusting local module implementations does not authorize arbitrary state changes.
+
+**Suggested approvals:** PR #129 may be accepted as a proposed architecture only after the known limitation is prominently carried forward. Do not merge PR #130 into the V1 host or mark its reaction path crash-safe until the P0 condition is met.
