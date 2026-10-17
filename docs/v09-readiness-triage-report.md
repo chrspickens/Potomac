@@ -1,0 +1,45 @@
+# Potomac v0.9 readiness triage
+
+**AI-assisted evidence review — not human playtest signoff.** This report reconciles the current playtest record and fixes for issues [#119](https://github.com/chrspickens/Potomac/issues/119), [#120](https://github.com/chrspickens/Potomac/issues/120), [#124](https://github.com/chrspickens/Potomac/issues/124), and PR [#123](https://github.com/chrspickens/Potomac/pull/123), all present at main commit `daf2f4adb4be49512df698c98eed74d99ec1c025` (fixes merged through PRs [#121](https://github.com/chrspickens/Potomac/pull/121), [#122](https://github.com/chrspickens/Potomac/pull/122), [#123](https://github.com/chrspickens/Potomac/pull/123), and [#126](https://github.com/chrspickens/Potomac/pull/126)). It supplements, and does not replace, the [S01–S12 checklist](v09-playtest-checklist.md), [AI-simulated exploratory report](v09-ai-simulated-playtest-report.md), and [AI-simulated regression report](v09-ai-simulated-regression-report.md).
+
+## Readiness summary
+
+- No new S0–S3 defect was confirmed in this triage. No speculative issues were opened.
+- PR #126 merged as `daf2f4adb4be49512df698c98eed74d99ec1c025`. Post-merge GitHub Actions Checks run [#38991666964](https://github.com/chrspickens/Potomac/actions/runs/38991666964) on that exact SHA completed successfully. Issue #124 was already closed by the merge; this evidence was added to its issue record.
+- The previously missed #119 collapsed-state activation check passed through the real Chromium UI on a fresh disposable System A campaign at 1424×805. With GM administration collapsed, `elementFromPoint` at the center of **Activate and open Table** returned the button. A real mouse pointer click opened Table and showed **Current encounter: Collapsed Activation Proof**. The campaign and encounter were created through visible UI controls; no API or fixture setup was used for this check.
+- These are automated/UI-agent observations, not a human GM/player walkthrough. Human GM + two-player testing, human System B smoke, physical-device/touch, real-network interruption/recovery, full keyboard-only completion, and screen-reader validation remain **PENDING**. Issues #109 and #110 stay open.
+
+## Parent issue triage
+
+| Parent | Completed evidence | Actionable remaining work | Human-only or deferred scope |
+|---|---|---|---|
+| [#111 GM preparation/session](https://github.com/chrspickens/Potomac/issues/111) | #119 repairs Save and activation hit-target overlap; Save was verified both disclosure states and activation now verified both expanded and collapsed. #126 replaces malformed pause/resume wording; merged regression assertions cover start, pause, resume, finish. | No further code change is justified by present evidence. Obtain a human walkthrough of preparing, updating, activating, running, finishing, and returning to preparation. File only reproducible participant friction. | Whether the two session-start controls should be consolidated or relabeled is a facilitator question until participants demonstrate confusion or duplicate-transition risk. |
+| [#112 player join/navigation](https://github.com/chrspickens/Potomac/issues/112) | #120/#123 provide schema-driven Character action inputs. Automated coverage records invalid inputs rejected without commit, accepted check feedback, actor switching, typed enum values, no-input resource actions, and permission boundaries. Prior UI exploration showed authorized content and return-to-Table paths. | Human Player A/B must independently enroll, locate their own character and shared content, search, leave/return to Table, and explain grant/revocation/offline state. Revisit both players after Lore/map revocation; the earlier exploratory report only verified Player A’s Lore disappearance. | Do not infer discoverability or onboarding success from isolated browser contexts or scripted navigation. Offline copies cannot be reliably erased by revocation; the checklist should capture user understanding rather than promise erasure. |
+| [#113 feedback/responsive/keyboard](https://github.com/chrspickens/Potomac/issues/113) | #124 copy defect is fixed. Automated regression sampled 390×844 CSS pixels without horizontal overflow and observed a visible 2px focus outline. #119 controls now pass pointer-center hit tests. | Run complete keyboard-only tasks and collect participant status/label interpretation; verify touch and reflow on physical devices. Add focused code fixes only for reproduced friction. | Screen-reader announcements/navigation, physical touch/zoom behavior, and human perception remain untested; automation is not an accepted substitute. |
+
+None of the human-only items are recorded as completed or as accepted deferrals. If release scope excludes one, the release owner must explicitly record that deferral and its limitation before signoff.
+
+## Previously observed friction — current disposition
+
+- **Blank character resources render 0/0 HP and Mana:** reproducibly observed in the earlier UI session, but no participant expectation or rule-level failure was established. Ask the GM whether blank should be rejected, explained, or intentionally mean zero; do not change defaults without that evidence.
+- **Two session-start controls:** both appeared in the earlier GM view. No duplicate state transition or harmful consequence was reproduced. Keep as an observation pending human comprehension feedback, not a defect.
+- **“Prepared” search result while a session is active:** could describe encounter lifecycle separately from session lifecycle. No incorrect state was established; ask participants what they infer before changing terminology.
+- **Character form requires scrolling:** the earlier create form extended below the initial viewport. Scrolling reached the submit control; no inaccessible or blocked action was confirmed. Validate with keyboard and physical narrow screens.
+- **Onboarding and navigation:** automated role contexts found some content and returned to Table, but did not measure independent human discoverability, hesitation, or need for coaching. This remains a direct #110/#112 playtest task, not evidence for a new feature request.
+
+## Recommended order and release blockers
+
+1. Complete independent manual QA tracked by [#114](https://github.com/chrspickens/Potomac/issues/114), preserving [#67](https://github.com/chrspickens/Potomac/issues/67), [#68](https://github.com/chrspickens/Potomac/issues/68), and [#88](https://github.com/chrspickens/Potomac/issues/88). Use the checklist’s fresh disposable System A session with separate GM/A/B profiles, then a representative human System B smoke.
+2. Record each participant’s outcome, retries, exact confusion, and whether facilitator assistance was needed. Test both players’ authorized reads after revocation; keep screenshots/traces sanitized.
+3. Perform physical-device/touch, real Wi-Fi/cellular loss and recovery, full keyboard-only, and named screen-reader tasks. Update the corresponding independent QA issues with actual environments/results; leave unperformed checks pending.
+4. Triage only reproducible findings into #111–#113, fix in focused PRs, run `pnpm check`, and verify green post-merge main Actions.
+5. Close #111–#115 or #109/#110 only after their own acceptance criteria are reviewed, human gaps are completed or explicitly accepted by the release owner, and v0.9 limitations/signoff are recorded.
+
+**Release status: NOT READY FOR HUMAN-USABILITY SIGNOFF.** The automated repairs and collapsed-state regression are green, but the human walkthrough, independent QA follow-ups, device/network/accessibility checks, and release-owner acceptance remain open gates. No remote-host or internet-deployment readiness is implied.
+
+## Verification provenance
+
+- Fresh collapsed-state check: actual UI on the main-agent Chromium session, separate browser contexts were created, campaign `Triage Fresh Campaign` pinned to `example.system-a@0.1.0`, encounter `Collapsed Activation Proof`; center hit target was the activation button, and the mouse click opened the corresponding Table context. No credential, screenshot, or raw trace is included.
+- Post-merge CI: GitHub Actions run [#38991666964](https://github.com/chrspickens/Potomac/actions/runs/38991666964), commit `daf2f4adb4be49512df698c98eed74d99ec1c025`, conclusion `success`.
+- Local `pnpm check`: not completed in this clean worktree. `pnpm install --frozen-lockfile` could not fetch packages because registry requests failed with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`; package TLS verification was not weakened. This local environment limitation does not replace or invalidate the green post-merge CI evidence above.
+- Independent lower-cost review: a read-only reviewer mapped #111–#113 acceptance against current reports and merged changes. It independently concluded that no present evidence supports new code defects and that pending manual gates must not be described as deferred or complete.
