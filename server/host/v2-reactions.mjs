@@ -1,0 +1,81 @@
+import { createHash } from 'node:crypto';
+
+const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const VISIBILITY = new Set(['public', 'gm', 'private']);
+const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
+const canonical = value => {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') { if (!Number.isFinite(value)) fail('invalid', 'non-finite value'); return JSON.stringify(value); }
+  if (!value || typeof value !== 'object' || value instanceof Date || value instanceof Map || value instanceof Set) fail('invalid', 'unsupported value');
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  return `{${Object.keys(value).sort().map(key => { if (['__proto__', 'prototype', 'constructor'].includes(key) || value[key] === undefined) fail('invalid', 'unsafe value'); return `${JSON.stringify(key)}:${canonical(value[key])}`; }).join(',')}}`;
+};
+const hash = value => `sha256:${createHash('sha256').update(canonical(value)).digest('hex')}`;
+
+export const V2_REACTION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS v2_reaction_windows (
+ window_id TEXT PRIMARY KEY, parent_operation_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
+ resolver TEXT NOT NULL, lock TEXT NOT NULL, eligible TEXT NOT NULL, ordering TEXT NOT NULL,
+ expires_at TEXT NOT NULL, continuation TEXT NOT NULL, visibility TEXT NOT NULL, status TEXT NOT NULL,
+ resolved_by TEXT, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v2_reaction_submissions (
+ operation_id TEXT PRIMARY KEY, window_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
+ principal_id TEXT NOT NULL, action_id TEXT NOT NULL, input TEXT NOT NULL,
+  decision TEXT NOT NULL, sequence INTEGER NOT NULL, visibility TEXT NOT NULL, request_hash TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v2_reaction_events (
+ event_id TEXT PRIMARY KEY, window_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
+ kind TEXT NOT NULL, visibility TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL
+);`;
+
+const validateWindow = window => {
+  if (!window || !ID.test(window.windowId) || !ID.test(window.parentOperationId) || !ID.test(window.campaignId) || !window.resolver || !Array.isArray(window.eligible) || !['priorityThenSubmission', 'simultaneous'].includes(window.ordering) || !Number.isFinite(Date.parse(window.expiresAt)) || !VISIBILITY.has(window.visibility)) fail('invalid', 'malformed reaction window');
+  if (new Set(window.eligible.map(item => item.principalId)).size !== window.eligible.length || window.eligible.some(item => !ID.test(item.principalId) || !Number.isInteger(item.priority) || !Array.isArray(item.actions) || item.actions.some(action => !ID.test(action.actionId) || !VISIBILITY.has(action.visibility)))) fail('invalid', 'invalid reaction eligibility');
+  canonical(window.continuation); canonical(window.lock); canonical(window.resolver);
+};
+
+export function createV2ReactionKernel({ db, authenticate, authorizeResponder, authorizeGm, validateLock, validateInput = () => undefined, complete, applyEffects, now = () => new Date().toISOString(), failureAt } = {}) {
+  if (!db || typeof authenticate !== 'function' || typeof authorizeResponder !== 'function' || typeof authorizeGm !== 'function' || typeof validateLock !== 'function' || typeof validateInput !== 'function' || typeof complete !== 'function' || typeof applyEffects !== 'function') throw new Error('invalid_reaction_kernel_configuration');
+  db.exec(V2_REACTION_SCHEMA);
+  const row = windowId => db.prepare('SELECT * FROM v2_reaction_windows WHERE window_id=?').get(windowId);
+  const decode = value => ({ windowId: value.window_id, parentOperationId: value.parent_operation_id, campaignId: value.campaign_id, resolver: JSON.parse(value.resolver), lock: JSON.parse(value.lock), eligible: JSON.parse(value.eligible), ordering: value.ordering, expiresAt: value.expires_at, continuation: JSON.parse(value.continuation), visibility: value.visibility, status: value.status });
+  const view = (windowId, role = 'public') => {
+    const stored = row(windowId); if (!stored) return undefined; const window = decode(stored);
+    const submissions = db.prepare('SELECT principal_id, action_id, decision, visibility FROM v2_reaction_submissions WHERE window_id=? ORDER BY sequence').all(windowId).filter(item => role !== 'public' || item.visibility === 'public').map(item => ({ principalId: item.principal_id, actionId: item.visibility === 'public' ? item.action_id : 'hidden', decision: item.decision }));
+    return { windowId, parentOperationId: window.parentOperationId, campaignId: window.campaignId, status: stored.status, expiresAt: window.expiresAt, eligiblePrincipalIds: role === 'public' && window.visibility !== 'public' ? [] : window.eligible.map(item => item.principalId), submissions };
+  };
+  const order = submissions => [...submissions].sort((a, b) => b.priority - a.priority || a.sequence - b.sequence || a.principalId.localeCompare(b.principalId));
+  const transition = (window, status, actor, decision, submissionRows = []) => {
+    const ordered = order(submissionRows); const result = complete({ window, status, actor, decisions: ordered.map(item => ({ principalId: item.principalId, actionId: item.actionId, input: item.input, decision: item.decision })) });
+    if (result?.effects) applyEffects(result.effects, { db, window });
+    if (result?.effects) complete.applyEffects?.(result.effects, { db, window });
+    const eventId = `${window.windowId}:${status}:${actor}`; const publicPayload = window.visibility === 'public' ? { windowId: window.windowId, status } : { windowId: window.windowId, status: 'updated' };
+    db.prepare('INSERT INTO v2_reaction_events(event_id,window_id,campaign_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?)').run(eventId, window.windowId, window.campaignId, `reaction.${status}`, window.visibility, JSON.stringify(publicPayload), now());
+    db.prepare('UPDATE v2_reaction_windows SET status=?, resolved_by=?, updated_at=? WHERE window_id=? AND status=\'pending\'').run(status, actor, now(), window.windowId);
+    if (failureAt === 'after-transition') fail('injected', 'failure after reaction transition');
+    return { windowId: window.windowId, status, eventId, hidden: window.visibility !== 'public' };
+  };
+  const open = window => { validateWindow(window); validateLock(window.campaignId, window.lock, window.resolver); db.prepare('INSERT INTO v2_reaction_windows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(window.windowId, window.parentOperationId, window.campaignId, JSON.stringify(window.resolver), JSON.stringify(window.lock), JSON.stringify(window.eligible), window.ordering, window.expiresAt, JSON.stringify(window.continuation), window.visibility, 'pending', null, now()); return view(window.windowId, 'gm'); };
+  const submit = submission => {
+    if (!submission || !ID.test(submission.operationId) || !ID.test(submission.windowId) || !ID.test(submission.principalId) || !ID.test(submission.actionId) || !['accept', 'decline'].includes(submission.decision)) fail('invalid', 'malformed reaction submission');
+    if (!authenticate(submission.principalId, submission)) fail('unauthorized', 'unauthenticated responder');
+    db.exec('BEGIN IMMEDIATE;');
+    try {
+      const stored = row(submission.windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); validateLock(window.campaignId, window.lock, window.resolver);
+      if (stored.status !== 'pending') { const prior = db.prepare('SELECT request_hash FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); if (prior) { if (prior.request_hash !== hash(submission)) fail('idempotency_conflict', 'operation ID is bound to another submission'); db.exec('COMMIT;'); return view(submission.windowId, 'gm'); } fail('conflict', 'reaction window is terminal'); }
+      if (Date.parse(window.expiresAt) <= Date.parse(now())) { transition(window, 'expired', 'clock', { decision: 'decline' }); db.exec('COMMIT;'); return view(submission.windowId, 'gm'); }
+      const eligible = window.eligible.find(item => item.principalId === submission.principalId); const action = eligible?.actions.find(item => item.actionId === submission.actionId); if (!eligible || !action || !authorizeResponder({ principalId: submission.principalId, window, action })) fail('unauthorized', 'responder or action is not eligible'); validateInput(submission.input, action.inputSchema);
+      const existing = db.prepare('SELECT request_hash, window_id, principal_id FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); const payloadHash = hash(submission); if (existing) { if (existing.request_hash !== payloadHash || existing.window_id !== submission.windowId || existing.principal_id !== submission.principalId) fail('idempotency_conflict', 'operation ID is bound to another submission'); db.exec('COMMIT;'); return view(submission.windowId, 'gm'); }
+      const sequence = db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM v2_reaction_submissions WHERE window_id=?').get(submission.windowId).next;
+      db.prepare('INSERT INTO v2_reaction_submissions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(submission.operationId, submission.windowId, window.campaignId, submission.principalId, submission.actionId, JSON.stringify(submission.input), submission.decision, sequence, action.visibility, payloadHash, now());
+      const submissions = db.prepare('SELECT principal_id AS principalId, action_id AS actionId, input, decision, sequence FROM v2_reaction_submissions WHERE window_id=? ORDER BY sequence').all(submission.windowId).map(item => ({ ...item, priority: window.eligible.find(candidate => candidate.principalId === item.principalId).priority, input: JSON.parse(item.input) }));
+      const ready = window.ordering === 'priorityThenSubmission' || submissions.length === window.eligible.length || submissions.some(item => item.decision === 'decline');
+      const result = ready ? transition(window, submissions.some(item => item.decision === 'decline') ? 'declined' : 'resolved', submission.principalId, submission, submissions) : { windowId: window.windowId, status: 'pending' };
+      if (failureAt === 'after-submission') fail('injected', 'failure after submission'); db.exec('COMMIT;'); return result;
+    } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
+  };
+  const adjudicate = (windowId, principalId, decision = 'accept') => {
+    if (!authenticate(principalId, { windowId }) || !authorizeGm({ principalId, windowId })) fail('unauthorized', 'unauthorized GM adjudication'); db.exec('BEGIN IMMEDIATE;'); try { const stored = row(windowId); if (!stored || stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); const result = transition(decode(stored), decision === 'decline' ? 'declined' : 'resolved', principalId, { decision }); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; } };
+  return { open, submit, adjudicate, view };
+}
