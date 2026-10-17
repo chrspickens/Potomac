@@ -1,4 +1,5 @@
 import type { ActionDefinition, Expression, JsonValue } from "@potomac/contracts";
+export * from "./resolver.js";
 
 const MAX_NODES = 256;
 const MAX_DEPTH = 32;
