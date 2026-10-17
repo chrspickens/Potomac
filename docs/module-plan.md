@@ -39,6 +39,8 @@ Make Potomac genuinely multi-system, not a D&D engine with replaceable labels.
 - [ ] Inventory current security boundaries, validation, deterministic execution budgets, and import trust.
 - [ ] Record paths/tests and concrete gaps in an audit table before calling the RFC ready.
 
+Initial audit findings: [Module architecture audit](rules-module-audit.md).
+
 ## Proposed architecture (hypotheses to validate)
 
 1. **Potomac core:** generic identity, scoped records, authoritative state/operations/events, authorization, sync/offline, attachments/maps primitives, and UI extension hosting.
@@ -54,7 +56,7 @@ Make Potomac genuinely multi-system, not a D&D engine with replaceable labels.
 
 | Phase | Work | Status | Exit evidence |
 | --- | --- | --- | --- |
-| 1A | Audit existing module/runtime/UI/host contracts | **In progress** | Paths, findings, hardcoded assumptions and migration risks documented |
+| 1A | Audit existing module/runtime/UI/host contracts | **In progress — initial findings recorded** | Paths, findings, hardcoded assumptions and migration risks documented |
 | 1B | Draft architecture RFC + concrete TypeScript/JSON contract examples | Not started | Reviewed ADR/RFC, explicit open questions |
 | 2 | Registration/versioning/schema/action lifecycle contracts | Not started | Tests using two incompatible module shapes; no module-specific core branches |
 | 3A | Revised 5e vertical slice | Not started | Attack, hit/miss, damage/resistance, reaction, basic spell and class feature |
