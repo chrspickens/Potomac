@@ -1,7 +1,7 @@
 # V2 Execution Kernel Spike Report
 
-**Date:** 2026-10-17  
-**Branch:** `spike/v2-execution-kernel`  
+**Date:** 2026-10-17
+**Branch:** `spike/v2-execution-kernel`
 **Status:** Experimental evidence; not production behavior
 
 ## Purpose

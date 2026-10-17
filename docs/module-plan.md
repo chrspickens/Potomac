@@ -1,6 +1,6 @@
 # Potomac Rules Modules — Working Plan
 
-**Status:** Draft; V2 execution-kernel spike completed, architecture still provisional  
+**Status:** Draft; V2 execution-kernel spike completed, architecture still provisional
 **Updated:** 2026-10-17
 
 ## Spike status
