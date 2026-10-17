@@ -1,4 +1,5 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useState } from 'react';
+import type { FormEvent } from 'react';
 import type { Activity, Encounter, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 import type { LoreArticle } from '../api.ts';
@@ -7,8 +8,63 @@ import { resolveMapSceneBinding, resolveTableParticipants } from './authorized-a
 import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
 import { MapCanvas } from '../maps-app.tsx';
 import type { MapSceneView } from '../api.ts';
+import { getActionEnumIndex, getActionEnumValue, isSupportedActionEnum } from './action-input-schema.ts';
 
 export const CharacterPreparationContext = createContext<{ encounters: Encounter[]; onLinkEncounter?: (actorId: string, encounterId: string) => void; onReturn?: () => void }>({ encounters: [] });
+
+function ActionControl({ actor, actionId, label, parameters, busy, offline, onAction }: { actor: Actor; actionId: string; label: string; parameters?: Record<string, unknown>; busy: boolean; offline: boolean; onAction: (actor: Actor, actionId: string, parameters?: Record<string, unknown>) => void }) {
+  const action = actor.module.actions.find(item => item.id === actionId);
+  const properties = action?.input?.properties || {};
+  const required = action?.input?.required || [];
+  const hostOnly = Boolean(action?.resolution) || !['selfService', 'gmReview'].includes(action?.policy || '');
+  const [validationMessage, setValidationMessage] = useState('');
+  const fields = Object.entries(properties);
+  const unsupported = fields.find(([, schema]) => Array.isArray(schema.enum)
+    ? !isSupportedActionEnum(schema)
+    : !['string', 'integer', 'number'].includes(schema.type || ''));
+  if (parameters) return <button type="button" disabled={busy || offline && hostOnly} title={offline && hostOnly ? 'Host connection required' : undefined} onClick={() => onAction(actor, actionId, parameters)}>{label}</button>;
+  if (unsupported || required.some(key => !Object.hasOwn(properties, key))) {
+    return <div className="character-action-input-error" role="status">{label} is unavailable because its module input schema cannot be collected safely.</div>;
+  }
+  if (!fields.length) return <button type="button" disabled={busy || offline && hostOnly} title={offline && hostOnly ? 'Host connection required' : undefined} onClick={() => onAction(actor, actionId, {})}>{label}</button>;
+
+  const inputLabel = (key: string, schema?: { title?: string }) => schema?.title || key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ').replace(/^./, value => value.toUpperCase());
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const parameters: Record<string, unknown> = {};
+    for (const [key, schema] of fields) {
+      const control = event.currentTarget.elements.namedItem(key);
+      if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement) || control.value === '') continue;
+      if (Array.isArray(schema.enum)) {
+        const value = getActionEnumValue(schema, control.value);
+        if (value === undefined) continue;
+        parameters[key] = value;
+      } else {
+        parameters[key] = schema.type === 'integer' || schema.type === 'number' ? Number(control.value) : control.value;
+      }
+    }
+    setValidationMessage('');
+    onAction(actor, actionId, parameters);
+  };
+  return <form className="character-action-form" aria-label={label} onSubmit={submit} onInvalidCapture={event => {
+    const control = event.target;
+    if (control instanceof HTMLInputElement && control.name) setValidationMessage(`Check ${inputLabel(control.name, properties[control.name])}: ${control.validationMessage}`);
+  }}>
+    {fields.map(([key, schema]) => {
+      const fieldLabel = inputLabel(key, schema);
+      const requiredField = required.includes(key);
+      const constraints = [requiredField ? 'Required' : '', schema.type === 'integer' ? 'whole number' : schema.type === 'number' ? 'number' : '', schema.minimum !== undefined ? `minimum ${schema.minimum}` : '', schema.maximum !== undefined ? `maximum ${schema.maximum}` : ''].filter(Boolean).join('; ');
+      return <label key={key}>{fieldLabel}{requiredField ? ' *' : ''}{Array.isArray(schema.enum)
+        ? <select name={key} required={requiredField} defaultValue={getActionEnumIndex(schema, schema.default)} aria-describedby={`${actionId}-${key}-hint`}><option value="" disabled>Choose {fieldLabel.toLowerCase()}</option>{schema.enum?.map((value, index) => <option key={index} value={String(index)}>{String(value)}</option>)}</select>
+        : <input name={key} type={schema.type === 'integer' || schema.type === 'number' ? 'number' : 'text'} step={schema.type === 'integer' ? 1 : schema.type === 'number' ? 'any' : undefined} required={requiredField} min={schema.minimum} max={schema.maximum} minLength={schema.minLength} maxLength={schema.maxLength} defaultValue={schema.default === undefined ? '' : String(schema.default)} aria-describedby={`${actionId}-${key}-hint`} />}
+        {schema.description && <small>{schema.description}</small>}
+        <small id={`${actionId}-${key}-hint`}>{constraints || 'Enter a value declared by this action.'}</small>
+      </label>;
+    })}
+    {validationMessage && <p role="alert">{validationMessage}</p>}
+    <button type="submit" disabled={busy || offline && hostOnly} title={offline && hostOnly ? 'Host connection required' : undefined}>{label}</button>
+  </form>;
+}
 
 function declaredBrickDefinition(typeId: string): BrickDefinition<unknown> {
   const definition = getBrickDefinition(typeId);
@@ -21,7 +77,7 @@ function valueAt(source: Record<string, unknown>, path: string): unknown {
     typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined, source);
 }
 
-export function CharacterView({ actor, busy, offline = false, onAction, compact, gm = false, encounters = [], onLinkEncounter }: { actor: Actor; busy: boolean; offline?: boolean; onAction: (actor: Actor, actionId: string) => void; compact?: boolean; gm?: boolean; encounters?: Encounter[]; onLinkEncounter?: (encounterId: string) => void }) {
+export function CharacterView({ actor, busy, offline = false, onAction, compact, gm = false, encounters = [], onLinkEncounter }: { actor: Actor; busy: boolean; offline?: boolean; onAction: (actor: Actor, actionId: string, parameters?: Record<string, unknown>) => void; compact?: boolean; gm?: boolean; encounters?: Encounter[]; onLinkEncounter?: (encounterId: string) => void }) {
   const preparation = useContext(CharacterPreparationContext);
   const encounterOptions = encounters.length ? encounters : preparation.encounters;
   const linkEncounter = onLinkEncounter || ((encounterId: string) => preparation.onLinkEncounter?.(actor.entityId, encounterId));
@@ -39,11 +95,7 @@ export function CharacterView({ actor, busy, offline = false, onAction, compact,
       const ratio = typeof current === 'number' && typeof maximum === 'number' && maximum > 0 ? Math.max(0, Math.min(100, current / maximum * 100)) : 0;
       return <div className="resource" key={`${item.field}-${index}`}><div><span>{item.label}</span><strong>{String(current ?? '—')} / {String(maximum ?? '—')}</strong></div><div className="meter"><i style={{ width: `${ratio}%` }} /></div></div>;
     })}</div>}
-    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => {
-      const action = actor.module.actions.find(value => value.id === item.actionId);
-      const hostOnly = Boolean(action?.resolution) || !['selfService', 'gmReview'].includes(action?.policy || '');
-      return <button type="button" key={`${item.actionId}-${index}`} disabled={busy || offline && hostOnly} title={offline && hostOnly ? 'Host connection required' : undefined} onClick={() => item.actionId && onAction(actor, item.actionId)}>{item.label}</button>;
-    })}</div>}
+    {actions.length > 0 && <div className="action-grid">{actions.map((item, index) => item.actionId && <ActionControl key={`${actor.entityId}-${item.actionId}-${index}`} actor={actor} actionId={item.actionId} label={item.label} parameters={compact ? item.parameters : undefined} busy={busy} offline={offline} onAction={onAction} />)}</div>}
     {gm && actor.secretNote && <div className="gm-note"><b>GM only</b> {actor.secretNote}</div>}
     {gm && !compact && <form className="character-encounter-link" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); linkEncounter(String(data.get('encounterId') || '')) }}><label>Link to encounter<select name="encounterId" defaultValue="" required disabled={busy || offline}><option value="" disabled>Choose an encounter</option>{encounterOptions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button type="submit" disabled={busy || offline || !encounterOptions.length}>Add as participant</button>{!encounterOptions.length && <small>No available encounters.</small>}</form>}
     {gm && !compact && preparation.onReturn && <button type="button" onClick={preparation.onReturn}>Return to encounter preparation</button>}

@@ -114,6 +114,43 @@ async function clickText(sessionId, text, selector = 'button') {
   assert.equal(clicked, true, `Found enabled ${selector} containing “${text}”`);
 }
 
+async function pointerClickText(sessionId, text, selector = 'button') {
+  const target = await evaluate(sessionId, `(() => {
+    const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(item => item.textContent.trim() === ${JSON.stringify(text)});
+    if (!element || element.disabled) return null;
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = element.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return { x, y, hit: hit?.outerHTML.slice(0, 180), receivesPointer: Boolean(hit && (hit === element || element.contains(hit))) };
+  })()`);
+  assert.ok(target, `Found enabled ${selector} exactly matching “${text}”`);
+  assert.equal(target.receivesPointer, true, `Center of “${text}” is not intercepted: ${JSON.stringify(target)}`);
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: target.x, y: target.y }, sessionId);
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: target.x, y: target.y, button: 'left', clickCount: 1 }, sessionId);
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: target.x, y: target.y, button: 'left', clickCount: 1 }, sessionId);
+}
+
+async function pointerClickEncounter(sessionId, encounterName, buttonText) {
+  const target = await evaluate(sessionId, `(() => {
+    const card = [...document.querySelectorAll('.encounter-card')].find(item => item.querySelector('h2')?.textContent.trim() === ${JSON.stringify(encounterName)});
+    const element = [...(card?.querySelectorAll('button') || [])].find(item => item.textContent.trim() === ${JSON.stringify(buttonText)});
+    if (!element || element.disabled) return null;
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = element.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return { x, y, hit: hit?.outerHTML.slice(0, 180), receivesPointer: Boolean(hit && (hit === element || element.contains(hit))) };
+  })()`);
+  assert.ok(target, `Found enabled “${buttonText}” for ${encounterName}`);
+  assert.equal(target.receivesPointer, true, `Center of ${encounterName} “${buttonText}” is not intercepted: ${JSON.stringify(target)}`);
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: target.x, y: target.y }, sessionId);
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: target.x, y: target.y, button: 'left', clickCount: 1 }, sessionId);
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: target.x, y: target.y, button: 'left', clickCount: 1 }, sessionId);
+}
+
 async function waitForExpression(sessionId, expression, label, timeoutMs = 12000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -214,6 +251,10 @@ try {
   assert.deepEqual(freshSetup.encounters, [], 'fresh campaign starts without demo encounters');
   assert.ok(freshSetup.modules.some(module => module.id === 'example.system-a' && module.version === '0.1.0')
     && freshSetup.modules.some(module => module.id === 'example.system-b' && module.version === '0.1.0'), 'fresh campaign has both versioned system modules available');
+  const systemAModule = freshSetup.modules.find(module => module.id === 'example.system-a');
+  assert.deepEqual(systemAModule.actions.find(action => action.id === 'strength-check').input, { type: 'object', properties: { difficulty: { type: 'integer', minimum: 1, maximum: 30 } }, required: ['difficulty'], additionalProperties: false }, 'System A v0.1.0 check parameter contract remains authoritative');
+  assert.equal(systemAModule.view.layout.find(item => item.actionId === 'strength-check').parameters, undefined, 'System A full Character view does not embed a difficulty');
+  assert.deepEqual(systemAModule.view.brick.find(item => item.actionId === 'strength-check').parameters, { difficulty: 12 }, 'existing compact System A Table-brick parameter contract is preserved');
   const deniedCampaignEdit = await request('/api/campaign', legacyPlayerToken, { method: 'PUT', body: jsonBody({ name: 'Denied', systemModuleId: 'example.system-a', systemModuleVersion: '0.1.0', baseRevision: 1 }) });
   if (deniedCampaignEdit.status === 403) assert.equal(deniedCampaignEdit.status, 403, 'participant cannot configure campaign metadata');
   else knownAcceptanceGaps.push(`PUT /api/campaign from a participant returns ${deniedCampaignEdit.status}, rather than reaching campaign authorization`);
@@ -313,18 +354,53 @@ try {
   assert.ok(await evaluate(gm.sessionId, "document.activeElement?.matches(':focus-visible')"), 'Campaign Home controls show keyboard focus');
   await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, gm.sessionId);
   assert.equal(await evaluate(gm.sessionId, "document.documentElement.scrollWidth <= window.innerWidth"), true, 'Campaign Home fits a narrow viewport without horizontal overflow');
-  await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, gm.sessionId);
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1424, height: 805, deviceScaleFactor: 1, mobile: false }, gm.sessionId);
 
   // Exercise configuration through the GM Workspace, not only the host API.
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.campaign-setup input'))", 'GM campaign configuration form');
   await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.campaign-setup input'); field.focus(); field.select(); })()");
   await cdp('Input.insertText', { text: 'The Ashen Road' }, gm.sessionId);
-  await clickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
+  await pointerClickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
   await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent === 'The Ashen Road'", 'GM campaign name update');
   const uiCampaign = await (await request('/api/campaign', gmToken)).json();
   assert.equal(uiCampaign.name, 'The Ashen Road', 'campaign settings UI persists host configuration');
   assert.equal(uiCampaign.systemModuleId, 'example.system-a', 'campaign UI retains the pinned rules module');
   assert.equal(uiCampaign.revision, 3, 'campaign UI uses revision-checked writes');
+
+  await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.campaign-setup input'); field.focus(); field.select(); })()");
+  await cdp('Input.insertText', { text: 'The Ashen Road Revised' }, gm.sessionId);
+  await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open"), true, 'GM administration expands through its visible disclosure');
+  await pointerClickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent === 'The Ashen Road Revised'", 'campaign save works with GM administration expanded');
+  const expandedAdminCampaign = await (await request('/api/campaign', gmToken)).json();
+  assert.equal(expandedAdminCampaign.name, 'The Ashen Road Revised', 'center pointer click persists campaign name while GM administration is expanded');
+  assert.equal(expandedAdminCampaign.systemModuleId, 'example.system-a', 'expanded-panel campaign save preserves the pinned module');
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, gm.sessionId);
+  assert.equal(await evaluate(gm.sessionId, 'document.documentElement.scrollWidth <= window.innerWidth'), true, 'Campaign Home and expanded GM administration have no horizontal overflow at 390px');
+  await evaluate(gm.sessionId, "document.body.focus(); document.activeElement.blur()");
+  let adminSummaryFocusedByKeyboard = false;
+  for (let index = 0; index < 30 && !adminSummaryFocusedByKeyboard; index += 1) {
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab' }, gm.sessionId);
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab' }, gm.sessionId);
+    adminSummaryFocusedByKeyboard = await evaluate(gm.sessionId, "document.activeElement === document.querySelector('.gm-admin summary')");
+  }
+  assert.equal(adminSummaryFocusedByKeyboard, true, 'GM administration disclosure is reachable by keyboard navigation');
+  assert.equal(await evaluate(gm.sessionId, "document.activeElement?.matches(':focus-visible')"), true, 'GM administration disclosure has visible keyboard focus');
+  assert.notEqual(await evaluate(gm.sessionId, "getComputedStyle(document.querySelector('.gm-admin summary')).outlineStyle"), 'none', 'GM administration keyboard focus has a visible outline');
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space' }, gm.sessionId);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space' }, gm.sessionId);
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open"), false, 'keyboard Space collapses GM administration');
+  assert.equal(await evaluate(gm.sessionId, 'document.documentElement.scrollWidth <= window.innerWidth'), true, 'collapsed GM administration has no horizontal overflow at 390px');
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space' }, gm.sessionId);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space' }, gm.sessionId);
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open"), true, 'keyboard Space expands GM administration');
+  await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.campaign-setup input'); field.focus(); field.select(); })()");
+  await cdp('Input.insertText', { text: 'The Ashen Road Narrow' }, gm.sessionId);
+  await pointerClickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent === 'The Ashen Road Narrow'", 'campaign save remains clickable at 390px with administration expanded');
+  await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, gm.sessionId);
 
   const gmProjectionResponse = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } });
   const gmProjection = await gmProjectionResponse.json();
@@ -412,6 +488,8 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent === 'Start Table session' && !document.querySelector('.session-strip[aria-label=\"Table workflow\"] button').disabled", 'GM Table workflow start control enabled for active encounter');
   assert.equal(await evaluate(player.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent || ''"), '', 'player Table workflow has no GM start control');
   await clickText(gm.sessionId, 'Start Table session', '.session-strip[aria-label="Table workflow"] button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session started.'", 'GM receives start confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session started.', 'GM sees consistent start confirmation');
   const startedSession = await (await request('/api/session', gmToken)).json();
   assert.equal(startedSession.current.status, 'active', 'workflow banner creates an authoritative active session');
   assert.equal(startedSession.current.encounterId, createdEncounter.id, 'workflow banner starts the selected encounter');
@@ -419,15 +497,62 @@ try {
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed active Table session`);
   }
+  await clickText(player.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.character-list button')].some(button=>button.textContent.includes('Mira Vell'))", 'authorized Player A opens Characters during the active session');
+  await clickText(player.sessionId, 'Mira Vell', '.character-list button');
+  await waitForExpression(player.sessionId, "Boolean([...document.querySelectorAll('.character-action-form')].find(form=>form.getAttribute('aria-label')==='Roll Strength Check'))", 'System A declared difficulty input appears in Character UI');
+  const strengthRevisionBeforeValidation = (await (await request('/api/actors/actor-emberfall-01', gmToken)).json()).revision;
+  await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.validity.valueMissing"), true, 'missing System A difficulty is blocked by required input validation');
+  assert.ok(await evaluate(player.sessionId, "document.querySelector('.character-action-form [role=alert]')?.textContent.includes('Difficulty')"), 'missing System A difficulty has understandable inline feedback');
+  assert.equal((await (await request('/api/actors/actor-emberfall-01', gmToken)).json()).revision, strengthRevisionBeforeValidation, 'missing difficulty does not commit an actor revision');
+  await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
+  await cdp('Input.insertText', { text: '31' }, player.sessionId);
+  await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');
+  assert.equal(await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.validity.rangeOverflow"), true, 'out-of-range System A difficulty is blocked');
+  assert.ok(await evaluate(player.sessionId, "document.querySelector('.character-action-form [role=alert]')?.textContent.includes('Difficulty')"), 'out-of-range System A difficulty has understandable validation feedback');
+  assert.equal((await (await request('/api/actors/actor-emberfall-01', gmToken)).json()).revision, strengthRevisionBeforeValidation, 'invalid difficulty does not commit an actor revision');
+  await clickText(player.sessionId, 'Acceptance Created Character', '.character-list button');
+  await waitForExpression(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.value === '' && !document.querySelector('.character-action-form [role=alert]')", 'switching character resets same-ID action input and validation state');
+  await clickText(player.sessionId, 'Mira Vell', '.character-list button');
+  await waitForExpression(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]')?.value === '' && !document.querySelector('.character-action-form [role=alert]')", 'returning to the original character starts with a clean action form');
+  await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
+  await cdp('Input.insertText', { text: '15' }, player.sessionId);
+  await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('strength-check accepted at revision'))", 'valid System A check receives host acceptance feedback');
+  const strengthActorAfterCheck = await (await request('/api/actors/actor-emberfall-01', gmToken)).json();
+  assert.equal(strengthActorAfterCheck.revision, strengthRevisionBeforeValidation + 1, 'accepted System A check commits exactly one actor revision');
+  const activeSessionId = (await (await request('/api/session', gmToken)).json()).current.id;
+  const strengthTimeline = await (await request(`/api/session/${encodeURIComponent(activeSessionId)}/timeline?after=0`, gmToken)).json();
+  const strengthEvents = strengthTimeline.events.filter(event => event.payload?.actionId === 'strength-check');
+  assert.equal(strengthEvents.length, 1, 'one real Character UI submission creates one committed check event');
+  assert.equal(strengthEvents[0].payload.parameters.difficulty, 15, 'host audit records the difficulty explicitly entered in Character UI');
+  const manaBeforeAction = strengthActorAfterCheck.data.resources.mana.current;
+  await pointerClickText(player.sessionId, 'Spend 1 Mana', '.character-view button');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('spend-mana accepted at revision'))", 'no-input System A resource action remains a direct usable action');
+  const strengthActorAfterMana = await (await request('/api/actors/actor-emberfall-01', gmToken)).json();
+  assert.equal(strengthActorAfterMana.revision, strengthActorAfterCheck.revision + 1, 'no-input resource action commits once');
+  assert.equal(strengthActorAfterMana.data.resources.mana.current, manaBeforeAction - 1, 'no-input resource action retains its expected effect');
+  await clickText(secondPlayer.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
+  await waitForExpression(secondPlayer.sessionId, "document.querySelector('.brick-message')?.textContent.includes('No authorized characters')", 'ungranted Player B cannot open character action controls');
+  assert.equal(await evaluate(secondPlayer.sessionId, "document.querySelectorAll('.character-action-form').length === 0 && !document.body.innerText.includes('Roll Strength Check')"), true, 'unauthorized player UI exposes no check parameters or action control');
+  await clickText(player.sessionId, 'Table', 'nav[aria-label="Applications"] button');
+  await clickText(secondPlayer.sessionId, 'Table', 'nav[aria-label="Applications"] button');
   await clickText(gm.sessionId, 'Pause session', '.table-session-panel button');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Paused'", `${label} sees committed paused Table session`);
   }
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session paused.'", 'GM receives pause confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session paused.', 'GM sees correctly worded pause confirmation');
   await clickText(gm.sessionId, 'Resume session', '.table-session-panel button');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
   }
-  assert.equal(await evaluate(player.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.')"), true, 'player Table view has no GM session controls');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session resumed.'", 'GM receives resume confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session resumed.', 'GM sees correctly worded resume confirmation');
+  for (const [label, client] of [['Player A', player], ['Player B', secondPlayer]]) {
+    assert.equal(await evaluate(client.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.') && ![...document.querySelectorAll('.table-session-panel button')].some(button=>/Start session|Pause session|Resume session|End session/.test(button.textContent))"), true, `${label} has no GM session controls`);
+  }
   await clickText(gm.sessionId, 'Return to preparation');
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .active-encounter h2')?.textContent === 'Edited Acceptance Encounter'", 'GM returns to the active encounter preparation while session remains active');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').length === 2", 'active encounter offers non-mutating Open Table re-entry');
@@ -584,13 +709,18 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form textarea')?.value === 'Unsaved Encounter A field notes'", 'return from Maps restores Encounter A unsaved summary');
   assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 2, 'return from Maps restores Encounter A unsaved participant selection');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation and Table handoff enabled');
-  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('The Glass Bridge'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Activate and open Table') button.click() })");
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1424, height: 805, deviceScaleFactor: 1, mobile: false }, gm.sessionId);
+  if (await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  await pointerClickEncounter(gm.sessionId, 'The Glass Bridge', 'Activate and open Table');
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('The Glass Bridge')", 'Encounters application hands off to Table with shared context');
+  assert.equal((await (await request('/api/state', gmToken)).json()).context.activeEncounter, 'encounter-a', 'center pointer click from collapsed administration activates the selected encounter in shared context');
   await clickText(gm.sessionId, 'Return to preparation');
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Table returns to encounter preparation without changing context');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');
-  await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Activate and open Table') button.click() })");
+  if (!await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  await pointerClickEncounter(gm.sessionId, 'Edited Acceptance Encounter', 'Activate and open Table');
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Encounters application activates the selected encounter and opens Table');
+  await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
   const uiEncounterActivation = await (await request('/api/state', gmToken)).json();
   assert.equal(uiEncounterActivation.context.activeEncounter, createdEncounter.id, 'Encounters application activation commits shared campaign context');
   const rosterBeforeTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
@@ -637,7 +767,7 @@ try {
   assert.equal(playerLayoutsBefore.groups.some(group => group.name === 'Acceptance Group'), false, 'player layout is independent of GM group creation');
 
   // Pointer move, pointer resize, Escape cancellation and keyboard movement.
-  const handle = await evaluate(gm.sessionId, "(() => { const r=document.querySelector('.brick-drag-handle').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()");
+  const handle = await evaluate(gm.sessionId, "(() => { const e=document.querySelector('.brick-drag-handle'); e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()");
   const initialLayout = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).dashboards.find(d=>d.id===JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).activeDashboardId).bricks[0].layout`);
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...handle }, gm.sessionId);
   await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', ...handle, button: 'left', clickCount: 1 }, gm.sessionId);
@@ -655,14 +785,14 @@ try {
   const movedLayout = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).dashboards.find(d=>d.id===JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).activeDashboardId).bricks[0].layout`);
   assert.notDeepEqual(movedLayout, initialLayout, 'pointer drag commits a changed grid layout');
   assert.ok(Number.isInteger(movedLayout.x) && Number.isInteger(movedLayout.y), 'pointer drag snaps to integer grid coordinates');
-  const resizePoint = await evaluate(gm.sessionId, "(() => { const r=document.querySelector('.brick-resize-handle').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()");
+  const resizePoint = await evaluate(gm.sessionId, "(() => { const e=document.querySelector('.brick-resize-handle'); e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()");
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...resizePoint }, gm.sessionId);
   await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', ...resizePoint, button: 'left', clickCount: 1 }, gm.sessionId);
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: resizePoint.x + 95, y: resizePoint.y + 80, button: 'left' }, gm.sessionId);
   await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: resizePoint.x + 95, y: resizePoint.y + 80, button: 'left', clickCount: 1 }, gm.sessionId);
   await delay(180);
   const resizedLayout = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).dashboards.find(d=>d.id===JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).activeDashboardId).bricks[0].layout`);
-  assert.ok(resizedLayout.w !== movedLayout.w || resizedLayout.h !== movedLayout.h, 'pointer resize changes brick grid dimensions');
+  assert.ok(resizedLayout.w !== movedLayout.w || resizedLayout.h !== movedLayout.h, `pointer resize changes brick grid dimensions: ${JSON.stringify({ movedLayout, resizedLayout, resizePoint })}`);
   assert.ok(Number.isInteger(resizedLayout.w) && Number.isInteger(resizedLayout.h), 'pointer resize snaps to integer grid dimensions');
   const beforeKeyboard = await evaluate(gm.sessionId, `JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).dashboards.find(d=>d.id===JSON.parse(localStorage.getItem(${JSON.stringify(gmState.key)})).activeDashboardId).bricks[0].layout`);
   await evaluate(gm.sessionId, "document.querySelector('[aria-label=\"Move brick right\"]').focus()");
@@ -794,6 +924,13 @@ try {
   // Do not mark acceptance as successful while a requirement has only been
   // logged as a gap. Every gap is now a hard failure in pnpm check / CI.
   assert.deepEqual(knownAcceptanceGaps, [], 'all required campaign acceptance steps must pass');
+
+  await clickText(gm.sessionId, 'Table', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.table-session-panel button')].some(button=>button.textContent==='End session')", 'GM can finish the session after the rest of the active-session acceptance flow');
+  await clickText(gm.sessionId, 'End session', '.table-session-panel button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session ended.'", 'GM receives finish confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session ended.', 'GM sees consistent finish confirmation');
+  assert.equal((await (await request('/api/session', gmToken)).json()).current.status, 'finished', 'finish feedback follows the committed authoritative session transition');
 
   console.log('PASS: fresh campaign setup/configuration; schema-valid character creation by API and UI; action-based character edits; participant enrollment and character grants by API and UI; encounter create/edit, participant assignment and encounter-app activation; three isolated browsers exercise Table roster projections and session start/pause/resume; player permission denials; two-player/member visibility isolation; host restart persistence for campaign, encounter context, characters and grants; dashboard layout, browser reload, action activity and secret redaction.');
   console.log('PASS: versioned backup/restore, campaign pin, encounter participants and corruption rejection.');

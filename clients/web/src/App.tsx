@@ -350,8 +350,7 @@ export default function App() {
     updateDashboard(dashboard.id, item => ({ ...item, bricks: [...item.bricks, brick] }))
     setPicker(false)
   }
-  const act = async (actor: Actor, actionId: string) => {
-    const parameters = actor.module.view.layout.concat(actor.module.view.brick).find(item => item.actionId === actionId)?.parameters || {}
+  const act = async (actor: Actor, actionId: string, parameters: Record<string, unknown> = {}) => {
     setBusy(true); setError(''); setActionState(`Sending ${actionId} for ${actor.name}…`)
     try {
       const declaredAction = actor.module.actions.find(item => item.id === actionId)
@@ -419,7 +418,12 @@ export default function App() {
       const result = await commandSession(command, command === 'start' ? newId() : current!.id, sessionSnapshot?.revision ?? 0, encounter)
       setSessionSnapshot(result)
       if (snapshot) setSnapshot(await host.load(role))
-      setActionState(`Session ${command === 'finish' ? 'ended' : command + 'ed'}.`)
+      setActionState({
+        start: 'Session started.',
+        pause: 'Session paused.',
+        resume: 'Session resumed.',
+        finish: 'Session ended.',
+      }[command])
     } catch (cause) { setError(displayError(cause)) } finally { setBusy(false) }
   }
   const syncPending = async (current: Snapshot) => {
