@@ -10,7 +10,9 @@ export type SemanticEffectProposal = {
   }>;
 };
 export type EffectHandlerDescriptor = EffectHandlerRef & {
-  atomic: true; targetType: string; payloadSchema: JsonValue; conflict: "reject-overlap";
+  atomic: true; targetType: string; payloadSchema: JsonValue; eventSchema: JsonValue; eventKind: string;
+  eventVisibility: EffectVisibility; conflict: "reject-overlap";
 };
+export type EffectMutationProposal = { data: JsonValue; revision: number; event: { kind: string; visibility: EffectVisibility; payload: JsonValue } };
 export type EffectEvent = { eventId: string; operationId: string; effectId: string; entityId: string; kind: string; visibility: EffectVisibility; payload: JsonValue };
 export type EffectReceipt = { operationId: string; payloadHash: CapabilityDigest; status: "applied"; eventIds: string[]; hidden: boolean };

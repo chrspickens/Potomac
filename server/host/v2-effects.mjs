@@ -14,12 +14,23 @@ const canonical = value => {
 const hash = value => `sha256:${createHash('sha256').update(canonical(value)).digest('hex')}`;
 const validateSchema = (value, schema, path = '$') => {
   if (!schema || typeof schema !== 'object') fail('invalid', `${path} has no schema`);
+  const allowed = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'minItems', 'maxItems', 'minLength', 'maxLength', 'minimum', 'maximum', 'enum', 'const']);
+  for (const key of Object.keys(schema)) if (!allowed.has(key)) fail('invalid', `${path} uses unsupported schema keyword ${key}`);
+  if (schema.enum && (!Array.isArray(schema.enum) || !schema.enum.some(candidate => canonical(candidate) === canonical(value)))) fail('invalid', `${path} is not an allowed value`);
+  if (schema.const !== undefined && canonical(schema.const) !== canonical(value)) fail('invalid', `${path} does not match its constant`);
   if (schema.type === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) fail('invalid', `${path} must be an object`);
     for (const key of schema.required || []) if (!Object.hasOwn(value, key)) fail('invalid', `${path}.${key} is required`);
     if (schema.additionalProperties === false) for (const key of Object.keys(value)) if (!Object.hasOwn(schema.properties || {}, key)) fail('invalid', `${path}.${key} is not allowed`);
-    for (const [key, child] of Object.entries(schema.properties || {})) if (Object.hasOwn(value, key)) validateSchema(value[key], child, `${path}.${key}`);
+    if (schema.properties === undefined || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) fail('invalid', `${path}.properties is required`);
+    for (const [key, child] of Object.entries(schema.properties)) if (Object.hasOwn(value, key)) validateSchema(value[key], child, `${path}.${key}`);
     return;
+  }
+  if (schema.type === 'array') {
+    if (!Array.isArray(value)) fail('invalid', `${path} must be an array`);
+    if (schema.items === undefined) fail('invalid', `${path}.items is required`);
+    if (schema.minItems !== undefined && value.length < schema.minItems || schema.maxItems !== undefined && value.length > schema.maxItems) fail('invalid', `${path} has an invalid item count`);
+    value.forEach((item, index) => validateSchema(item, schema.items, `${path}[${index}]`)); return;
   }
   const valid = schema.type === 'string' ? typeof value === 'string' : schema.type === 'integer' ? Number.isInteger(value) : schema.type === 'number' ? typeof value === 'number' && Number.isFinite(value) : schema.type === 'boolean' ? typeof value === 'boolean' : schema.type === 'array' ? Array.isArray(value) : true;
   if (!valid) fail('invalid', `${path} has an invalid type`);
@@ -47,26 +58,25 @@ export function createV2EffectKernel({ db, handlers, authenticate, authorize, va
   if (!db || !Array.isArray(handlers) || typeof authenticate !== 'function' || typeof authorize !== 'function' || typeof validateLock !== 'function') throw new Error('invalid_kernel_configuration');
   const handlerMap = new Map();
   for (const handler of handlers) {
-    if (!handler || handlerMap.has(handler.id) || !ID.test(handler.id) || !DIGEST.test(handler.digest) || handler.atomic !== true || handler.conflict !== 'reject-overlap' || !VISIBILITY.has(handler.targetVisibility || 'public') || typeof handler.apply !== 'function') throw new Error('invalid_handler');
+    if (!handler || handlerMap.has(handler.id) || !ID.test(handler.id) || !DIGEST.test(handler.digest) || handler.atomic !== true || handler.conflict !== 'reject-overlap' || !VISIBILITY.has(handler.targetVisibility || 'public') || !VISIBILITY.has(handler.eventVisibility) || typeof handler.eventKind !== 'string' || typeof handler.apply !== 'function') throw new Error('invalid_handler');
     handlerMap.set(handler.id, handler);
   }
   db.exec(V2_EFFECT_SCHEMA);
-  const readReceipt = operationId => db.prepare('SELECT response, payload_hash FROM v2_effect_receipts WHERE operation_id=?').get(operationId);
+  const readReceipt = operationId => db.prepare('SELECT response, payload_hash, campaign_id, principal_id FROM v2_effect_receipts WHERE operation_id=?').get(operationId);
   const publicEvents = (campaignId, operationId) => db.prepare("SELECT event_id AS eventId, operation_id AS operationId, effect_id AS effectId, entity_id AS entityId, kind, payload FROM v2_effect_events WHERE campaign_id=? AND operation_id=? AND visibility='public' ORDER BY event_id").all(campaignId, operationId).map(row => ({ ...row, payload: JSON.parse(row.payload) }));
   const apply = proposal => {
     if (!proposal || !ID.test(proposal.operationId) || !ID.test(proposal.campaignId) || !ID.test(proposal.principalId) || !ID.test(proposal.moduleId) || !Array.isArray(proposal.effects) || proposal.effects.length === 0) fail('invalid', 'malformed effect proposal');
     const payloadHash = hash(proposal);
     const existing = readReceipt(proposal.operationId);
-    if (existing) { if (existing.payload_hash !== payloadHash) fail('idempotency_conflict', 'operation ID is bound to a different proposal'); return JSON.parse(existing.response); }
     if (!authenticate(proposal.principalId, proposal)) fail('unauthorized', 'unauthenticated principal');
     validateLock(proposal.campaignId, proposal.lock, proposal.moduleId);
+    if (existing) { if (existing.campaign_id !== proposal.campaignId || existing.principal_id !== proposal.principalId || existing.payload_hash !== payloadHash) fail('idempotency_conflict', 'operation ID is bound to a different campaign, principal or proposal'); return JSON.parse(existing.response); }
     const effectIds = new Set(); const targetIds = new Set(); const prepared = [];
     for (const effect of proposal.effects) {
       if (!effect || !ID.test(effect.effectId) || effectIds.has(effect.effectId) || !VISIBILITY.has(effect.visibility) || !effect.target || !ID.test(effect.target.entityId) || !Number.isInteger(effect.target.expectedRevision) || effect.target.expectedRevision < 0 || !VISIBILITY.has(effect.target.visibility) || effect.target.visibility !== effect.visibility) fail('invalid', 'invalid effect identity, target or visibility');
       effectIds.add(effect.effectId); if (targetIds.has(effect.target.entityId)) fail('conflict', 'overlapping effect targets are rejected'); targetIds.add(effect.target.entityId);
       const handler = handlerMap.get(effect.handler.id); if (!handler || handler.apiVersion !== effect.handler.apiVersion || handler.implementationVersion !== effect.handler.implementationVersion || handler.digest !== effect.handler.digest) fail('unsupported', 'handler is not in the trusted host registry');
       validateSchema(effect.payload, handler.payloadSchema);
-      if (!authorize({ principalId: proposal.principalId, campaignId: proposal.campaignId, moduleId: proposal.moduleId, effect, handler })) fail('unauthorized', 'unauthorized principal cannot apply this effect');
       prepared.push({ effect, handler });
     }
     prepared.sort((a, b) => a.effect.effectId.localeCompare(b.effect.effectId));
@@ -75,13 +85,18 @@ export function createV2EffectKernel({ db, handlers, authenticate, authorize, va
       const events = []; const hidden = prepared.some(item => item.effect.visibility !== 'public');
       for (const { effect, handler } of prepared) {
         const entity = db.prepare('SELECT entity_type, revision, visibility, data FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(proposal.campaignId, effect.target.entityId);
-        if (!entity || entity.revision !== effect.target.expectedRevision || (entity.visibility !== 'public' && effect.target.visibility === 'public')) fail('stale', 'target revision or visibility changed');
-        const next = handler.apply({ db, entity: { ...entity, data: JSON.parse(entity.data) }, effect: structuredClone(effect) });
+        if (!entity || entity.entity_type !== handler.targetType || entity.revision !== effect.target.expectedRevision || (entity.visibility !== 'public' && effect.target.visibility === 'public')) fail('stale', 'target type, revision or visibility changed');
+        const entitySnapshot = Object.freeze({ entityType: entity.entity_type, revision: entity.revision, visibility: entity.visibility, data: structuredClone(JSON.parse(entity.data)) });
+        if (!authorize({ principalId: proposal.principalId, campaignId: proposal.campaignId, moduleId: proposal.moduleId, effect, handler, entity: entitySnapshot })) fail('unauthorized', 'unauthorized principal or target');
+        const next = handler.apply({ entity: entitySnapshot, effect: structuredClone(effect) });
         if (!next || typeof next.data !== 'object' || !Number.isInteger(next.revision) || next.revision !== entity.revision + 1) fail('invalid', 'handler did not return the next entity revision');
         canonical(next.data);
-        db.prepare('UPDATE v2_effect_entities SET revision=?, data=? WHERE campaign_id=? AND entity_id=? AND revision=?').run(next.revision, JSON.stringify(next.data), proposal.campaignId, effect.target.entityId, entity.revision);
-        const eventId = `${proposal.operationId}:${effect.effectId}`; const eventPayload = next.eventPayload ?? { effectId: effect.effectId };
-        canonical(eventPayload); db.prepare('INSERT INTO v2_effect_events(event_id,operation_id,campaign_id,effect_id,entity_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(eventId, proposal.operationId, proposal.campaignId, effect.effectId, effect.target.entityId, handler.eventKind, effect.visibility, JSON.stringify(eventPayload), now());
+        const event = next.event; if (!event || event.kind !== handler.eventKind || event.visibility !== handler.eventVisibility || event.visibility !== effect.visibility) fail('invalid', 'handler event violates declared visibility or kind');
+        validateSchema(event.payload, handler.eventSchema);
+        const updated = db.prepare('UPDATE v2_effect_entities SET revision=?, data=? WHERE campaign_id=? AND entity_id=? AND revision=?').run(next.revision, JSON.stringify(next.data), proposal.campaignId, effect.target.entityId, entity.revision);
+        if (updated.changes !== 1) fail('conflict', 'unexpected target revision conflict');
+        const eventId = `${proposal.operationId}:${effect.effectId}`;
+        db.prepare('INSERT INTO v2_effect_events(event_id,operation_id,campaign_id,effect_id,entity_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(eventId, proposal.operationId, proposal.campaignId, effect.effectId, effect.target.entityId, event.kind, event.visibility, JSON.stringify(event.payload), now());
         events.push({ eventId, effectId: effect.effectId, entityId: effect.target.entityId, visibility: effect.visibility });
         if (failureAt === 'after-effect') fail('injected', 'failure after effect');
       }
