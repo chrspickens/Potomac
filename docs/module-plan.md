@@ -1,46 +1,52 @@
-# Potomac Rules Modules — Working Plan
+# Potomac Extension Platform V2 — Working Plan
 
-**Status:** Draft / living tracker; documentation-only audit and RFC
+**Status:** Draft / living tracker; implementation-oriented architectural review
 **Updated:** 2026-10-17
-**Target:** Proposed v1.0 modular rules foundation; not an approved milestone
+**Target:** Proposed V2 extension foundation; not final and not an approved milestone
 
 ## Scope and guardrails
 
-Preserve host authority, exact campaign module/version pins, privacy filtering, offline intent reconciliation, stable IDs, idempotency, backup/restore and historical archive QA. This PR changes no runtime behavior, rules engine, milestone or implementation issue.
+This PR is documentation-only. Preserve V1 manifests/actions, exact campaign pins, host authorization and redaction, offline receipts/proposals, backup compatibility and historical archive QA. Do not add runtime behavior, GitHub issues, milestones or a new PR. V2 proposals must not execute untrusted module code; a Node worker is not a security sandbox.
+
+## Review result
+
+The V1 audit confirms three boundaries that require explicit V2 contracts:
+
+- Registry: `packages/module-registry/src/index.ts` is an in-memory ID-only V1 registry and rejects duplicate IDs; it cannot provide campaign lockfiles, digests, optional capabilities or parallel versions.
+- Execution: `packages/rules-engine/src/index.ts` bounds expressions and host rolls but only applies self numeric resource changes; `server/host/index.mjs` owns authorization, persistence, event filtering and V1 dice generation.
+- Extensions: `packages/contracts/src/index.ts` has generic-ish actors/offline/map DTOs, while `clients/web/src/modules.ts` and `workspace/contributions.tsx` still assume fixture-shaped character fields and controls. UI bindings are not permissions.
+
+Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md): exact immutable capability locks; host-owned resolver/effect execution with declarative or reviewed handlers; and host-registered typed extension entities/commands/workflows/UI contributions.
 
 ## Phase status
 
 | Phase | Status | Exit evidence |
 | --- | --- | --- |
-| 1A lifecycle audit | **Complete for current source surface** | `rules-module-audit.md` cites contracts, registry, evaluator, host, web, offline, backups and tests; findings distinguish confirmed gaps from hypotheses. |
-| 1B V2 RFC | **Draft complete for review** | `rules-module-rfc.md` defines proposed interfaces, lifecycle, security, examples, compatibility and migration. |
-| 2 V2 implementation | Not started | Runtime contracts, validators, registry and rejection tests; no system-specific Core branches. |
-| 3A Revised 5e-shaped example | Not started | Architecture examples first; implementation requires separate approved work and content review. |
-| 3B dice-pool Testbed | Not started | Same public contracts with d6 successes, stress and zones. |
-| 4 declarative UI/content | Not started | Schema-driven sheet/action UI with accessibility and permission tests. |
-| 5 isolation/persistence/offline/migration/QA | Not started | Replay, dependency, restore, device/network/accessibility and historical archive evidence. |
+| V1 lifecycle audit | Complete | `rules-module-audit.md` with paths, functions, confirmed findings and hypotheses. |
+| V2 contract review | **Draft complete; critical risks unresolved** | RFC covers registry, execution and extensibility alternatives, interfaces, invariants, failure, migration, examples and acceptance tests. |
+| ADR drafts | **Added in this review** | ADR-0019 through ADR-0021 record proposed exact locks, host execution boundary and authorized extension contributions. |
+| Registry implementation | Not started | Small PR 1 criteria in RFC: resolver/lock/conflict/digest/V1 tests. |
+| Resolver/host kernel | Not started | Small PRs 2–4: transcript, handlers, atomicity, continuations and reactions. |
+| Extension data/UI plane | Not started | Small PRs 5–6: entities, commands, workflows, migrations, apps/sheets/bricks. |
+| System probes and QA | Not started | Revised 5e-shaped, dice-pool Testbed, starship and third-module fixtures; historical archive/device QA remains separate. |
 
-## Confirmed baseline
+## Recommended implementation order
 
-V1 supports JSON fixture manifests, actor schemas/views, action input, bounded expressions, host-generated dice, self numeric resource changes, GM review, exact pins, visibility filtering, offline receipts/proposals and module-aware backups. It does not support general effects, target sets, conditions, reactions, deterministic replay, dependency closure or module-owned initiative/map semantics.
+1. Registry lock and V1 adapter.
+2. Pure resolver protocol with two resolvers in one module.
+3. Host typed-effect transaction kernel.
+4. Serializable continuations/reaction windows.
+5. Extension entities/commands/workflows/migrations and backup closure.
+6. Generic authorized UI contributions and accessibility/offline states.
+7. System probes, campaign isolation and full migration/archive QA.
 
-## Proposed implementation order after review
+Each step remains a small reviewable PR with the specific acceptance criteria in the RFC. Do not mark a phase complete from documentation alone.
 
-1. Freeze V2 terminology and compatibility rules; add ADRs only after review decisions are accepted.
-2. Add contracts and validators with success/rejection tests, retaining V1 unchanged.
-3. Add exact-version dependency resolution and provenance.
-4. Add a pure bounded evaluator with explicit random transcripts and typed proposed effects.
-5. Add host transaction/event/reaction persistence and redacted projections.
-6. Add offline pending decisions and replay/resume semantics.
-7. Author fixture-only Revised 5e-shaped, dice-pool and third-module probes.
-8. Add UI adapters/accessibility states and shared app/brick command tests.
-9. Add migrations, backup/restore closure and historical archive QA.
+## Decision status and critical open questions
 
-## Proposed decisions and open questions
+Proposed, not final: exact lockfiles and digest pinning; separate V2 contract family; host-mediated typed effects; declarative/reviewed handlers only; extension UI as authorized projections; no ruleset switching; explicit migration and backup-first policy.
 
-Working direction: V2 is a separate contract family; modules are declarative by default; host owns authorization, visibility, randomness, ordering, budgets and commits; campaigns remain pinned; GM override is explicit/audited; V1 fixtures remain readable. These are proposed constraints, not accepted ADRs.
-
-Open: dependency signatures/provenance, validator dialect, random transcript confidentiality, reaction timeout/order, handler review, UI minimum, content licensing, migration policy and whether maps expose geometry or only generic references.
+Critical unresolved choices: third-party executable trust/sandbox model; atomic handler isolation/conflict semantics; dependency provenance/signing roots; hidden random transcript storage; reaction timeout/order/disconnect semantics. High/medium risks and resolution gates are ranked in the RFC. Architecture must not be called final until the first two have executable evidence and the next three have explicit operational decisions.
 
 ## Historical QA preservation
 
@@ -64,3 +70,4 @@ This audit does not close existing v0.9/v0.8 usability, human-device/network/acc
 **Expanded exit criterion:** a module can contribute a genuinely novel persistent entity, custom authorized commands and a UI workflow without modifying game-specific Core paths. Existing platform permissions, host transactions, event audit and offline policies still apply.
 
 **New open decisions:** trusted/bundled versus untrusted/third-party extension runtime, capability manifest shape, dependency locking, deterministic executable continuation model, host-approved state mutation vocabulary, UI contribution isolation, and lifecycle/migration hooks.
+Existing v0.9/v0.8 usability, human-device/network/accessibility and archive/backup evidence remains separate. This review does not claim those checks passed. V1 archive layouts, exact module availability checks, staged restore behavior and browser cache/privacy exclusions remain compatibility requirements.
