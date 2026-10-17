@@ -1,121 +1,92 @@
-# RFC: Rules Module Architecture and Dual-System Validation
+# Rules Module V2 RFC (proposed)
 
-**Status:** Draft — review and experimental validation required  
-**Date:** 2026-10-17  
-**Tracker:** [Module Plan](module-plan.md)  
-**Scope:** Interfaces and migration design; **no implementation approval or runtime change**.
+**Status:** Draft for architectural review; not implemented
+**Compatibility:** Coexists with V1; this PR proposes no V1 runtime change.
 
-## Problem
+## Contract sketch
 
-Potomac has useful fictional System A and B fixtures, but those alone do not demonstrate that full, distinct rulesets can coexist without making the host and UI D&D-shaped. We need a narrow, versioned module contract supporting both Revised 5e and an original, deliberately different dice-pool/stress/zone system.
-
-## Audited baseline (source-grounded)
-
-| Source | Confirmed behavior | Gap / risk |
-| --- | --- | --- |
-| `packages/contracts/src/index.ts` | `SystemModule` requires `formatVersion`, `id`, `version`, schema, `view.fields` and actions; expression AST supports arithmetic, comparisons and booleans; action effects type only `changeResource`. | No content packs, interruption protocol, extended outcome algebra, or module-defined sheet sections. |
-| `packages/module-registry/src/index.ts` | Register checks format v1, required capabilities and view action references; in-memory map keys by **ID**, rejecting duplicate IDs. | Cannot register multiple versions of a module into this registry simultaneously, though host SQL uses ID+version. |
-| `packages/rules-engine/src/index.ts` | Pure bounded expression evaluator (256 nodes/32 depth), host-supplied validated dice, numeric self-resource updates, preconditions. | No typed damage, targeted effects, reactions, transaction interruption, or success-counting dice pool. |
-| `server/host/index.mjs` | Host generates random rolls, applies the action, and interprets group totals/thresholds. Actors and pinned campaigns store module IDs and versions; host SQL queries modules by both. Actions check actor version/schema and emit applied events. | Host embeds a particular interpretation of dice, action resolution and resource effect execution. Need design separating neutral execution from module rules. |
-| `packages/contracts/src/index.ts` vs `clients/web/src/modules.ts` | Shared `SystemModule.view` uses `fields/actions`; browser's `GameModule.view` has `layout/brick` controls; browser controls include text/stat/resource/actionButton. | Existing public type and browser-loaded representation are not the same shape. Contract evolution must map existing manifests and projections instead of breaking them. |
-| `clients/web/src/fixture-bootstrap.ts`, `clients/web/src/App.tsx` | Fixture seeding filters exactly by campaign ID+version; available module list likewise filters campaign-pinned system; client builds character form from schema and submits versioned offline operations. | Inspect all sheet renderer and map interactions for hidden fixed assumptions. |
-| `server/host/backup.mjs` | Backup schema records `modules(id,version,manifest)`, actor module ID+version and campaign pin. Restore validates referenced modules exist and campaign pin resolves. | New content/library versions and migration provenance must be verified in backups; historical formats cannot be assumed to embed future content packs. |
-
-These observations come from reading the current repository files. An exhaustive call graph and tests audit is outstanding.
-
-## Preliminary boundary (proposed)
-
-**Core owns:** module loading and integrity checks; scoped identity/storage; permission-filtered views; host command authorization; transaction, idempotency, deterministic ordered events; host-generated randomness; map geometry primitives; network/offline reconciliation; audit and backup transport.
-
-**Module owns:** actor and content schemas; rules meaning; roll interpretation; validation and outcomes; resource semantics; conditions; advancement; initiative and turn policy; movement meaning and measurement policy; UI declarations; system-specific state migrations.
-
-**Optional libraries:** versioned, explicit dependencies for damage/conditions, d20, dice-pool, spell-like effects, features, zones and progression. Sharing a library must not force it on other systems.
-
-**Security invariant:** module code never bypasses Core's authentication, visibility, quotas, storage transactions or replay checks.
-
-## Working contract sketch — not existing TypeScript
+The following are proposed TypeScript interfaces, not existing exports. `unknown` is legal only behind a named module validator; it is not a permission or validation shortcut.
 
 ```ts
-type RulesModuleManifestV2 = {
-  formatVersion: 2;
-  id: string;
-  version: string;
-  requires: { potomacApi: string; libraries?: Record<string, string> };
-  provides: {
-    actorSchemas: Record<string, string>;
-    contentSchemas?: Record<string, string>;
-    rulesDefinition: string;
-    views: Record<string, string>;
-    migrations?: string[];
-  };
-};
+type ModuleRef = { id: string; version: string; digest?: string };
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+type Visibility = 'public' | 'gm' | { principals: string[] };
+type TargetRef = { kind: 'actor' | 'scene' | 'zone' | 'entity'; id: string };
 
-type RulesIntent = {
-  operationId: string;
-  campaignId: string;
-  actorId: string;
-  module: { id: string; version: string };
-  expectedRevision: number;
-  actionId: string;
-  input: unknown;
-};
-
-type RuleEvaluation =
-  | { kind: "rejected"; code: string }
-  | { kind: "resolved"; changes: unknown[]; outcomes: unknown[]; events: unknown[] }
-  | { kind: "awaitingChoice"; pendingId: string; eligiblePrincipals: string[];
-      choices: unknown[]; continuation: unknown };
+interface RulesModuleManifestV2 {
+  api: 'potomac.rules.v2'; module: ModuleRef; name: string;
+  capabilities: Array<'actions'|'reactions'|'ui'|'migrations'|'randomness'>;
+  actorSchemas: Array<{ id: string; version: number; schema: Json }>;
+  contentSchemas?: Array<{ id: string; version: number; schema: Json }>;
+  dependencies?: Array<{ id: string; versionRange: string; required: boolean; digest?: string }>;
+  entrypoints: { validateIntent: string; resolve: string; project?: string };
+  ui?: UiDefinitionV2[]; migrations?: MigrationDeclaration[];
+  limits: { maxSteps: number; maxEffects: number; maxEvents: number; maxPendingWindows: number };
+}
+interface ActionIntentV2 {
+  operationId: string; campaignId: string; actorId: string; actionId: string;
+  module: ModuleRef; actorRevision: number; input: Json;
+  targets?: TargetRef[]; expectedContextRevision?: number; offline?: boolean;
+}
+interface RandomRequest { requestId: string; kind: 'die'|'pool'|'draw'; count: number; sides?: number; labels?: string[]; }
+interface RandomResult { requestId: string; values: number[]; source: 'host-csprng'|'recorded'; transcriptHash: string; }
+interface ResolutionContext { state: Json; intent: ActionIntentV2; random: RandomResult[]; now: string; }
+interface ResolutionResult {
+  status: 'resolved'|'pending'|'rejected'; effects: EffectV2[]; events: EventV2[];
+  randomRequests?: RandomRequest[]; window?: ReactionWindow; reasonCode?: string;
+}
+interface EffectV2 {
+  effectId: string; kind: 'set'|'add'|'remove'|'create'|'delete'|'emit';
+  target: TargetRef; path?: string; value?: Json; amount?: number; visibility?: Visibility;
+}
+interface EventV2 { type: string; payload: Json; visibility: Visibility; actorId?: string; }
+interface ReactionWindow {
+  windowId: string; parentOperationId: string;
+  eligible: Array<{ principalId: string; actions: string[] }>;
+  deadline: string; order: 'priority-then-submission'|'module-defined'; state: Json;
+}
+interface UiDefinitionV2 {
+  id: string; kind: 'sheet'|'action-panel'|'brick'; fields: UiField[]; actions: UiAction[];
+}
+interface UiField { path: string; label: string; control: 'text'|'number'|'select'|'resource'|'badge'; readOnly?: boolean; visibleWhen?: Json; }
+interface UiAction { actionId: string; label: string; inputSchema?: Json; offline: 'queue'|'host-only'|'forbidden'; }
+interface MigrationDeclaration { fromSchema: number; toSchema: number; kind: 'declarative'; steps: Json[]; reversible: boolean; }
 ```
 
-These structures deliberately leave changes/outcomes/choices abstract until we test their safety, serialization, validation and access boundaries. A continuation must be serializable, uniquely identified, bounded, persisted and revalidated before resumption. Never persist an executable closure.
+## Lifecycle and authority
 
-### Tentative lifecycle
+The host validates the campaign pin, dependency closure, principal permission, actor revision, input, target visibility and execution budget; asks the module for random requests; generates and records a canonical transcript; runs the resolver with committed state plus that transcript; validates proposed effects; opens a durable reaction window if needed; then atomically commits state, events, receipts and redacted projections. A pending result is resumable by window ID and never commits client-local state.
 
-1. Authorize and validate module-pinned intent and target scopes; reject stale revision.
-2. Ask module to validate mechanics and identify needed rolls and possible response windows.
-3. Host obtains dice/randomness and commits a stable decision record; never let clients choose authoritative random values.
-4. Resolve module-specified outcomes, with explicit pause/response windows for reactions; preserve stable ordering.
-5. Revalidate and atomically persist all changes, events, visibility metadata and receipts; deliver role-filtered projections.
-6. On offline reconnect, reconcile/review commands against current authoritative state; no offline client may finalize combat results.
+The host decides authorization, hidden data, random values, ordering, budgets, transaction boundaries and GM overrides. Modules propose legal actions/effects; they cannot grant access or bypass projections. `module-defined` ordering is valid only with a bounded deterministic priority function; ties use stable IDs and submission sequence. Time is supplied as input. A GM override appends principal, reason, operation/window, prior proposal and module reference; it never rewrites history.
 
-**Needs proof:** durability of paused actions, no leaking hidden mechanical state to unauthorized clients, deterministic replay with recorded randomness, scheduling timeouts or GM override.
+Offline intents retain operation IDs and base revisions. Reconciliation reruns current validation and returns applied, pending review, conflict or rejection. Cached sheets are read-only offline unless an action declares `queue` and can be revalidated.
 
-## Test cases driving the shape
+## Determinism and extension boundary
 
-| Test | Rule-specific requirement | Host-general requirement |
-| --- | --- | --- |
-| Revised 5e basic attack | d20 roll, modifiers, AC, hit/miss, damage | target authorization, audit, atomic result |
-| Fireball | sphere target set, save per target, fire damage, half on save, slot-level scaling | rolls, target visibility, geometry, event sequencing |
-| Shield | reaction eligibility/timing, temporary AC change | durable interruption/choice and resume |
-| Fighter feature | feature grant, resource recharge, attacks per action | versioned feature and resource definitions |
-| Testbed check | pool of d6, count successes, degrees | generic structured roll results |
-| Testbed stress | consequences with non-HP stress and recovery | generic validated state changes |
-| Testbed zones | abstract adjacency/movement | map primitive vs system distance-policy separation |
-| Third tiny module | novel schema and simple action | public contract completeness, no core edits |
+The transcript includes request IDs, die/pool shape, values, source, module reference and hash. Replaying the same committed snapshot, intent, transcript and module digest must produce the same result; mismatches reject. The host enforces AST steps, effects, events, pending windows, payload size and wall-clock limits. No `Math.random()` or mutable global state is allowed.
 
-Sample spells/classes are *validation fixtures* for design, not a claim that copyrighted proprietary rulebook content can be redistributed. Select licensed SRD/open content before shipping actual definitions.
+Start with a documented JSON Schema 2020-12 subset, bounded expression/effect DSL and declarative UI. Exceptional mechanics require a reviewed host capability with a narrow versioned schema and budget. Never execute downloaded JavaScript as a module.
 
-## Backward compatibility strategy (proposed)
+## Worked architectural examples
 
-- Keep existing v1 manifests, module identifiers and exact version pins interpretable, through a versioned adapter if needed; don't silently reinterpret old action outcomes.
-- Introduce new contract alongside current one; prefer explicit migration rather than in-place mutation.
-- Treat saved module definition and dependent rules-library version as part of historic execution provenance.
-- Preserve archive v2/v3/v4/v5 support and do not claim compatibility without real historical archive evidence; track preexisting manual follow-ups separately.
-- Do not enable arbitrary live module swaps or automatic campaign conversion.
+These are architecture examples, not licensed content claims.
 
-## Questions requiring ADR decisions
+- **Attack (Revised 5e-shaped):** intent names attacker, action and target; resolver requests d20 then damage only after hit; proposes public hit/miss and target HP effects; a defensive reaction may suspend before commit.
+- **Fireball (Revised 5e-shaped):** intent names a declared zone/shape; resolver requests damage and per-target saves; proposes visibility-filtered effects. Geometry and save semantics belong to the module.
+- **Shield (Revised 5e-shaped):** a pending window exposes only the triggering summary and eligible defender; acceptance consumes a declared resource and creates a temporary defense effect; host orders and commits reaction/continuation atomically.
+- **Fighter feature (Revised 5e-shaped):** a feature declares trigger, resource cost and effect graph; resolver proposes a modifier/extra action keyed by feature ID/version, without a Core class branch.
+- **Dice-pool success (Testbed):** resolver requests d6s, counts threshold successes, computes degree, and proposes stress/hope or consequence effects. Zones use module-defined adjacency, not square-grid assumptions.
 
-1. Should generic intent/effect schemas use typed operation unions rather than unvalidated `unknown`?
-2. Can a pending reaction be stored as a host-owned continuation with deterministic timeout/GM fallback?
-3. Which module-defined sheet components are declarative vs safe vetted renderers?
-4. How are schema/content dependencies pinned and verified at restore time?
-5. How does system-aware event visibility work when an effect depends on hidden information?
-6. What are minimum execution budgets, trust tiers and safe handler deployment rules?
+Both systems implement the same intent/random/effect/event/UI contracts while differing in actor schema, resource names, pool interpretation, timing and geometry. V1 cannot implement these examples.
 
-## Next audit/implementation tasks
+## Compatibility and migration
 
-- [ ] Finish reading host module loader/bootstrap and action/policy/approval flows with line-level call graph.
-- [ ] Inspect `clients/web/src/workspace/` sheets, scene interaction and offline queue for system assumptions.
-- [ ] Inspect module fixture schemas/actions/views and compare behavioral differences.
-- [ ] Enumerate existing test coverage and identify missing deterministic/reaction/migration cases.
-- [ ] Turn resolved interface decisions into ADRs, then implement a small **parallel V2** contract behind tested version adapters.
+V1 manifests remain loadable by the existing V1 loader/registry and executor. A future campaign record stores an explicit contract family plus exact module ID/version/digest; absent family means V1 for existing rows. V1 fixture modules remain immutable. No live ruleset switch is allowed.
+
+Actors retain stable IDs and V1 versions. Migration is an explicit campaign operation: verify source pin and dependency closure, create a backup, run a bounded declarative transform, validate all actor/content records, append migration/audit events, then change the pin atomically. Missing or incompatible modules leave the campaign readable in its old version and block migration. No automatic V1-to-Revised-5e conversion is implied.
+
+Backups must add contract family, dependency closure, digests, migration history and transcript policy while continuing to restore historical layouts. Restore fails closed when an exact dependency is unavailable and keeps current staging/rollback behavior. Browser layouts, caches and private drafts remain excluded unless a future archive format says otherwise. Historical archive QA and real-device evidence are not satisfied by this RFC.
+
+## Acceptance tests for a future implementation
+
+Test valid/invalid manifests and dependencies; permission and hidden-target rejection; stale revision/idempotency; transcript replay and mismatch; budget exhaustion; reaction ordering/resume/expiry; cross-actor atomic effects; offline retry/conflict; V1 fixture loading; migration backup/failure/restore; and distinct Revised 5e-shaped, Testbed and third-module fixtures. None of these V2 tests exist today.
