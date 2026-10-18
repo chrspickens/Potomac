@@ -54,7 +54,8 @@ async function setInput(name, selector, value) {
   assert.equal(result, true, `input ${selector} is present`);
 }
 async function selectActor(name, actorId) {
-  await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="Attack"]'); const fields=form?.querySelectorAll('select'); if(!fields||fields.length!==2)return false; const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set; setter.call(fields[0],${JSON.stringify(actorId)}); setter.call(fields[1],${JSON.stringify(actorId === 'enemy' ? 'player-a' : 'enemy')}); for(const field of fields)field.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
+  const selected = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="Attack"]'); const fields=form?.querySelectorAll('select'); if(!fields||fields.length!==2)return false; const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set; const values=[${JSON.stringify(actorId)},${JSON.stringify(actorId === 'enemy' ? 'player-a' : 'enemy')}]; for(let index=0;index<2;index++){const option=[...fields[index].options].find(item=>item.textContent===values[index]);if(!option)return false;setter.call(fields[index],option.value);fields[index].dispatchEvent(new Event('change',{bubbles:true}));} return true; })()`);
+  assert.equal(selected, true, 'module actor and target choices are selected');
   const submit = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="Attack"]'); const b=form?.querySelector('button[type="submit"]'); if(!b||b.disabled)return false; b.click(); return true; })()`);
   assert.equal(submit, true, `Attack form is ready for ${actorId}`);
 }
