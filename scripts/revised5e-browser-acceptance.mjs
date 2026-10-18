@@ -66,12 +66,12 @@ async function page(name) {
   await call('Page.enable', {}, sessionId); await call('Runtime.enable', {}, sessionId);
   await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__v2Commands=[]; const original=window.fetch.bind(window); window.fetch=async (input,init={})=>{const response=await original(input,init); if(String(input).includes('/api/v2/commands')){let body;try{body=JSON.parse(init.body)}catch{};window.__v2Commands.push({body,response:await response.clone().json()})} return response}` }, sessionId);
   await call('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-combat` }, sessionId);
-  await wait(name, `document.querySelector('#v2-credential')`, `${name} login page`);
+  await wait(name, `Boolean(document.querySelector('#v2-credential'))`, `${name} login page`);
   return context.browserContextId;
 }
 async function connect(name, credential) {
   await setInput(name, '#v2-credential', credential); await click(name, 'Connect to host');
-  await wait(name, `document.querySelector('.v2-combat-header') || document.querySelector('.v2-setup-card')`, `${name} authenticated`);
+  await wait(name, `Boolean(document.querySelector('.v2-combat-header') || document.querySelector('.v2-setup-card'))`, `${name} authenticated`);
 }
 async function hostReady() {
   const until = Date.now() + 20000;
@@ -98,14 +98,14 @@ try {
   const gmContext = await page('gm'); await connect('gm', 'local-gm');
   if (await evaluate('gm', `Boolean(document.querySelector('.v2-setup-card button')?.textContent.includes('Pin Revised'))`)) await click('gm', 'Pin Revised 5e V2 module');
   await wait('gm', `Boolean(document.querySelector('.v2-setup-card'))`, 'GM setup card');
-  await click('gm', 'Enroll Player A'); await wait('gm', `document.querySelector('[data-player-credential="playerA"]')`, 'Player A enrollment');
+  await click('gm', 'Enroll Player A'); await wait('gm', `Boolean(document.querySelector('[data-player-credential="playerA"]'))`, 'Player A enrollment');
   const playerACredential = await evaluate('gm', `document.querySelector('[data-player-credential="playerA"]').textContent`);
-  await click('gm', 'Enroll Player B'); await wait('gm', `document.querySelector('[data-player-credential="playerB"]')`, 'Player B enrollment');
+  await click('gm', 'Enroll Player B'); await wait('gm', `Boolean(document.querySelector('[data-player-credential="playerB"]'))`, 'Player B enrollment');
   const playerBCredential = await evaluate('gm', `document.querySelector('[data-player-credential="playerB"]').textContent`);
-  await click('gm', 'Create encounter and grant player access'); await wait('gm', `document.querySelector('.v2-actor-grid')`, 'encounter creation');
+  await click('gm', 'Create encounter and grant player access'); await wait('gm', `Boolean(document.querySelector('.v2-actor-grid'))`, 'encounter creation');
   const playerAContext = await page('playerA'); await connect('playerA', playerACredential);
   const playerBContext = await page('playerB'); await connect('playerB', playerBCredential);
-  await wait('playerB', `document.querySelector('.v2-actor-grid')`, 'Player B authorized encounter projection');
+  await wait('playerB', `Boolean(document.querySelector('.v2-actor-grid'))`, 'Player B authorized encounter projection');
   await click('gm', 'Roll initiative and begin');
   await wait('gm', `document.querySelector('.v2-turn-card')?.textContent.includes('Round 1')`, 'initiative committed');
 
@@ -114,11 +114,11 @@ try {
     const current = await evaluate('gm', `document.querySelector('.v2-turn-card strong')?.textContent || ''`);
     const actorId = current.includes('Mira Vale') ? 'player-a' : current.includes('Oren Pike') ? 'player-b' : 'enemy';
     const context = actorId === 'player-a' ? 'playerA' : actorId === 'player-b' ? 'playerB' : 'gm';
-    await wait(context, `document.querySelector('form[aria-label="Attack"]')`, `${context} Attack form`);
+    await wait(context, `Boolean(document.querySelector('form[aria-label="Attack"]'))`, `${context} Attack form`);
     await wait(context, `document.querySelector('.v2-turn-card strong')?.textContent.includes(${JSON.stringify(actorId === 'player-a' ? 'Mira Vale' : actorId === 'player-b' ? 'Oren Pike' : 'Mire Warden')})`, `${context} current turn projection`);
     await selectActor(context, actorId);
     if (actorId === 'player-a') { playerAAttacked = true; break; }
-    await wait(context, `document.querySelector('.v2-audit')`, `${context} action settled`);
+    await wait(context, `Boolean(document.querySelector('.v2-audit'))`, `${context} action settled`);
     await wait('gm', `!document.querySelector('.v2-turn-card strong')?.textContent.includes(${JSON.stringify(current.slice(current.indexOf('·') + 2))})`, 'next initiative turn');
   }
   assert.equal(playerAAttacked, true, 'initiative reaches Player A and its browser form submits the attack');
