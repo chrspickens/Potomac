@@ -68,6 +68,9 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     const grantedView = await request('/api/v2/entities/reactor-http', playerB.credential, { headers: { 'x-v2-lock-digest': digest } });
     assert.equal(grantedView.status, 200);
     assert.equal('engineeringLog' in (await grantedView.json()).data, false);
+    host.close();
+    await launch();
+    assert.equal((await request('/api/v2/entities/reactor-http', playerB.credential, { headers: { 'x-v2-lock-digest': digest } })).status, 200, 'the existing actor grant persists through host restart');
 
     const command = { operationId: 'allocate-http', commandId: 'example.starship.reactor.allocate-power', entityId: 'reactor-http', expectedRevision: 1, input: { subsystem: 'propulsion', amount: 12 } };
     const headers = { 'x-v2-lock-digest': digest };
@@ -108,6 +111,7 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     const restoredEntity = await request('/api/v2/entities/reactor-http', playerA.credential, { headers: { 'x-v2-lock-digest': digest } });
     assert.equal(restoredEntity.status, 200);
     assert.equal((await restoredEntity.json()).data.allocations.propulsion, 12);
+    assert.equal((await request('/api/v2/entities/reactor-http', rotatedCredential, { headers: { 'x-v2-lock-digest': digest } })).status, 404, 'revoked entity grants remain revoked after restart');
     assert.deepEqual(await (await jsonRequest('/api/v2/commands', command, 'local-gm', 'POST', headers)).json(), applied, 'receipt remains valid across host restart');
 
     assert.equal((await request(`/api/members/${playerA.memberId}`, 'local-gm', { method: 'DELETE' })).status, 200);

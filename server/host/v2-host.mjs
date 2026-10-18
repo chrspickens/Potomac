@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createV2ExtensionKernel } from './v2-extensions.mjs';
 import { hashV2Json } from './v2-effects.mjs';
 import { starshipCommands, starshipEffectHandlers, starshipEntity, starshipRefs, starshipResolvers, starshipWorkflow } from '../../examples/example.starship/v2/extensions.mjs';
@@ -16,7 +17,8 @@ BEFORE DELETE ON v2_campaign_locks BEGIN SELECT RAISE(ABORT, 'V2 campaign capabi
 
 const ROOT_ID = 'example.starship.system';
 const ROOT_VERSION = '1.0.0';
-const rootDigest = `sha256:${createHash('sha256').update(`${ROOT_ID}@${ROOT_VERSION}:trusted-local-bundle`).digest('hex')}`;
+const bundledModuleSource = readFileSync(new URL('../../examples/example.starship/v2/extensions.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const rootDigest = `sha256:${createHash('sha256').update(bundledModuleSource).digest('hex')}`;
 const rootRef = { id: ROOT_ID, apiVersion: '1.0.0', implementationVersion: ROOT_VERSION, digest: rootDigest };
 const secureEqual = (left, right) => {
   if (typeof left !== 'string' || typeof right !== 'string') return false;
