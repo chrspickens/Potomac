@@ -26,14 +26,17 @@ function makeContribution(): UiContribution {
     entityCapability: revised5eEncounter.capability,
     entitySchemaVersion: revised5eEncounter.schemaVersion,
     entitySchema: revised5eEncounter.schema,
-    commands: revised5eCommands.map(command => ({ commandId: command.commandId, capability: revised5eRefs.commands, inputSchema: command.inputSchema })),
+    commands: revised5eCommands.filter(command => command.commandId !== 'example.revised5e.move').map(command => ({ commandId: command.commandId, capability: revised5eRefs.commands, inputSchema: command.inputSchema })),
   };
 }
 
 const contribution = makeContribution();
+// Movement's array-of-grid-cells input is collected by the module's tactical-grid control below,
+// not by the generic scalar form renderer. Keep every scalar contribution command declarative.
+const declarativeCommands = revised5eCommands.filter(command => command.commandId !== 'example.revised5e.move');
 const catalog: UiDescriptorCatalog = {
   entities: [{ typeId: revised5eEncounter.typeId, schemaVersion: revised5eEncounter.schemaVersion, capability: revised5eEncounter.capability, schema: revised5eEncounter.schema }],
-  commands: revised5eCommands.map((command: ExtensionCommandDescriptor) => ({ commandId: command.commandId, entityTypeId: command.entityTypeId, capability: command.capability, inputSchema: command.inputSchema })),
+  commands: declarativeCommands.map((command: ExtensionCommandDescriptor) => ({ commandId: command.commandId, entityTypeId: command.entityTypeId, capability: command.capability, inputSchema: command.inputSchema })),
   workflows: [],
 };
 
