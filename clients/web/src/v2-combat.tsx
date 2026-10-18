@@ -16,7 +16,7 @@ type V2Event = { eventId: string; operationId: string; entityId: string; kind: s
 type Actor = { id: string; name: string; kind: string; abilityModifiers: Record<string, number>; proficiencyBonus: number; armorClass: number; maximumHitPoints: number; currentHitPoints: number; initiativeModifier: number; weapon: { name: string; damageDie: number; damageType: string; proficient: boolean } };
 type Encounter = UiEntityProjection & { revision: number; data: { title: string; status: string; actors: Actor[]; initiativeOrder: string[]; initiativeRolls: number[]; currentTurnIndex: number; round: number; combatLog: Array<Record<string, unknown>> } };
 function makeContribution(): UiContribution {
-  const source = contributionSource as { contractVersion: 1; contributionId: string; contributionVersion: '1.0.0'; kind: UiContribution['kind']; slots: string[]; workflows: []; nodes: UiContribution['nodes'] };
+  const source = contributionSource as unknown as { contractVersion: 1; contributionId: string; contributionVersion: '1.0.0'; kind: UiContribution['kind']; slots: string[]; workflows: []; nodes: UiContribution['nodes'] };
   return {
     ...source,
     capability: revised5eRefs.ui,
