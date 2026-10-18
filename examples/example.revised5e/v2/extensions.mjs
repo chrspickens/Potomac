@@ -33,7 +33,7 @@ export const revised5eEncounter = {
   schema: object({
     title: { type: 'string', minLength: 1, maxLength: 100 }, status: { type: 'string', enum: ['setup', 'active', 'complete'] },
     actors: { type: 'array', minItems: 3, maxItems: 3, items: actorSchema },
-    grid: object({ width: { type: 'integer', minimum: 1, maximum: 20 }, height: { type: 'integer', minimum: 1, maximum: 20 }, squareFeet: { type: 'integer', const: 5 }, blocked: { type: 'array', maxItems: 20, items: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }) } }),
+    grid: object({ width: { type: 'integer', minimum: 1, maximum: 20 }, height: { type: 'integer', minimum: 1, maximum: 20 }, squareFeet: { type: 'integer', enum: [5] }, blocked: { type: 'array', maxItems: 20, items: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }) } }),
     initiativeOrder: { type: 'array', maxItems: 3, items: stringId }, initiativeRolls: { type: 'array', maxItems: 3, items: { type: 'integer', minimum: 1, maximum: 20 } },
     currentTurnIndex: { type: 'integer', minimum: 0, maximum: 2 }, round: { type: 'integer', minimum: 0, maximum: 10000 },
     actionsUsed: { type: 'array', maxItems: 3, items: stringId },
