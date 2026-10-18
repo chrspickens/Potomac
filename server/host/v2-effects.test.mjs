@@ -60,3 +60,10 @@ test('rejects wrong target types, handler database access assumptions and unsupp
   const malicious = make(); malicious.handler.apply = context => { assert.equal(context.db, undefined); return { data: { ...context.entity.data, score: 4 }, revision: 2, event: { kind: 'resource.changed', visibility: 'public', payload: { effectId: 'effect-1', score: 4 } } }; assert.fail('unreachable'); }; assert.doesNotThrow(() => malicious.kernel.apply(proposal()));
   const unsupported = make(); unsupported.handler.payloadSchema = { type: 'object', additionalProperties: false, properties: {}, patternProperties: {} }; assert.throws(() => unsupported.kernel.apply(proposal()), /unsupported schema keyword/);
 });
+
+test('rejects malformed effect handler payload and event schemas during trusted registry construction', () => {
+  const payload = make(); payload.handler.payloadSchema = { type: 'object', properties: {}, patternProperties: {} };
+  assert.throws(() => createV2EffectKernel({ db: payload.db, handlers: [payload.handler], authenticate: () => true, authorize: () => true, validateLock: () => undefined }), /unsupported schema keyword patternProperties/);
+  const event = make(); event.handler.eventSchema = { type: 'object', properties: {}, additionalProperties: 'anything' };
+  assert.throws(() => createV2EffectKernel({ db: event.db, handlers: [event.handler], authenticate: () => true, authorize: () => true, validateLock: () => undefined }), /additionalProperties must be boolean/);
+});

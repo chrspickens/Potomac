@@ -39,6 +39,10 @@ Still hardcoded or bundled: module discovery and registration; trusted-source an
 
 The source-writing challenge did not proceed past item 1. Items 2–4 are implementation/product boundaries, not something documentation can resolve by inference.
 
+## Follow-up: authoring contract
+
+PR #157 was the evidence-only result of the challenge above. This follow-up publishes the normative contract in [V2 module authoring](v2-module-authoring.md), adds the `pnpm v2:module` validator and starter template, and validates the current Revised 5e, dice-pool, and starter bundles. It also makes the generic host effect kernel reject malformed handler payload/event schemas at registration, with tests. This resolves the documentation-level handler/schema/digest/closure/test recipe blockers for trusted bundled source. The only host change is this rules-neutral validation-timing correction; it does not change the bundled-only loader, bespoke UI routes, trust boundary, or V2 lifecycle gaps listed above. Follow-up validation passed: focused CLI and type-contract tests, `pnpm build`, full `pnpm check` (including V1/V2, generic UI/reaction and both authenticated system browser regressions), and `git diff --check`.
+
 ## Validation and scope
 
 `pnpm check` passed on the post-#156 baseline, including build, listed V1/V2 tests, debug smoke, workspace/campaign/offline/Table/Lore/Maps acceptance, generic V2 UI and reaction browser acceptance, and existing Revised 5e and dice-pool real-host browser regressions. `git diff --check` passed for this documentation change. No module tests or browser acceptance for a third system were run because no third module exists; no mocked acceptance was substituted. The challenge did not alter Revised 5e, dice-pool, Core, host behavior, credentials, or existing V1 behavior. It did not validate independent installation, production identities, migrations, offline V2, multi-process behavior, or marketplace distribution.

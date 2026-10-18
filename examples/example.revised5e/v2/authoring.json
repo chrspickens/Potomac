@@ -1,0 +1,8 @@
+{
+  "digestFiles": ["manifest.json", "extensions.mjs", "ui/combat.json"],
+  "contentDigest": "sha256:d8a631a927bc43ae219c23d02d2aca4471b505e52bd5d479b71cd6029b60811e",
+  "hostDigestFiles": ["manifest.json", "extensions.mjs", "ui/combat.json"],
+  "hostDigest": "sha256:d8a631a927bc43ae219c23d02d2aca4471b505e52bd5d479b71cd6029b60811e",
+  "legacyBundledReferences": true,
+  "uiFiles": ["ui/combat.json"]
+}

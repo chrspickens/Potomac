@@ -6,18 +6,13 @@ This is a status-aware guide, not a promise of a supported third-party plugin AP
 
 Read `AGENTS.md`, `docs/engineering-standards.md`, `docs/architecture.md`, `docs/module-plan.md`, and `docs/rules-module-rfc.md`, then the public V2 declarations in `packages/contracts/src/`. They describe capability references, typed entities/commands, resolvers and host-owned randomness, effect proposals, reactions, and declarative UI nodes. These declarations alone are not yet sufficient to author a loadable module.
 
-## Before writing a module
+## Write and validate trusted source
 
-Resolve these gaps with the platform maintainers rather than guessing from a bundled example:
+Follow [the V2 authoring specification](v2-module-authoring.md) and copy [the starter](../examples/module-starter/v2/README.md). The normative schema subset, effect-handler boundary, digest procedure, exact capability lock construction, and development commands are documented there.
 
-- the concrete effect handler IDs and each handler's payload/event schema;
-- the exact supported schema keywords and validation limits;
-- which files contribute to the module digest and how capability digests are synchronized;
-- how to validate and pin a module lock;
-- module registration/discovery and the focused test harness;
-- how an authorized declarative UI contribution is mounted and how request lock digests are supplied.
+Run `pnpm v2:module digest <module-directory>`, update the module-owned refs/manifests and `authoring.json` using the printed digest, then run `pnpm v2:module validate <module-directory>`. The validator checks the root digest, capability closure, resolver/effect/entity references, and schemas. It imports `extensions.mjs`; use only with source you trust. `pnpm v2:module:test` runs focused contract tests.
 
-Current implementation facts, useful only for a **bundled repository proof**, are catalogued in `docs/third-module-authoring-report.md`. In particular, `server/host/v2-host.mjs` explicitly wires the two examples and the web app uses dedicated V2 routes; copying these steps is not independent installation.
+This validates a source package; it does not pin or alter a campaign. The campaign lock is exact and immutable after pinning. Existing host bootstrap still imports modules explicitly and uses dedicated browser routes. See [V2 integration boundaries](v2-module-integration-boundaries.md) and the historical findings in [the challenge report](third-module-authoring-report.md).
 
 ## Acceptance claims
 
