@@ -13,7 +13,7 @@ const moduleRef = { id: 'example.starship.system', apiVersion: '1.0.0', implemen
 const allRefs = [moduleRef, ...Object.values(starshipRefs)];
 const lock = { lockVersion: 1, campaignId, entries: allRefs.map(ref => ({ ...ref, source: 'bundled', optional: false })), rootModule: { id: moduleRef.id, version: moduleRef.implementationVersion, digest: moduleRef.digest } };
 const data = () => ({ power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: [] });
-const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false } = {}) => {
+const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false, reactionContinuationResolver } = {}) => {
   const path = join(mkdtempSync(join(tmpdir(), 'potomac-v2-extensions-')), 'host.sqlite');
   const db = new DatabaseSync(path);
   let time = '2026-10-17T12:00:00.000Z';
@@ -21,7 +21,7 @@ const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = fa
   let lockReadHook;
   const roles = new Map([['gm-1', 'gm'], ['player-a', 'player'], ['player-b', 'player'], ['player-c', 'player']]);
   const effectHandlers = starshipEffectHandlers.map(handler => ({ ...handler, apply: context => { assert.equal(context.db, undefined); assert.equal(context.transaction, undefined); assert(Object.isFrozen(context.entity.data)); assert(Object.isFrozen(context.effect.payload)); return handler.apply(context); } }));
-  const resolvers = starshipResolvers.map(resolver => ({ ...resolver, resolve: input => { assert.equal(input.db, undefined); assert.equal(input.transaction, undefined); assert(Object.isFrozen(input)); assert(Object.isFrozen(input.state.data)); return resolver.resolve(input); } }));
+  const resolvers = starshipResolvers.map(resolver => ({ ...resolver, resolve: input => { assert.equal(input.db, undefined); assert.equal(input.transaction, undefined); assert(Object.isFrozen(input)); assert(Object.isFrozen(input.state.data)); const output = resolver.resolve(input); return resolver.ref.id === reactionContinuationResolver ? { ...output, continuation: { continuationId: 'pending-reaction-1', state: { privateDetail: 'not projected' }, resumeOn: 'reaction', expiresAt: '2026-10-17T13:00:00.000Z', step: 1 } } : output; } }));
   const kernel = createV2ExtensionKernel({ db, entities: [starshipEntity], commands: starshipCommands, workflows: [starshipWorkflow], effectHandlers, resolvers,
     authenticate: principalId => roles.has(principalId) ? { principalId, role: roles.get(principalId) } : undefined,
     getCampaignLock: id => {
@@ -84,6 +84,16 @@ test('rejects stale revisions and changed-payload retries while exact retries re
   assert.throws(() => kernel.executeCommand(powerRequest({ input: { subsystem: 'propulsion', amount: 8 } })), error => error.code === 'idempotency_conflict');
   assert.throws(() => kernel.executeCommand(powerRequest({ operationId: 'route-2' })), error => error.code === 'stale');
   db.close();
+});
+
+test('rejects reaction continuations before effects because command suspension is not integrated', () => {
+  const command = starshipCommands.find(item => item.commandId === 'example.starship.reactor.allocate-power');
+  const context = make({ reactionContinuationResolver: command.resolver.id }); create(context.kernel);
+  assert.throws(() => context.kernel.executeCommand(powerRequest()), error => error.code === 'unsupported' && /reaction continuations are not integrated/.test(error.message));
+  assert.equal(context.kernel.read(campaignId, 'reactor-1', 'player-a').revision, 1, 'proposed effects remain unapplied');
+  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_receipts WHERE operation_id=?').get('route-1').count, 0, 'a rejected suspension creates no misleading command receipt');
+  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_events WHERE operation_id=?').get('route-1').count, 0, 'a rejected suspension creates no command event');
+  context.db.close();
 });
 
 test('uses typed serialized workflow states, participant authorization, restart recovery and cancellation', () => {

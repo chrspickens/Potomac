@@ -47,3 +47,17 @@ test('supports contrasting narrative interruption and dice-pool decisions throug
   const narrative = make(); narrative.kernel.open(windowFor({ windowId: 'narrative', eligible: [{ principalId: 'player-a', priority: 2, actions: [action('interrupt')] }] }), 'gm-1'); assert.equal(narrative.kernel.submit({ operationId: 'narrative-1', windowId: 'narrative', principalId: 'player-a', actionId: 'interrupt', input: { choice: 'speak' }, decision: 'accept' }).status, 'resolved');
   const pool = make(); pool.kernel.open(windowFor({ windowId: 'pool', eligible: [{ principalId: 'player-a', priority: 2, actions: [action('roll-pool')] }] }), 'gm-1'); assert.equal(pool.kernel.submit({ operationId: 'pool-1', windowId: 'pool', principalId: 'player-a', actionId: 'roll-pool', input: { choice: 'successes:2' }, decision: 'accept' }).status, 'resolved');
 });
+
+test('reaction submission refuses an enclosing command transaction without rolling it back', () => {
+  const value = make();
+  value.kernel.open(windowFor({ eligible: [{ principalId: 'player-a', priority: 1, actions: [action('shield')] }] }), 'gm-1');
+  value.db.exec('CREATE TABLE enclosing_write(value TEXT)');
+  value.db.exec('BEGIN IMMEDIATE');
+  value.db.prepare('INSERT INTO enclosing_write VALUES(?)').run('kept-until-owner-rolls-back');
+  assert.throws(() => value.kernel.submit({ operationId: 'nested-submit', windowId: 'window-1', principalId: 'player-a', actionId: 'shield', input: { choice: 'yes' }, decision: 'accept' }), /cannot be nested/);
+  assert.equal(value.db.isTransaction, true, 'reaction rejection leaves transaction ownership with the caller');
+  assert.equal(value.db.prepare('SELECT COUNT(*) AS count FROM enclosing_write').get().count, 1);
+  value.db.exec('ROLLBACK');
+  assert.equal(value.db.prepare('SELECT COUNT(*) AS count FROM enclosing_write').get().count, 0);
+  assert.equal(value.kernel.view('window-1', 'gm-1').status, 'pending');
+});
