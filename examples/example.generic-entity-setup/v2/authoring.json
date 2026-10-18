@@ -1,0 +1,6 @@
+{
+  "digestFiles": ["manifest.json", "capabilities.json", "extensions.mjs", "ui/entity.json"],
+  "contentDigest": "sha256:f8e987b3dd4c191aca10709165eea94afef87263ff1df040bbbd635efcf46d4e",
+  "capabilitiesFile": "capabilities.json",
+  "uiFiles": ["ui/entity.json"]
+}
