@@ -17,10 +17,10 @@ const host: UiHostContext = {
   lock: starshipUiLock, principalId: 'test-gm', allowedCommandIds: ['example.starship.reactor.allocate-power'],
   submitCommand: async request => { await new Promise(resolve => setTimeout(resolve, 250)); submissions.push(request); window.__v2Submissions = submissions; return { status: 'applied' }; },
 };
-const composed = registry.compose('example.starship.reactor.sheet', {
+const composition = {
   'example.starship.reactor.sheet': { 'example.starship.reactor.controls': ['example.starship.reactor.power-form'] },
-});
-createRoot(document.getElementById('permitted')!).render(<V2UiContributionView experimentalEnabled registry={registry} contributionId={composed.contributionId} entity={entity} host={host} />);
+};
+createRoot(document.getElementById('permitted')!).render(<V2UiContributionView experimentalEnabled registry={registry} contributionId="example.starship.reactor.sheet" composition={composition} entity={entity} host={host} />);
 createRoot(document.getElementById('denied')!).render(<V2UiContributionView experimentalEnabled registry={registry} contributionId="example.starship.reactor.power-form" entity={entity} host={{ ...host, allowedCommandIds: [] }} />);
 window.__v2Submissions = submissions;
 window.__v2Ready = true;
