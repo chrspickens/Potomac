@@ -5,6 +5,7 @@ import { hashV2Json } from './v2-effects.mjs';
 import { starshipCommands, starshipEffectHandlers, starshipEntity, starshipRefs, starshipResolvers, starshipWorkflow } from '../../examples/example.starship/v2/extensions.mjs';
 import { revised5eAuthorizeIntent, revised5eCommands, revised5eEffectHandlers, revised5eEncounter, revised5eRefs, revised5eResolvers } from '../../examples/example.revised5e/v2/extensions.mjs';
 import { interruptionCommands, interruptionEffectHandlers, interruptionEntity, interruptionRefs, interruptionResolvers } from '../../examples/example.interruption/v2/extensions.mjs';
+import { dicepoolAuthorizeIntent, dicepoolCommands, dicepoolEffectHandlers, dicepoolRefs, dicepoolResolvers, dicepoolScene } from '../../examples/example.dicepool/v2/extensions.mjs';
 
 export const V2_HOST_LOCK_SCHEMA = `
 CREATE TABLE IF NOT EXISTS v2_campaign_locks (
@@ -22,6 +23,7 @@ const bundledModules = new Map([
   ['example.starship.system', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.starship/v2/extensions.mjs')).digest('hex')}`, refs: Object.values(starshipRefs) }],
   ['example.revised5e', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.revised5e/v2/manifest.json') + '\n' + source('../../examples/example.revised5e/v2/extensions.mjs') + '\n' + source('../../examples/example.revised5e/v2/ui/combat.json')).digest('hex')}`, refs: Object.values(revised5eRefs) }],
   ['example.interruption', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.interruption/v2/extensions.mjs')).digest('hex')}`, refs: Object.values(interruptionRefs) }]
+  ,['example.dicepool', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.dicepool/v2/manifest.json') + '\n' + source('../../examples/example.dicepool/v2/extensions.mjs')).digest('hex')}`, refs: Object.values(dicepoolRefs) }]
 ]);
 const secureEqual = (left, right) => {
   if (typeof left !== 'string' || typeof right !== 'string') return false;
@@ -73,10 +75,10 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
     });
   };
   const kernel = createV2ExtensionKernel({
-    db, entities: [starshipEntity, revised5eEncounter, interruptionEntity], commands: [...starshipCommands, ...revised5eCommands, ...interruptionCommands], workflows: [starshipWorkflow],
-    effectHandlers: [...starshipEffectHandlers, ...revised5eEffectHandlers, ...interruptionEffectHandlers], resolvers: [...starshipResolvers, ...revised5eResolvers, ...interruptionResolvers], drawRandom,
+    db, entities: [starshipEntity, revised5eEncounter, interruptionEntity, dicepoolScene], commands: [...starshipCommands, ...revised5eCommands, ...interruptionCommands, ...dicepoolCommands], workflows: [starshipWorkflow],
+    effectHandlers: [...starshipEffectHandlers, ...revised5eEffectHandlers, ...interruptionEffectHandlers, ...dicepoolEffectHandlers], resolvers: [...starshipResolvers, ...revised5eResolvers, ...interruptionResolvers, ...dicepoolResolvers], drawRandom,
     authenticate, getCampaignLock, validateLock,
-    authorizeCommandIntent: revised5eAuthorizeIntent,
+    authorizeCommandIntent: context => revised5eAuthorizeIntent(context) || dicepoolAuthorizeIntent(context),
     authorizeRead: ({ member, entity }) => member.role === 'player' && hasGrant(entity.entityId, member.principalId, 'read'),
     authorizeCommand: ({ member, entity }) => member.role === 'player' && hasGrant(entity.entityId, member.principalId, 'act'),
     authorizeOwner: ({ campaignId: requestedCampaign, ownerPrincipalId }) => requestedCampaign === campaignId && (ownerPrincipalId === 'gm' || Boolean(db.prepare('SELECT 1 FROM members WHERE id=? AND revoked_at IS NULL').get(ownerPrincipalId))),
