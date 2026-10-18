@@ -27,7 +27,8 @@ Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md
 | ADR drafts | **Added in this review** | ADR-0019 through ADR-0021 record proposed exact locks, host execution boundary and authorized extension contributions. |
 | Registry implementation | Not started | Small PR 1 criteria in RFC: resolver/lock/conflict/digest/V1 tests. |
 | Resolver/host kernel | **Isolated evidence complete; production implementation not started** | PR #130 commit `f06307b` passes 9 focused tests for SQLite atomicity, rollback, hashes, action eligibility and continuation recovery. Production adapters and policies remain required. |
-| Extension data plane (issue #136 slice) | Implemented in draft; production integration deferred | Versioned generic entity/command/workflow contracts, host SQLite kernel, atomic V2 effects/receipts/events, serialized continuation, starship proof and focused tests. UI, routes, migrations and archive wiring remain deferred. |
+| Extension data plane (issue #136 slice) | Implemented; production integration deferred | Versioned generic entity/command/workflow contracts, host SQLite kernel, atomic V2 effects/receipts/events, serialized continuation, starship proof and focused tests. Routes, migrations and archive wiring remain deferred. |
+| UI contribution plane (issue #137 slice) | Experimental declarative client renderer; host-route integration deferred | Exact-pinned typed contracts and host React renderer for sheets, panels, action/forms, displays, resources and composable bricks. Starship and d20/dice-pool probes use the same renderer. No V2 HTTP route or authenticated host projection is wired. |
 | System probes and QA | Not started | Revised 5e-shaped, dice-pool Testbed, starship and third-module fixtures; historical archive/device QA remains separate. |
 
 ## Recommended implementation order
@@ -37,7 +38,7 @@ Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md
 3. Host typed-effect transaction kernel.
 4. Serializable continuations/reaction windows.
 5. Extension entities/commands/workflows/migrations and backup closure.
-6. Generic authorized UI contributions and accessibility/offline states.
+6. Generic authorized UI contributions and accessibility/offline states; the renderer prototype now exists, but it is gated and not production-playable.
 7. System probes, campaign isolation and full migration/archive QA.
 
 Each step remains a small reviewable PR with the specific acceptance criteria in the RFC. Do not mark a phase complete from documentation alone.
@@ -145,6 +146,16 @@ The reaction contract adds versioned window identity, parent operation, campaign
 The generic ordering policy is `priorityThenSubmission` (priority descending, then transaction sequence, then principal ID) or `simultaneous` (all eligible responders, or an explicit decline, before completion). No Revised 5e rule is encoded in Core. Focused tests demonstrate a defensive d20-shaped reaction and a contrasting dice-pool/narrative interruption using the same contract, plus restart restoration, multiple responders, ties, decline, expiry, unauthorized responder/GM, idempotent changed-payload retry rejection, hidden views and injected rollback. Production HTTP/offline/backup wiring, durable effect-kernel adapter registration, reaction scheduling, publisher signing, UI, and third-party executable isolation remain deferred.
 
 Hardening evidence: projection requests require an authenticated principal and host authorization; callers cannot select a role string. Simultaneous decline records only that responder and leaves other required responders pending. A responder may submit only one decision; a different operation ID for the same responder is rejected, while an exact retry returns the same projection. Expiry is an authorized, host-clock operation and is idempotent after restart. Completion receives decisions only; the host-only effect adapter is the sole persistence/transaction callback and is invoked inside the existing transaction boundary, with no nested transaction or module database handle. The remaining production gate is wiring this adapter to real resolver/effect dispatch and host routes without changing V1/offline/archive behavior.
+
+## Issue #137 experimental UI contribution slice
+
+`packages/contracts/src/ui.ts` defines contract-versioned, exact-identity UI contributions for sheets, panels, action controls, forms, displays, resource trackers and reusable bricks. A contribution pins its own UI capability and the exact entity capability/schema; every command and workflow capability is also separately pinned by the campaign lock. The web `UiContributionRegistry` validates supported descriptor shapes, scalar form inputs, declared entity-field paths, command/workflow references, slot composition and entity/schema compatibility. It accepts data descriptors only: modules do not supply React components or JSX.
+
+`V2UiContributionView` renders semantic host React elements from a host-supplied, already-projected entity DTO. Missing fields are not synthesized; commands not in the host-provided allowed-command set are omitted. Visible controls call one host command callback with entity revision and stable operation identity; server authorization remains authoritative. Forms collect typed string/number/boolean/enum values, surface validation/submission feedback, and use native labels, buttons and inputs. Keying by campaign/entity/exact UI identity remounts on entity or module version changes. Native controls and focus-visible styling are provided, but this is not a completed assistive-technology audit.
+
+Fixtures demonstrate the starship reactor sheet, propulsion resource meter, power-allocation form, engineering workflow panel and reusable brick, plus a d20-shaped actor sheet and dice-pool/stress tracker. The latter two are probes, not production modules. Registry tests cover exact/missing pins, malformed schema and field/action/workflow references, hidden projected fields, slot composition and both contrasting probes.
+
+**Experimental-only boundary:** the renderer requires `experimentalEnabled`, is not mounted by production V1 workspace routes, and has no V2 HTTP query/command adapter. It cannot itself prove a projection is authorized; production must source projections and allowed commands from the authenticated host. Issue [#145](https://github.com/chrspickens/Potomac/issues/145) remains the production prerequisite for transaction-current principal/permission and exact campaign-lock authority. V2 persistence/routes, offline reconciliation, backup/archive integration, capability provenance/signing, third-party isolation, and complete screen-reader/keyboard/device verification remain open. No production V2 end-to-end playability is claimed.
 
 ## Issue #136 versioned extension data plane
 
