@@ -10,6 +10,11 @@ const fail = (code, message) => { throw Object.assign(new Error(message), { code
 const refKey = ref => `${ref.id}@${ref.apiVersion}/${ref.implementationVersion}/${ref.digest}`;
 const json = value => JSON.stringify(value);
 const clone = value => structuredClone(value);
+const freezeJson = value => {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeJson(child);
+  return Object.freeze(value);
+};
 
 export const V2_EXTENSION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS v2_extension_entities (
@@ -70,8 +75,10 @@ function validateWorkflowDescriptor(workflow) {
   validateCapabilityRef(workflow.capability);
   const states = new Set(); for (const state of workflow.states) { if (!NAMESPACED.test(state.stateId) || states.has(state.stateId)) fail('invalid', 'invalid or duplicate workflow state'); states.add(state.stateId); validateV2SchemaDefinition(state.schema); }
   if (workflow.terminalStates.some(state => !states.has(state))) fail('invalid', 'unknown terminal workflow state');
+  if (workflow.terminalStates.includes(workflow.initialState)) fail('invalid', 'initial workflow state cannot be terminal');
   const transitions = new Set(); for (const transition of workflow.transitions) {
     if (!NAMESPACED.test(transition.transitionId) || transitions.has(transition.transitionId) || !NAMESPACED.test(transition.commandId) || !['transition', 'cancel'].includes(transition.kind) || !['command', 'owner-or-participant', 'gm'].includes(transition.participantPolicy) || !Array.isArray(transition.from) || transition.from.length === 0 || transition.from.some(state => !states.has(state)) || !states.has(transition.to)) fail('invalid', 'invalid workflow transition');
+    if (transition.from.some(state => workflow.terminalStates.includes(state)) || transition.kind === 'cancel' && !workflow.terminalStates.includes(transition.to)) fail('invalid', 'terminal workflow states cannot transition and cancellation must be terminal');
     transitions.add(transition.transitionId);
   }
 }
@@ -81,7 +88,15 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const entityTypes = new Map(); const commandTypes = new Map(); const workflowTypes = new Map(); const resolverMap = new Map(); const effectMap = new Map();
   for (const descriptor of entities) { validateEntityDescriptor(descriptor); if (entityTypes.has(descriptor.typeId)) fail('invalid', 'duplicate entity descriptor'); entityTypes.set(descriptor.typeId, clone(descriptor)); }
   for (const command of commands) { validateCommandDescriptor(command); if (commandTypes.has(command.commandId) || !entityTypes.has(command.entityTypeId)) fail('invalid', 'duplicate command or missing entity type'); commandTypes.set(command.commandId, clone(command)); }
-  for (const workflow of workflows) { validateWorkflowDescriptor(workflow); if (workflowTypes.has(workflow.workflowType) || !entityTypes.has(workflow.entityTypeId)) fail('invalid', 'duplicate workflow or missing entity type'); for (const transition of workflow.transitions) if (!commandTypes.has(transition.commandId)) fail('invalid', 'workflow transition references an unavailable command'); workflowTypes.set(workflow.workflowType, clone(workflow)); }
+  for (const workflow of workflows) {
+    validateWorkflowDescriptor(workflow);
+    if (workflowTypes.has(workflow.workflowType) || !entityTypes.has(workflow.entityTypeId)) fail('invalid', 'duplicate workflow or missing entity type');
+    for (const transition of workflow.transitions) {
+      const command = commandTypes.get(transition.commandId);
+      if (!command || command.entityTypeId !== workflow.entityTypeId || !command.workflowOnly) fail('invalid', 'workflow transition references an incompatible command');
+    }
+    workflowTypes.set(workflow.workflowType, clone(workflow));
+  }
   for (const resolver of resolvers) { if (!resolver?.ref || typeof resolver.resolve !== 'function' || resolverMap.has(refKey(resolver.ref))) fail('invalid', 'invalid or duplicate resolver'); resolverMap.set(refKey(resolver.ref), resolver); }
   for (const handler of effectHandlers) { if (!handler?.id || effectMap.has(refKey(handler))) fail('invalid', 'invalid or duplicate effect handler'); effectMap.set(refKey(handler), handler); }
   for (const command of commandTypes.values()) for (const ref of command.effects) if (!effectMap.has(refKey(ref))) fail('invalid', `command ${command.commandId} declares an unavailable effect handler`);
@@ -97,6 +112,10 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     if (!lock) fail('unsupported', 'campaign capability lock is unavailable');
     validateLock(campaignId, lock);
     return lock;
+  };
+  const assertCurrentLock = (campaignId, expectedLock) => {
+    const latestLock = lockFor(campaignId);
+    if (hashV2Json(latestLock) !== hashV2Json(expectedLock)) fail('unsupported', 'campaign capability lock changed during extension operation');
   };
   const requireCapability = (lock, capability, campaignId) => { exactLockRef(lock, capability, campaignId); };
   const decodeEntity = (campaignId, row, metadata) => ({ campaignId, entityId: row.entity_id, typeId: row.entity_type, capability: JSON.parse(metadata.capability), schemaVersion: metadata.schema_version, migrationId: metadata.migration_id, revision: row.revision, visibility: metadata.owner_principal_id ? 'owner' : row.visibility, ownerPrincipalId: metadata.owner_principal_id, data: JSON.parse(row.data) });
@@ -121,7 +140,11 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   };
   const effects = createV2EffectKernel({
     db, handlers: effectHandlers, authenticate: (principalId, proposal) => Boolean(principal(principalId, proposal.campaignId)),
-    validateLock: (campaignId, lock, moduleId) => { validateLock(campaignId, lock); if (lock.rootModule.id !== moduleId) fail('unsupported', 'effect proposal module does not match campaign lock'); },
+    validateLock: (campaignId, lock, moduleId) => {
+      const currentLock = lockFor(campaignId);
+      if (hashV2Json(currentLock) !== hashV2Json(lock)) fail('unsupported', 'campaign capability lock changed during command execution');
+      if (lock.rootModule.id !== moduleId) fail('unsupported', 'effect proposal module does not match campaign lock');
+    },
     authorize: context => {
       const found = entityRows(context.campaignId, context.effect.target.entityId); if (!found) return false;
       const record = decodeEntity(context.campaignId, found.row, found.metadata); const lock = lockFor(context.campaignId);
@@ -143,6 +166,14 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   };
   const readWorkflowRow = workflowId => db.prepare('SELECT * FROM v2_extension_workflows WHERE workflow_id=?').get(workflowId);
   const decodeWorkflow = row => ({ workflowId: row.workflow_id, campaignId: row.campaign_id, entityId: row.entity_id, workflowType: row.workflow_type, capability: JSON.parse(row.capability), revision: row.revision, state: row.state, stateData: JSON.parse(row.state_data), continuationId: row.continuation_id, participants: JSON.parse(row.participants), expiresAt: row.expires_at, status: row.status });
+  const validateStoredWorkflow = (workflow, descriptor) => {
+    if (!descriptor || refKey(descriptor.capability) !== refKey(workflow.capability) || !ID.test(workflow.workflowId) || !ID.test(workflow.campaignId) || !ID.test(workflow.entityId) || !Number.isInteger(workflow.revision) || workflow.revision < 1 || !ID.test(workflow.continuationId) || !Number.isFinite(Date.parse(workflow.expiresAt)) || !['active', 'completed', 'cancelled', 'expired'].includes(workflow.status)) fail('unsupported', 'workflow capability or state is unavailable');
+    if (!Array.isArray(workflow.participants) || workflow.participants.length > 100 || new Set(workflow.participants).size !== workflow.participants.length || workflow.participants.some(id => !ID.test(id))) fail('unsupported', 'workflow participant state is invalid');
+    const state = descriptor.states.find(item => item.stateId === workflow.state);
+    if (!state || (workflow.status === 'active' && descriptor.terminalStates.includes(workflow.state)) || (['completed', 'cancelled'].includes(workflow.status) && !descriptor.terminalStates.includes(workflow.state))) fail('unsupported', 'workflow state is unavailable');
+    validateBoundedJson(workflow.stateData, state.schema);
+    return state;
+  };
   const visibleOutcomes = (outcomes, member, entity) => outcomes.filter(item => item.visibility === 'public' || (item.visibility === 'gm' && member.role === 'gm') || (item.visibility === 'private' && (member.role === 'gm' || entity.ownerPrincipalId === member.principalId))).map(clone);
   const receipt = (request, payloadHash) => {
     const found = db.prepare('SELECT payload_hash, campaign_id, principal_id, response FROM v2_extension_receipts WHERE operation_id=?').get(request.operationId);
@@ -183,98 +214,107 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   };
   const createEntity = request => {
     if (!request || !ID.test(request.operationId) || !ID.test(request.campaignId) || !ID.test(request.principalId) || !ID.test(request.entityId) || !['public', 'gm', 'owner'].includes(request.visibility)) fail('invalid', 'malformed entity creation');
-    const member = principal(request.principalId, request.campaignId); const descriptor = entityTypes.get(request.typeId); if (!descriptor) fail('unsupported', 'entity capability is unavailable');
-    const lock = lockFor(request.campaignId); assertTypePinned(request.campaignId, lock, descriptor); validateBoundedJson(request.data, descriptor.schema);
-    if (!descriptor.creationRoles.includes(member.role)) fail('unauthorized', 'entity creation is not permitted');
-    const owner = descriptor.ownership.kind === 'principal' ? (member.role === 'gm' ? request.ownerPrincipalId ?? request.principalId : request.principalId) : null;
-    if (descriptor.ownership.kind === 'principal' && (!ID.test(owner ?? '') || request.visibility !== 'owner')) fail('invalid', 'principal-owned entities require an owner and owner visibility');
-    if (descriptor.ownership.kind === 'campaign' && (owner || request.visibility === 'owner')) fail('invalid', 'campaign-owned entities cannot have an owner visibility');
-    if (!descriptor.visibility.includes(request.visibility)) fail('invalid', 'entity visibility is not declared by its descriptor');
-    const payload = { ...request, ownerPrincipalId: owner, capability: descriptor.capability, schemaVersion: descriptor.schemaVersion, migrationId: descriptor.migration.migrationId };
-    const payloadHash = hashV2Json(payload); const old = receipt(request, payloadHash); if (old) return old;
+    const descriptor = entityTypes.get(request.typeId); if (!descriptor) fail('unsupported', 'entity capability is unavailable');
+    validateBoundedJson(request.data, descriptor.schema);
     db.exec('BEGIN IMMEDIATE;');
     try {
-      const retry = receipt(request, payloadHash); if (retry) { db.exec('COMMIT;'); return retry; }
       const currentMember = principal(request.principalId, request.campaignId); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, descriptor);
       if (!descriptor.creationRoles.includes(currentMember.role)) fail('unauthorized', 'entity creation is not permitted');
+      const owner = descriptor.ownership.kind === 'principal' ? (currentMember.role === 'gm' ? request.ownerPrincipalId ?? request.principalId : request.principalId) : null;
+      if (descriptor.ownership.kind === 'principal' && (!ID.test(owner ?? '') || request.visibility !== 'owner')) fail('invalid', 'principal-owned entities require an owner and owner visibility');
+      if (descriptor.ownership.kind === 'campaign' && (owner || request.visibility === 'owner')) fail('invalid', 'campaign-owned entities cannot have an owner visibility');
+      if (!descriptor.visibility.includes(request.visibility)) fail('invalid', 'entity visibility is not declared by its descriptor');
       if (currentMember.role !== 'gm' && owner !== currentMember.principalId) fail('unauthorized', 'member cannot assign another entity owner');
+      const payload = { ...request, ownerPrincipalId: owner, capability: descriptor.capability, schemaVersion: descriptor.schemaVersion, migrationId: descriptor.migration.migrationId };
+      const payloadHash = hashV2Json(payload); const retry = receipt(request, payloadHash);
+      if (retry) { assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return retry; }
       db.prepare('INSERT INTO v2_effect_entities(campaign_id,entity_id,entity_type,revision,visibility,data) VALUES(?,?,?,?,?,?)').run(request.campaignId, request.entityId, descriptor.typeId, 1, storedVisibility(request.visibility), json(request.data));
       db.prepare('INSERT INTO v2_extension_entities(campaign_id,entity_id,descriptor_id,schema_version,migration_id,capability,owner_principal_id) VALUES(?,?,?,?,?,?,?)').run(request.campaignId, request.entityId, descriptor.typeId, descriptor.schemaVersion, descriptor.migration.migrationId, json(descriptor.capability), owner);
       const result = { operationId: request.operationId, status: 'applied', entityId: request.entityId, revision: 1 };
       writeEvent(request, request.entityId, 'entity.created', request.visibility === 'owner' ? 'private' : request.visibility, { typeId: descriptor.typeId, revision: 1 });
       if (failureAt === 'after-entity') fail('injected', 'failure after entity creation');
       db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(result), now());
-      db.exec('COMMIT;'); return result;
+      assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return result;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const startWorkflow = request => {
-    if (!request || !ID.test(request.operationId) || !ID.test(request.campaignId) || !ID.test(request.principalId) || !ID.test(request.workflowId) || !ID.test(request.entityId) || !Number.isInteger(request.expectedEntityRevision) || !Number.isFinite(Date.parse(request.expiresAt)) || Date.parse(request.expiresAt) <= Date.parse(now())) fail('invalid', 'malformed workflow creation');
-    const member = principal(request.principalId, request.campaignId); const workflow = workflowTypes.get(request.workflowType); if (!workflow) fail('unsupported', 'workflow capability is unavailable');
-    const lock = lockFor(request.campaignId); assertTypePinned(request.campaignId, lock, workflow); const state = workflow.states.find(item => item.stateId === workflow.initialState);
-    const { record } = readRecord(request.campaignId, request.entityId, member, lock); if (record.typeId !== workflow.entityTypeId) fail('unsupported', 'workflow entity type is unavailable');
-    if (member.role !== 'gm' && record.ownerPrincipalId !== member.principalId) fail('unauthorized', 'only the entity owner or GM can start this workflow');
-    const stateData = request.stateData ?? {}; validateBoundedJson(stateData, state.schema);
-    const participants = [...new Set([record.ownerPrincipalId, ...(request.participants ?? [])].filter(Boolean))]; if (participants.some(id => !ID.test(id))) fail('invalid', 'workflow participants are invalid');
-    if (member.role !== 'gm' && participants.some(id => id !== member.principalId)) fail('unauthorized', 'only the GM may designate other workflow participants');
-    const payload = { ...request, stateData, participants, capability: workflow.capability }; const payloadHash = hashV2Json(payload); const old = receipt(request, payloadHash); if (old) return old;
-    if (record.revision !== request.expectedEntityRevision) fail('stale', 'workflow entity revision is stale');
+    if (!request || !ID.test(request.operationId) || !ID.test(request.campaignId) || !ID.test(request.principalId) || !ID.test(request.workflowId) || !ID.test(request.entityId) || !Number.isInteger(request.expectedEntityRevision) || !Number.isFinite(Date.parse(request.expiresAt))) fail('invalid', 'malformed workflow creation');
+    if (request.participants !== undefined && !Array.isArray(request.participants)) fail('invalid', 'workflow participants are invalid');
+    const workflow = workflowTypes.get(request.workflowType); if (!workflow) fail('unsupported', 'workflow capability is unavailable');
+    const initialState = workflow.states.find(item => item.stateId === workflow.initialState);
+    const stateData = request.stateData ?? {}; validateBoundedJson(stateData, initialState.schema);
     db.exec('BEGIN IMMEDIATE;');
     try {
-      const retry = receipt(request, payloadHash); if (retry) { db.exec('COMMIT;'); return retry; }
-        const currentMember = principal(request.principalId, request.campaignId); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, workflow);
-      const current = db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(request.campaignId, request.entityId); if (!current || current.revision !== request.expectedEntityRevision) fail('stale', 'workflow entity revision is stale');
-      if (currentMember.role !== 'gm' && (record.ownerPrincipalId !== currentMember.principalId || participants.some(id => id !== currentMember.principalId))) fail('unauthorized', 'workflow start is not permitted');
+      const currentMember = principal(request.principalId, request.campaignId); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, workflow);
+      const { record } = readRecord(request.campaignId, request.entityId, currentMember, currentLock);
+      if (record.typeId !== workflow.entityTypeId) fail('unsupported', 'workflow entity type is unavailable');
+      if (currentMember.role !== 'gm' && record.ownerPrincipalId !== currentMember.principalId) fail('unauthorized', 'only the entity owner or GM can start this workflow');
+      const participants = [...new Set([record.ownerPrincipalId, ...(request.participants ?? [])].filter(Boolean))];
+      if (participants.length > 100 || participants.some(id => !ID.test(id))) fail('invalid', 'workflow participants are invalid');
+      if (currentMember.role !== 'gm' && participants.some(id => id !== currentMember.principalId)) fail('unauthorized', 'only the GM may designate other workflow participants');
+      const payload = { ...request, stateData, participants, capability: workflow.capability }; const payloadHash = hashV2Json(payload); const retry = receipt(request, payloadHash);
+      if (retry) { assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return retry; }
+      if (Date.parse(request.expiresAt) <= Date.parse(now())) fail('invalid', 'workflow expiry must be in the future');
+      if (record.revision !== request.expectedEntityRevision) fail('stale', 'workflow entity revision is stale');
       const continuationId = createId(); if (!ID.test(continuationId)) fail('invalid', 'host produced invalid continuation identity');
       const result = { operationId: request.operationId, status: 'applied', workflow: { workflowId: request.workflowId, revision: 1, state: workflow.initialState, continuationId, status: 'active' } };
       db.prepare('INSERT INTO v2_extension_workflows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(request.workflowId, request.campaignId, request.entityId, workflow.workflowType, json(workflow.capability), 1, workflow.initialState, json(stateData), continuationId, json(participants), request.expiresAt, 'active', request.principalId, now());
       writeEvent(request, request.entityId, 'workflow.started', storedVisibility(record.visibility), { workflowId: request.workflowId, revision: 1 });
       if (failureAt === 'after-workflow') fail('injected', 'failure after workflow creation');
-      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(result), now()); db.exec('COMMIT;'); return result;
+      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(result), now()); assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return result;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const executeCommand = request => {
     if (!request || !ID.test(request.operationId) || !ID.test(request.campaignId) || !ID.test(request.principalId) || !ID.test(request.commandId) || !ID.test(request.entityId) || !Number.isInteger(request.expectedRevision) || request.expectedRevision < 1) fail('invalid', 'malformed extension command');
-    const member = principal(request.principalId, request.campaignId); const command = commandTypes.get(request.commandId); if (!command) fail('unsupported', 'command capability is unavailable');
-    const lock = lockFor(request.campaignId); requireCapability(lock, command.capability, request.campaignId); requireCapability(lock, command.resolver, request.campaignId);
-    const resolver = resolverMap.get(refKey(command.resolver)); if (!resolver) fail('unsupported', 'required command resolver is unavailable');
-    if (command.workflowOnly && !request.workflow) fail('invalid', 'this command requires an authorized workflow continuation');
-    let workflowAuthorization;
-    if (request.workflow) {
-      if (!ID.test(request.workflow.workflowId) || !Number.isInteger(request.workflow.expectedRevision) || !ID.test(request.workflow.expectedContinuationId) || !ID.test(request.workflow.transitionId)) fail('invalid', 'malformed workflow continuation');
-      const row = readWorkflowRow(request.workflow.workflowId); if (!row) fail('unavailable', 'workflow is unavailable');
-      workflowAuthorization = decodeWorkflow(row);
-      if (workflowAuthorization.campaignId !== request.campaignId || workflowAuthorization.entityId !== request.entityId || !workflowTypes.has(workflowAuthorization.workflowType)) fail('unavailable', 'workflow is unavailable');
-      const workflowDescriptor = workflowTypes.get(workflowAuthorization.workflowType); assertTypePinned(request.campaignId, lock, workflowDescriptor);
-      if (member.role !== 'gm' && !workflowAuthorization.participants.includes(member.principalId)) fail('unavailable', 'workflow is unavailable');
-    }
-    const { record, descriptor } = readRecord(request.campaignId, request.entityId, member, lock, workflowAuthorization?.participants ?? []);
-    if (descriptor.typeId !== command.entityTypeId) fail('unsupported', 'command entity type is unavailable');
-    if (!canCommand(member, record, command.permission, workflowAuthorization?.participants ?? [])) fail('unauthorized', 'command is not permitted for this member and entity');
+    if (request.workflow && (!ID.test(request.workflow.workflowId) || !Number.isInteger(request.workflow.expectedRevision) || !ID.test(request.workflow.expectedContinuationId) || !ID.test(request.workflow.transitionId))) fail('invalid', 'malformed workflow continuation');
+    const command = commandTypes.get(request.commandId); if (!command) fail('unsupported', 'command capability is unavailable');
     validateBoundedJson(request.input, command.inputSchema);
     const payloadHash = hashV2Json(request);
-    const old = projectCommandReceipt(request, payloadHash, member, record); if (old) return old;
-    if (record.revision !== request.expectedRevision) fail('stale', 'entity type or revision changed');
-    const workflowCtx = request.workflow ? (() => {
-      const state = workflowAuthorization; const workflow = workflowTypes.get(state.workflowType);
-      if (state.status !== 'active') fail('unavailable', 'workflow is unavailable');
-      if (state.revision !== request.workflow.expectedRevision || state.continuationId !== request.workflow.expectedContinuationId) fail('stale', 'workflow continuation is stale');
-      if (Date.parse(state.expiresAt) <= Date.parse(now())) fail('expired', 'workflow has expired');
-      const transition = workflow.transitions.find(item => item.transitionId === request.workflow.transitionId && item.commandId === command.commandId && item.from.includes(state.state)); if (!transition) fail('conflict', 'workflow transition is not allowed from this state');
-      if (transition.participantPolicy === 'gm' && member.role !== 'gm' || transition.participantPolicy === 'owner-or-participant' && member.role !== 'gm' && record.ownerPrincipalId !== member.principalId && !state.participants.includes(member.principalId)) fail('unauthorized', 'workflow participant is not authorized');
-      return { state, workflow, transition };
-    })() : undefined;
     db.exec('BEGIN IMMEDIATE;');
     try {
-      const retry = projectCommandReceipt(request, payloadHash, member, record); if (retry) { db.exec('COMMIT;'); return retry; }
-      const currentMember = principal(request.principalId, request.campaignId); const authorizedParticipants = workflowCtx?.state.participants ?? []; const { record: currentRecord } = readRecord(request.campaignId, request.entityId, currentMember, lock, authorizedParticipants);
+      const currentMember = principal(request.principalId, request.campaignId); const lock = lockFor(request.campaignId);
+      requireCapability(lock, command.capability, request.campaignId); requireCapability(lock, command.resolver, request.campaignId);
+      const resolver = resolverMap.get(refKey(command.resolver)); if (!resolver) fail('unsupported', 'required command resolver is unavailable');
+      if (command.workflowOnly && !request.workflow) fail('invalid', 'this command requires an authorized workflow continuation');
+
+      // Load persisted workflow state only after BEGIN IMMEDIATE. It is the
+      // participant/continuation authority for both execution and retries.
+      let workflowState; let workflowDescriptor;
+      if (request.workflow) {
+        const row = readWorkflowRow(request.workflow.workflowId); if (!row) fail('unavailable', 'workflow is unavailable');
+        workflowState = decodeWorkflow(row); workflowDescriptor = workflowTypes.get(workflowState.workflowType);
+        if (workflowState.campaignId !== request.campaignId || workflowState.entityId !== request.entityId || !workflowDescriptor || refKey(workflowDescriptor.capability) !== refKey(workflowState.capability) || workflowDescriptor.entityTypeId !== command.entityTypeId) fail('unavailable', 'workflow is unavailable');
+        validateStoredWorkflow(workflowState, workflowDescriptor);
+        assertTypePinned(request.campaignId, lock, workflowDescriptor);
+        if (currentMember.role !== 'gm' && !workflowState.participants.includes(currentMember.principalId)) fail('unavailable', 'workflow is unavailable');
+      }
+      const authorizedParticipants = workflowState?.participants ?? [];
+      const { record: currentRecord } = readRecord(request.campaignId, request.entityId, currentMember, lock, authorizedParticipants);
+      if (currentRecord.typeId !== command.entityTypeId) fail('unsupported', 'command entity type is unavailable');
+      if (!canCommand(currentMember, currentRecord, command.permission, authorizedParticipants)) fail('unauthorized', 'command is not permitted for this member and entity');
+
+      // A receipt is returned only after re-authenticating and checking current
+      // entity visibility/ownership and, for workflows, current participants.
+      // Do not apply the old expected revision/continuation to an exact retry:
+      // the successful first attempt has already advanced them.
+      const retry = projectCommandReceipt(request, payloadHash, currentMember, currentRecord);
+      if (retry) { assertCurrentLock(request.campaignId, lock); db.exec('COMMIT;'); return retry; }
       if (currentRecord.revision !== request.expectedRevision) fail('stale', 'entity revision changed');
-      if (!canCommand(currentMember, currentRecord, command.permission, authorizedParticipants)) fail('unauthorized', 'command authorization changed');
-      if (workflowCtx) {
-        if (workflowCtx.transition.participantPolicy === 'gm' && currentMember.role !== 'gm' || workflowCtx.transition.participantPolicy === 'owner-or-participant' && currentMember.role !== 'gm' && currentRecord.ownerPrincipalId !== currentMember.principalId && !workflowCtx.state.participants.includes(currentMember.principalId)) fail('unauthorized', 'workflow participant is not authorized');
-        if (Date.parse(workflowCtx.state.expiresAt) <= Date.parse(now())) fail('expired', 'workflow has expired');
+
+      let workflowCtx;
+      if (workflowState) {
+        if (workflowState.status !== 'active' || workflowDescriptor.terminalStates.includes(workflowState.state)) fail('unavailable', 'workflow is unavailable');
+        if (workflowState.revision !== request.workflow.expectedRevision || workflowState.continuationId !== request.workflow.expectedContinuationId) fail('stale', 'workflow continuation is stale');
+        if (Date.parse(workflowState.expiresAt) <= Date.parse(now())) fail('expired', 'workflow has expired');
+        const transition = workflowDescriptor.transitions.find(item => item.transitionId === request.workflow.transitionId && item.commandId === command.commandId && item.from.includes(workflowState.state));
+        if (!transition) fail('conflict', 'workflow transition is not allowed from this state');
+        if (transition.participantPolicy === 'gm' && currentMember.role !== 'gm' || transition.participantPolicy === 'owner-or-participant' && currentMember.role !== 'gm' && currentRecord.ownerPrincipalId !== currentMember.principalId && !workflowState.participants.includes(currentMember.principalId)) fail('unauthorized', 'workflow participant is not authorized');
+        if (transition.kind === 'cancel' && !workflowDescriptor.terminalStates.includes(transition.to)) fail('invalid', 'workflow cancellation must enter a terminal state');
+        workflowCtx = { state: workflowState, workflow: workflowDescriptor, transition };
       }
       const state = { entityId: currentRecord.entityId, entityType: currentRecord.typeId, revision: currentRecord.revision, data: currentRecord.data, ...(workflowCtx ? { workflow: { workflowId: workflowCtx.state.workflowId, state: workflowCtx.state.state, stateData: workflowCtx.state.stateData, continuationId: workflowCtx.state.continuationId } } : {}) };
-      const result = executeResolver(resolver, { operationId: request.operationId, campaignId: request.campaignId, principalId: request.principalId, logicalTime: now(), state, input: request.input, randomness: [] }, lock);
+      const immutableResolver = { ...resolver, resolve: input => resolver.resolve(freezeJson(input)) };
+      const result = executeResolver(immutableResolver, { operationId: request.operationId, campaignId: request.campaignId, principalId: request.principalId, logicalTime: now(), state, input: request.input, randomness: [] }, lock);
       const output = result.transcript;
       for (const effect of output.effects) {
         const handler = effectHandlers.find(candidate => candidate.id === effect.handler && command.effects.some(ref => refKey(ref) === refKey(candidate)));
@@ -305,42 +345,42 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
         const update = db.prepare('UPDATE v2_extension_workflows SET revision=?, state=?, state_data=?, continuation_id=?, status=?, updated_at=? WHERE workflow_id=? AND revision=? AND continuation_id=? AND status=\'active\'').run(revision, nextState.stateId, json(stateData), continuationId, status, now(), workflowCtx.state.workflowId, workflowCtx.state.revision, workflowCtx.state.continuationId);
         if (update.changes !== 1) fail('stale', 'workflow revision changed');
         workflowResult = { workflowId: workflowCtx.state.workflowId, revision, state: nextState.stateId, continuationId, status };
-        if (failureAt === 'after-workflow-transition' && effectProposal) fail('injected', 'failure after workflow transition');
+      if (failureAt === 'after-workflow-transition' && workflowResult) fail('injected', 'failure after workflow transition');
       }
       const outcomes = visibleOutcomes(resultData, currentMember, currentRecord); const response = { operationId: request.operationId, status: 'applied', entityId: request.entityId, revision: refreshed.row.revision, outcomes, ...(workflowResult ? { workflow: workflowResult } : {}) };
       writeEvent(request, request.entityId, workflowResult ? 'command.workflow-transitioned' : 'command.applied', storedVisibility(currentRecord.visibility), { commandId: command.commandId, revision: response.revision, workflow: workflowResult ? { workflowId: workflowResult.workflowId, state: workflowResult.state, revision: workflowResult.revision } : undefined });
+      if (failureAt === 'after-command-event') fail('injected', 'failure after command event');
       if (failureAt === 'after-command-effects' && effectProposal) fail('injected', 'failure after command effects');
       const storedResponse = { ...response, allOutcomes: resultData };
       db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(storedResponse), now());
+      assertCurrentLock(request.campaignId, lock);
+      if (failureAt === 'after-command-receipt') fail('injected', 'failure after command receipt');
       db.exec('COMMIT;'); return response;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const readWorkflow = (workflowId, principalId) => {
     const row = readWorkflowRow(workflowId); if (!row) fail('unavailable', 'workflow is unavailable'); const workflow = decodeWorkflow(row); const member = principal(principalId, workflow.campaignId); const lock = lockFor(workflow.campaignId); const descriptor = workflowTypes.get(workflow.workflowType);
-    if (!descriptor || refKey(descriptor.capability) !== refKey(workflow.capability)) fail('unsupported', 'workflow capability is unavailable'); assertTypePinned(workflow.campaignId, lock, descriptor);
+    if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(workflow, descriptor); assertTypePinned(workflow.campaignId, lock, descriptor);
     const { record } = readRecord(workflow.campaignId, workflow.entityId, member, lock, workflow.participants); if (!canRead(member, record, workflow.participants) || (member.role !== 'gm' && !workflow.participants.includes(principalId) && record.ownerPrincipalId !== principalId)) fail('unavailable', 'workflow is unavailable');
     return clone(workflow);
   };
   const expireWorkflow = request => {
     if (!request || !ID.test(request.workflowId) || !ID.test(request.operationId) || !ID.test(request.principalId) || !Number.isInteger(request.expectedRevision) || !ID.test(request.expectedContinuationId ?? '')) fail('invalid', 'malformed workflow expiry');
-    const row = readWorkflowRow(request.workflowId); if (!row) fail('unavailable', 'workflow is unavailable'); const workflow = decodeWorkflow(row); const member = principal(request.principalId, workflow.campaignId); const descriptor = workflowTypes.get(workflow.workflowType);
-    if (!descriptor || !descriptor.expirationRoles.includes(member.role)) fail('unauthorized', 'workflow expiry is not permitted'); const lock = lockFor(workflow.campaignId); assertTypePinned(workflow.campaignId, lock, descriptor);
-    const entity = entityRows(workflow.campaignId, workflow.entityId); if (!entity) fail('unavailable', 'workflow is unavailable'); const record = decodeEntity(workflow.campaignId, entity.row, entity.metadata);
-    if (member.role !== 'gm' && record.ownerPrincipalId !== member.principalId && !workflow.participants.includes(member.principalId)) fail('unauthorized', 'workflow participant is not authorized');
-    const payload = { ...request, campaignId: workflow.campaignId, principalId: member.principalId }; const payloadHash = hashV2Json(payload); const old = receipt(payload, payloadHash); if (old) return old;
-    if (workflow.revision !== request.expectedRevision || workflow.continuationId !== request.expectedContinuationId) fail('stale', 'workflow continuation is stale');
-    if (workflow.status !== 'active') fail('conflict', 'workflow is not active');
-    if (Date.parse(workflow.expiresAt) > Date.parse(now())) fail('conflict', 'workflow has not expired');
     db.exec('BEGIN IMMEDIATE;'); try {
-      const retry = receipt(payload, payloadHash); if (retry) { db.exec('COMMIT;'); return retry; }
-      const currentMember = principal(request.principalId, workflow.campaignId); const current = readWorkflowRow(workflow.workflowId); const currentWorkflow = decodeWorkflow(current);
-      if (currentWorkflow.revision !== request.expectedRevision || currentWorkflow.continuationId !== request.expectedContinuationId || currentWorkflow.status !== 'active') fail('stale', 'workflow continuation is stale');
-      if (!descriptor.expirationRoles.includes(currentMember.role) || (currentMember.role !== 'gm' && record.ownerPrincipalId !== currentMember.principalId && !currentWorkflow.participants.includes(currentMember.principalId))) fail('unauthorized', 'workflow expiry is not permitted');
-      if (Date.parse(currentWorkflow.expiresAt) > Date.parse(now())) fail('conflict', 'workflow has not expired');
+      const row = readWorkflowRow(request.workflowId); if (!row) fail('unavailable', 'workflow is unavailable'); const workflow = decodeWorkflow(row);
+      const member = principal(request.principalId, workflow.campaignId); const descriptor = workflowTypes.get(workflow.workflowType); const lock = lockFor(workflow.campaignId);
+      if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(workflow, descriptor); assertTypePinned(workflow.campaignId, lock, descriptor);
+      const { record } = readRecord(workflow.campaignId, workflow.entityId, member, lock, workflow.participants);
+      if (!descriptor.expirationRoles.includes(member.role) || (member.role !== 'gm' && record.ownerPrincipalId !== member.principalId && !workflow.participants.includes(member.principalId))) fail('unauthorized', 'workflow expiry is not permitted');
+      const payload = { ...request, campaignId: workflow.campaignId, principalId: member.principalId }; const payloadHash = hashV2Json(payload); const retry = receipt(payload, payloadHash);
+      if (retry) { assertCurrentLock(workflow.campaignId, lock); db.exec('COMMIT;'); return retry; }
+      if (workflow.revision !== request.expectedRevision || workflow.continuationId !== request.expectedContinuationId) fail('stale', 'workflow continuation is stale');
+      if (workflow.status !== 'active' || descriptor.terminalStates.includes(workflow.state)) fail('conflict', 'workflow is not active');
+      if (Date.parse(workflow.expiresAt) > Date.parse(now())) fail('conflict', 'workflow has not expired');
       const update = db.prepare("UPDATE v2_extension_workflows SET revision=revision+1,status='expired',updated_at=? WHERE workflow_id=? AND revision=? AND continuation_id=? AND status='active'").run(now(), workflow.workflowId, request.expectedRevision, request.expectedContinuationId); if (update.changes !== 1) fail('stale', 'workflow revision changed');
       const response = { operationId: request.operationId, status: 'expired', workflowId: workflow.workflowId, revision: request.expectedRevision + 1 };
       writeEvent(payload, workflow.entityId, 'workflow.expired', storedVisibility(record.visibility), { workflowId: workflow.workflowId, revision: request.expectedRevision + 1 });
-      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, workflow.campaignId, member.principalId, payloadHash, json(response), now()); db.exec('COMMIT;'); return response;
+      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, workflow.campaignId, member.principalId, payloadHash, json(response), now()); assertCurrentLock(workflow.campaignId, lock); db.exec('COMMIT;'); return response;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const snapshot = campaignId => {
@@ -350,7 +390,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       ? db.prepare('SELECT e.* FROM v2_effect_entities e JOIN v2_extension_entities x USING(campaign_id,entity_id) WHERE e.campaign_id=? ORDER BY e.entity_id').all(campaignId)
       : db.prepare(`SELECT * FROM ${table} WHERE campaign_id=? ORDER BY rowid`).all(campaignId)]));
     for (const [id, descriptor] of entityTypes) if (data.v2_extension_entities.some(row => row.descriptor_id === id)) requireCapability(lock, descriptor.capability, campaignId);
-    for (const row of data.v2_extension_workflows) { const workflow = workflowTypes.get(row.workflow_type); if (!workflow) fail('unsupported', 'workflow capability is unavailable'); requireCapability(lock, workflow.capability, campaignId); }
+    for (const row of data.v2_extension_workflows) { const descriptor = workflowTypes.get(row.workflow_type); if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(decodeWorkflow(row), descriptor); requireCapability(lock, descriptor.capability, campaignId); }
     return clone({ format: 'potomac.v2-extension-snapshot', version: 1, campaignId, lock, data });
   };
   return { createEntity, read, list, events, executeCommand, startWorkflow, readWorkflow, expireWorkflow, snapshot };

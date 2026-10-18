@@ -11,6 +11,14 @@ export const canonicalV2Json = value => {
   if (Array.isArray(value)) return `[${value.map(item => canonicalV2Json(item)).join(',')}]`;
   return `{${Object.keys(value).sort().map(key => { if (['__proto__', 'prototype', 'constructor'].includes(key) || value[key] === undefined) fail('invalid', 'unsafe JSON object'); return `${JSON.stringify(key)}:${canonicalV2Json(value[key])}`; }).join(',')}}`;
 };
+const hasNestedVisibility = value => value && typeof value === 'object' && (Array.isArray(value)
+  ? value.some(hasNestedVisibility)
+  : Object.entries(value).some(([key, child]) => key === 'visibility' || hasNestedVisibility(child)));
+const freezeJson = value => {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeJson(child);
+  return Object.freeze(value);
+};
 export const hashV2Json = value => `sha256:${createHash('sha256').update(canonicalV2Json(value)).digest('hex')}`;
 export const validateV2JsonSchema = (value, schema, path = '$') => {
   if (!schema || typeof schema !== 'object') fail('invalid', `${path} has no schema`);
@@ -116,13 +124,14 @@ export function createV2EffectKernel({ db, handlers, authenticate, authorize, va
       for (const { effect, handler } of prepared) {
         const entity = db.prepare('SELECT entity_type, revision, visibility, data FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(proposal.campaignId, effect.target.entityId);
         if (!entity || entity.entity_type !== handler.targetType || entity.revision !== effect.target.expectedRevision || (entity.visibility !== 'public' && effect.target.visibility === 'public')) fail('stale', 'target type, revision or visibility changed');
-        const entitySnapshot = Object.freeze({ entityType: entity.entity_type, revision: entity.revision, visibility: entity.visibility, data: structuredClone(JSON.parse(entity.data)) });
+        const entitySnapshot = freezeJson({ entityType: entity.entity_type, revision: entity.revision, visibility: entity.visibility, data: structuredClone(JSON.parse(entity.data)) });
         if (!authorize({ principalId: proposal.principalId, campaignId: proposal.campaignId, moduleId: proposal.moduleId, commandId: proposal.commandId, authorizedParticipants: proposal.authorizedParticipants, workflowEntityId: proposal.workflowEntityId, effect, handler, entity: entitySnapshot })) fail('unauthorized', 'unauthorized principal or target');
-        const next = handler.apply({ entity: entitySnapshot, effect: structuredClone(effect) });
+        const next = handler.apply(freezeJson({ entity: entitySnapshot, effect: structuredClone(effect) }));
         if (!next || typeof next.data !== 'object' || !Number.isInteger(next.revision) || next.revision !== entity.revision + 1) fail('invalid', 'handler did not return the next entity revision');
         canonicalV2Json(next.data);
         validateEntity({ campaignId: proposal.campaignId, entityId: effect.target.entityId, entityType: entity.entity_type, data: next.data });
         const event = next.event; if (!event || event.kind !== handler.eventKind || event.visibility !== handler.eventVisibility || event.visibility !== effect.visibility) fail('invalid', 'handler event violates declared visibility or kind');
+        if (hasNestedVisibility(event.payload)) fail('invalid', 'event payload cannot contain nested visibility data');
         validateV2JsonSchema(event.payload, handler.eventSchema);
         const updated = db.prepare('UPDATE v2_effect_entities SET revision=?, data=? WHERE campaign_id=? AND entity_id=? AND revision=?').run(next.revision, JSON.stringify(next.data), proposal.campaignId, effect.target.entityId, entity.revision);
         if (updated.changes !== 1) fail('conflict', 'unexpected target revision conflict');
