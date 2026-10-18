@@ -91,7 +91,7 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     const audit = host.db.prepare('SELECT kind,visibility,payload FROM v2_extension_events WHERE operation_id=?').get(command.operationId);
     assert.equal(audit.kind, 'command.applied');
     assert.equal(audit.visibility, 'private');
-    assert.deepEqual(JSON.parse(audit.payload), { commandId: command.commandId, revision: 2 });
+    assert.deepEqual(JSON.parse(audit.payload), { commandId: command.commandId, revision: 2, outcomes: [], transcriptDigest: applied.resolutionTranscript.digest, randomness: [], decisions: [] });
     assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_receipts WHERE operation_id=?').get('player-command').count, 0, 'rejected attempts produce no receipt');
 
     assert.equal((await jsonRequest(`/api/v2/entities/reactor-http/grants/${playerB.memberId}`, {}, 'local-gm', 'DELETE')).status, 200);
@@ -122,4 +122,73 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     host?.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls, and recovers receipts and combat state', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-5e-'));
+  const databasePath = join(directory, 'host.sqlite');
+  const draws = [20, 1, 1, 20, 4, 3];
+  let drawCount = 0, host, baseUrl;
+  const launch = async () => {
+    host = createHost({ databasePath, campaignId: 'campaign-v2-5e', enableV2Api: true, v2RandomInt: (min, max) => {
+      assert.equal(min, 1); assert.ok(max >= 2);
+      const draw = draws[drawCount++]; assert.ok(draw >= min && draw < max, `unexpected requested die: ${draw} for 1..${max - 1}`);
+      return draw;
+    } });
+    const address = await host.listen(0); baseUrl = `http://127.0.0.1:${address.port}`;
+  };
+  const request = (path, token = 'local-gm', options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers } });
+  const send = (path, body, token = 'local-gm', method = 'POST', headers = {}) => request(path, token, { method, body: JSON.stringify(body), headers });
+  const proof = () => ({ 'x-v2-lock-digest': lockDigest });
+  let lockDigest;
+  try {
+    await launch();
+    const playerA = await (await send('/api/members/enroll', { displayName: 'Mira' })).json();
+    const playerB = await (await send('/api/members/enroll', { displayName: 'Oren' })).json();
+    const pin = await send('/api/v2/campaign/lock', { moduleId: 'example.revised5e' }, 'local-gm', 'PUT');
+    assert.equal(pin.status, 201, await pin.clone().text()); lockDigest = (await pin.json()).digest;
+    const actors = [
+      { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: playerA.memberId, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
+      { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: playerB.memberId, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+      { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
+    ];
+    const encounterId = 'encounter';
+    const created = await send('/api/v2/entities', { operationId: 'create-encounter', entityId: encounterId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [] } }, 'local-gm', 'POST', proof());
+    assert.equal(created.status, 201, await created.clone().text());
+    for (const member of [playerA, playerB]) assert.equal((await send(`/api/v2/entities/${encounterId}/grants`, { memberId: member.memberId, permissions: ['act'] }, 'local-gm', 'POST', proof())).status, 201);
+    const init = await send('/api/v2/commands', { operationId: 'roll-initiative', commandId: 'example.revised5e.initialize', entityId: encounterId, expectedRevision: 1, input: {} }, 'local-gm', 'POST', proof());
+    assert.equal(init.status, 200, await init.clone().text());
+    assert.equal(drawCount, 3);
+    const attack = { operationId: 'mira-attack-1', commandId: 'example.revised5e.attack', entityId: encounterId, expectedRevision: 2, input: { actorId: 'player-a', targetId: 'enemy' } };
+    const denied = await send('/api/v2/commands', { ...attack, operationId: 'cross-player', input: { actorId: 'player-a', targetId: 'enemy' } }, playerB.credential, 'POST', proof());
+    assert.equal(denied.status, 403, 'Player B cannot act for Player A'); assert.equal(drawCount, 3, 'unauthorized command consumes no randomness');
+    const accepted = await send('/api/v2/commands', attack, playerA.credential, 'POST', proof());
+    assert.equal(accepted.status, 200, await accepted.clone().text());
+    const receipt = await accepted.json();
+    assert.equal(receipt.revision, 3);
+    assert.equal(receipt.outcomes[0].kind, 'revised5e.attack.critical');
+    assert.equal(receipt.outcomes[0].data.damage, 10);
+    assert.equal(drawCount, 6);
+    const playerViewResponse = await request(`/api/v2/entities/${encounterId}`, playerB.credential, { headers: proof() });
+    assert.equal(playerViewResponse.status, 200); const playerView = await playerViewResponse.json();
+    assert.equal(playerView.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 12);
+    assert.equal('ownerPrincipalId' in playerView.data.actors[0], false, 'player projection hides ownership identities');
+    const eventsResponse = await request('/api/v2/events', playerB.credential, { headers: proof() });
+    assert.equal(eventsResponse.status, 200); const publicEvents = await eventsResponse.json();
+    const attackEvent = publicEvents.find(event => event.operationId === attack.operationId);
+    assert.ok(attackEvent); assert.deepEqual(attackEvent.payload.randomness.map(item => item.values), [[20], [4, 3]]);
+    assert.equal(attackEvent.payload.resolutionTranscript, undefined, 'public audit exposes rolls but not internal transcript state');
+    assert.deepEqual(await (await send('/api/v2/commands', attack, playerA.credential, 'POST', proof())).json(), receipt, 'exact retry is exactly-once');
+    assert.equal((await send('/api/v2/commands', { ...attack, expectedRevision: 1 }, playerA.credential, 'POST', proof())).status, 409, 'altered retry payload rejected');
+    assert.equal((await send('/api/v2/commands', { ...attack, operationId: 'stale-revision', expectedRevision: 1 }, playerA.credential, 'POST', proof())).status, 409, 'stale revision rejected');
+    assert.equal((await send('/api/v2/commands', { ...attack, operationId: 'client-rolls', randomness: [{ values: [20] }] }, playerA.credential, 'POST', proof())).status, 400, 'client-supplied rolls rejected');
+    const wrongTurn = await send('/api/v2/commands', { ...attack, operationId: 'wrong-turn', expectedRevision: 3 }, playerA.credential, 'POST', proof());
+    assert.equal(wrongTurn.status, 409, 'actor cannot attack after turn advanced'); assert.equal(drawCount, 6, 'illegal turns consume no random draws');
+    host.close(); await launch();
+    const restored = await (await request(`/api/v2/entities/${encounterId}`, playerB.credential, { headers: proof() })).json();
+    assert.equal(restored.revision, 3); assert.equal(restored.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 12);
+    assert.equal(restored.data.initiativeOrder[restored.data.currentTurnIndex], 'player-b');
+    assert.deepEqual(await (await send('/api/v2/commands', attack, playerA.credential, 'POST', proof())).json(), receipt, 'receipt remains exact across host restart');
+    assert.equal(drawCount, 6, 'retry after restart does not reroll');
+  } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
 });

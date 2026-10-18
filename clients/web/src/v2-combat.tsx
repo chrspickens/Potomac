@@ -1,0 +1,174 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { FormEvent } from 'react';
+import type { CapabilityLock, ExtensionEntityRecord, ExtensionCommandDescriptor, UiContribution, UiDescriptorCatalog, UiEntityProjection, UiHostContext } from '@potomac/contracts';
+import { revised5eCommands, revised5eEncounter, revised5eRefs } from '../../../examples/example.revised5e/v2/extensions.mjs';
+import contributionSource from '../../../examples/example.revised5e/v2/ui/combat.json';
+import { V2UiContributionView, UiContributionRegistry } from './workspace/v2-ui';
+import './v2-combat.css';
+
+const MODULE_ID = 'example.revised5e';
+const ENCOUNTER_ID = 'revised5e-demo-encounter';
+const TOKEN_KEY = 'potomac.v2.revised5e.credential';
+const ENROLLMENT_KEY = 'potomac.v2.revised5e.enrollment';
+type Enrollment = { playerA?: { memberId: string; credential: string }; playerB?: { memberId: string; credential: string } };
+type V2Lock = { lock: CapabilityLock; digest: string };
+type V2Event = { eventId: string; operationId: string; entityId: string; kind: string; visibility: string; payload: Record<string, unknown> };
+type Actor = { id: string; name: string; kind: string; abilityModifiers: Record<string, number>; proficiencyBonus: number; armorClass: number; maximumHitPoints: number; currentHitPoints: number; initiativeModifier: number; weapon: { name: string; damageDie: number; damageType: string; proficient: boolean } };
+type Encounter = UiEntityProjection & { revision: number; data: { title: string; status: string; actors: Actor[]; initiativeOrder: string[]; initiativeRolls: number[]; currentTurnIndex: number; round: number; combatLog: Array<Record<string, unknown>> } };
+function makeContribution(): UiContribution {
+  const source = contributionSource as unknown as { contractVersion: 1; contributionId: string; contributionVersion: '1.0.0'; kind: UiContribution['kind']; slots: string[]; workflows: []; nodes: UiContribution['nodes'] };
+  return {
+    ...source,
+    capability: revised5eRefs.ui,
+    entityTypeId: revised5eEncounter.typeId,
+    entityCapability: revised5eEncounter.capability,
+    entitySchemaVersion: revised5eEncounter.schemaVersion,
+    entitySchema: revised5eEncounter.schema,
+    commands: revised5eCommands.map(command => ({ commandId: command.commandId, capability: revised5eRefs.commands, inputSchema: command.inputSchema })),
+  };
+}
+
+const contribution = makeContribution();
+const catalog: UiDescriptorCatalog = {
+  entities: [{ typeId: revised5eEncounter.typeId, schemaVersion: revised5eEncounter.schemaVersion, capability: revised5eEncounter.capability, schema: revised5eEncounter.schema }],
+  commands: revised5eCommands.map((command: ExtensionCommandDescriptor) => ({ commandId: command.commandId, entityTypeId: command.entityTypeId, capability: command.capability, inputSchema: command.inputSchema })),
+  workflows: [],
+};
+
+export function V2CombatApp() {
+  const [credential, setCredential] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? '');
+  const [connected, setConnected] = useState(false);
+  const [isGm, setIsGm] = useState(false);
+  const [lock, setLock] = useState<V2Lock>();
+  const [encounter, setEncounter] = useState<Encounter>();
+  const [events, setEvents] = useState<V2Event[]>([]);
+  const [enrollment, setEnrollment] = useState<Enrollment>(() => { try { return JSON.parse(sessionStorage.getItem(ENROLLMENT_KEY) ?? '{}') as Enrollment; } catch { return {}; } });
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [lastOperation, setLastOperation] = useState('');
+  const registry = useMemo(() => {
+    if (!lock) return undefined;
+    const value = new UiContributionRegistry(lock.lock, lock.lock.campaignId, catalog);
+    value.register(contribution);
+    return value;
+  }, [lock]);
+
+  const request = useCallback(async (path: string, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    headers.set('authorization', `Bearer ${credential}`);
+    if (init.body) headers.set('content-type', 'application/json');
+    if (lock) headers.set('x-v2-lock-digest', lock.digest);
+    const response = await fetch(path, { ...init, headers });
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw Object.assign(new Error(String(payload.error || `Request failed (${response.status})`)), { status: response.status, payload });
+    return payload;
+  }, [credential, lock]);
+
+  const refresh = useCallback(async () => {
+    if (!connected || !lock || lock.lock.rootModule.id !== MODULE_ID) return;
+    try {
+      const [entities, eventRows] = await Promise.all([
+        request(`/api/v2/entities?typeId=${encodeURIComponent(revised5eEncounter.typeId)}`),
+        request('/api/v2/events'),
+      ]);
+      const found = (entities as unknown as ExtensionEntityRecord[]).find(item => item.entityId === ENCOUNTER_ID);
+      setEncounter(found as Encounter | undefined);
+      setEvents((eventRows as unknown as V2Event[]).filter(item => item.entityId === ENCOUNTER_ID));
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not refresh the authorized encounter.'); }
+  }, [connected, lock, request]);
+
+  useEffect(() => { if (!connected) return; void refresh(); const timer = window.setInterval(() => void refresh(), 1500); return () => window.clearInterval(timer); }, [connected, refresh]);
+
+  const connect = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setMessage('');
+    try {
+      const response = await fetch('/api/v2/campaign/lock', { headers: { authorization: `Bearer ${credential}` } });
+      const payload = await response.json() as Record<string, unknown>;
+      if (!response.ok) throw Object.assign(new Error(String(payload.error || 'Could not read the V2 campaign lock.')), { status: response.status });
+      const next = payload as unknown as V2Lock;
+      if (next.lock.rootModule.id !== MODULE_ID) { setLock(next); setConnected(true); setMessage(`This campaign is pinned to ${next.lock.rootModule.id}. Start a fresh demo host to select the Revised 5e example.`); return; }
+      sessionStorage.setItem(TOKEN_KEY, credential);
+      setLock(next); setIsGm(credential === 'local-gm'); setConnected(true); setMessage('Connected to the authenticated V2 host.');
+    } catch (error) {
+      if (credential === 'local-gm' && (error as { status?: number }).status === 409) {
+        setLock(undefined); setIsGm(true); setConnected(true); sessionStorage.setItem(TOKEN_KEY, credential); setMessage('No V2 module is pinned yet. Select the trusted Revised 5e example to continue.');
+      } else { setConnected(false); setMessage(error instanceof Error ? error.message : 'Authentication failed.'); }
+    } finally { setBusy(false); }
+  };
+
+  const pinModule = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const response = await fetch('/api/v2/campaign/lock', { method: 'PUT', headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' }, body: JSON.stringify({ moduleId: MODULE_ID }) });
+      const payload = await response.json() as Record<string, unknown>;
+      if (!response.ok) throw new Error(String(payload.error || 'Could not pin the bundled module.'));
+      setLock(payload as unknown as V2Lock); setIsGm(true); setConnected(true); sessionStorage.setItem(TOKEN_KEY, credential); setMessage('Revised 5e is pinned to this campaign.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Module pin failed.'); }
+    finally { setBusy(false); }
+  };
+
+  const enroll = async (slot: 'playerA' | 'playerB', displayName: string) => {
+    setBusy(true); setMessage('');
+    try {
+      const payload = await request('/api/members/enroll', { method: 'POST', body: JSON.stringify({ displayName }) }) as { memberId: string; credential: string };
+      const next = { ...enrollment, [slot]: payload };
+      setEnrollment(next); sessionStorage.setItem(ENROLLMENT_KEY, JSON.stringify(next)); setMessage(`${displayName} is enrolled. Copy the one-time credential into that player's separate browser profile.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Enrollment failed.'); }
+    finally { setBusy(false); }
+  };
+
+  const createEncounter = async () => {
+    if (!enrollment.playerA || !enrollment.playerB || !lock) return;
+    setBusy(true); setMessage('');
+    try {
+      const actors = [
+        { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: enrollment.playerA.memberId, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
+        { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: enrollment.playerB.memberId, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+        { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+      ];
+      await request('/api/v2/entities', { method: 'POST', body: JSON.stringify({ operationId: 'revised5e-setup-create-v1', entityId: ENCOUNTER_ID, typeId: revised5eEncounter.typeId, visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [] } }) });
+      for (const member of [enrollment.playerA, enrollment.playerB]) await request(`/api/v2/entities/${ENCOUNTER_ID}/grants`, { method: 'POST', body: JSON.stringify({ memberId: member.memberId, permissions: ['act'] }) });
+      await refresh(); setMessage('Encounter created and both players received read and act grants. GM: roll initiative from the module contribution below.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Encounter setup failed.'); }
+    finally { setBusy(false); }
+  };
+
+  const host: UiHostContext | undefined = lock && encounter ? {
+    lock: lock.lock,
+    principalId: 'authenticated-browser-session',
+    allowedCommandIds: isGm ? revised5eCommands.map(command => command.commandId) : ['example.revised5e.attack'],
+    submitCommand: async input => {
+      setBusy(true); setMessage(''); setLastOperation(input.operationId);
+      try {
+        const body = { operationId: input.operationId, commandId: input.commandId, entityId: input.entityId, expectedRevision: input.expectedRevision, input: input.input };
+        const response = await request('/api/v2/commands', { method: 'POST', body: JSON.stringify(body) });
+        setMessage(`Host committed ${input.commandId}; receipt ${input.operationId}.`);
+        return response;
+      } catch (error) { setMessage(error instanceof Error ? error.message : 'The host rejected the command.'); throw error; }
+      finally { setBusy(false); }
+    },
+  } : undefined;
+
+  if (!connected) return <main className="v2-combat-page"><section className="v2-login-card"><p className="v2-eyebrow">Potomac · Experimental V2</p><h1>Revised 5e encounter</h1><p>Enter the GM fixture token or an individually enrolled player credential. Credentials are sent only to this loopback host.</p><form onSubmit={event => void connect(event)}><label htmlFor="v2-credential">Host credential</label><input id="v2-credential" type="password" autoComplete="off" value={credential} onChange={event => setCredential(event.target.value)} required /><button disabled={busy}>{busy ? 'Connecting…' : 'Connect to host'}</button></form>{message && <p role="alert">{message}</p>}</section></main>;
+
+  if (lock && lock.lock.rootModule.id !== MODULE_ID) return <main className="v2-combat-page"><section className="v2-login-card"><h1>Campaign module mismatch</h1><p>{message}</p><button onClick={() => { setConnected(false); setLock(undefined); }}>Sign out</button></section></main>;
+
+  return <main className="v2-combat-page">
+    <header className="v2-combat-header"><div><p className="v2-eyebrow">Bundled module · Revised 5e 1.0.0</p><h1>Combat · {encounter?.data.title || 'Mire Crossing'}</h1></div><div className="v2-identity">{isGm ? 'GM' : 'Enrolled player'} · authenticated <button onClick={() => void refresh()}>Refresh host state</button><button onClick={() => { sessionStorage.removeItem(TOKEN_KEY); setConnected(false); setLock(undefined); }}>Sign out</button></div></header>
+    {message && <p className="v2-message" role="status">{message}</p>}
+    {!lock && isGm && <section className="v2-setup-card"><h2>Pin the trusted encounter module</h2><p>This chooses only the bundled Revised 5e proof for this campaign’s immutable exact lock.</p><button disabled={busy} onClick={() => void pinModule()}>Pin Revised 5e V2 module</button></section>}
+    {lock && !encounter && isGm && <section className="v2-setup-card"><h2>Set up the GM and two players</h2><p>Enroll each player separately, then create the public encounter. The host stores credential hashes; copy each displayed credential to that player's own browser context.</p>
+      <div className="v2-enrollment-grid">{(['playerA', 'playerB'] as const).map((slot, index) => { const enrolled = enrollment[slot]; const displayName = index === 0 ? 'Player A' : 'Player B'; return <article key={slot}><h3>{displayName}</h3>{enrolled ? <><p>Member ID: <code>{enrolled.memberId}</code></p><p>One-time credential</p><output data-player-credential={slot}>{enrolled.credential}</output></> : <button disabled={busy} onClick={() => void enroll(slot, displayName)}>Enroll {displayName}</button>}</article>; })}</div>
+      {enrollment.playerA && enrollment.playerB && <button className="v2-primary" disabled={busy} onClick={() => void createEncounter()}>Create encounter and grant player access</button>}
+    </section>}
+    {encounter && registry && host && <>
+      <section className="v2-turn-card"><span className={`v2-status v2-status-${encounter.data.status}`}>{encounter.data.status}</span><div><strong>{encounter.data.status === 'active' ? `Round ${encounter.data.round} · ${encounter.data.actors.find(actor => actor.id === encounter.data.initiativeOrder[encounter.data.currentTurnIndex])?.name ?? 'Turn pending'}` : encounter.data.status === 'setup' ? 'Initiative has not been rolled' : 'Encounter complete'}</strong><small>{encounter.data.initiativeOrder.map((id, index) => `${index + 1}. ${encounter.data.actors.find(actor => actor.id === id)?.name}`).join('  ·  ')}</small></div></section>
+      <section className="v2-actor-grid" aria-label="Authorized combatants">{encounter.data.actors.map(actor => <article className={`v2-actor-card ${encounter.data.initiativeOrder[encounter.data.currentTurnIndex] === actor.id && encounter.data.status === 'active' ? 'is-current' : ''}`} key={actor.id}><div><span>{actor.kind === 'enemy' ? 'ENEMY' : 'PLAYER CHARACTER'}</span><h2>{actor.name}</h2></div><p className="v2-hp">{actor.currentHitPoints} <small>/ {actor.maximumHitPoints} HP</small></p><dl><div><dt>AC</dt><dd>{actor.armorClass}</dd></div><div><dt>Initiative</dt><dd>{actor.initiativeModifier >= 0 ? '+' : ''}{actor.initiativeModifier}</dd></div><div><dt>Proficiency</dt><dd>+{actor.proficiencyBonus}</dd></div><div><dt>Weapon</dt><dd>{actor.weapon.name} · 1d{actor.weapon.damageDie} {actor.weapon.damageType}</dd></div></dl>{actor.currentHitPoints === 0 && <strong className="v2-defeated">Defeated</strong>}</article>)}</section>
+      <section className="v2-commands"><h2>Module actions</h2><V2UiContributionView experimentalEnabled registry={registry} contributionId={contribution.contributionId} entity={encounter} host={host} /></section>
+      <section className="v2-log"><h2>Combat log</h2>{encounter.data.combatLog.length ? <ol>{encounter.data.combatLog.slice().reverse().map((entry, index) => <li key={`${String(entry.actorId)}-${String(entry.round)}-${index}`}><strong>{String(entry.kind).replaceAll('.', ' ')}</strong><span>Round {String(entry.round)} · {String(entry.actorName)} {entry.kind === 'initiative' ? 'initiative' : 'attacks'}{entry.kind === 'initiative' ? '' : ` ${String(entry.targetName)}`}</span>{entry.kind === 'initiative' ? <small>d20 {String(entry.d20)} + modifier = {String(entry.attackTotal)}</small> : <small>d20 {String(entry.d20)} + attack modifier = {String(entry.attackTotal)} vs AC {String(entry.armorClass)}{Number(entry.damage) > 0 ? ` · damage ${Array.isArray(entry.damageRolls) ? entry.damageRolls.join(' + ') : ''} + ${String(entry.damageModifier)} = ${String(entry.damage)} · ${String(entry.remainingHitPoints)} HP remains` : ` · ${String(entry.damage ?? 0)} damage`}{entry.defeated ? ' · defeated' : ''}</small>}</li>)}</ol> : <p>No committed actions yet.</p>}</section>
+      <section className="v2-audit"><h2>Host random audit</h2>{events.filter(event => Array.isArray(event.payload.randomness) && event.payload.randomness.length > 0).map(event => <article key={event.eventId}><small>Operation {event.operationId} · transcript {String(event.payload.transcriptDigest)}</small><div>{(event.payload.randomness as Array<{ requestId: string; sides: number; values: number[] }>).map(item => <span key={item.requestId}>{item.requestId}: d{item.sides} [{item.values.join(', ')}]</span>)}</div></article>)}{!events.some(event => Array.isArray(event.payload.randomness) && event.payload.randomness.length > 0) && <p>Host-supplied rolls will appear here after initiative or an attack.</p>}</section>
+      {isGm && <details className="v2-gm-setup"><summary>GM setup credentials</summary><div>{(['playerA', 'playerB'] as const).map(slot => enrollment[slot] && <p key={slot}>{slot}: <output>{enrollment[slot]!.credential}</output></p>)}</div></details>}
+      <output className="v2-last-operation" data-last-operation-id={lastOperation} aria-live="polite">{lastOperation ? `Last operation ${lastOperation}` : ''}</output>
+    </>}
+  </main>;
+}
