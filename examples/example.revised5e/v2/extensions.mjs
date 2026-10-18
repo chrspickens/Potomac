@@ -117,10 +117,14 @@ const attackResolver = {
     const remainingHitPoints = Math.max(0, target.currentHitPoints - damage);
     const defeated = remainingHitPoints === 0;
     const kind = !hit ? 'miss' : defeated ? 'defeat' : critical ? 'critical' : 'hit';
-    const actionsUsed = [...data.actionsUsed, actor.id];
-    const updatedActors = data.actors.map(item => item.id === target.id ? { ...item, currentHitPoints: remainingHitPoints } : item);
+    const actorIndex = data.initiativeOrder.indexOf(actor.id), wraps = actorIndex === data.initiativeOrder.length - 1;
+    const actionsUsed = wraps ? [] : [...data.actionsUsed, actor.id];
+    const currentTurnIndex = wraps ? 0 : (actorIndex + 1) % data.initiativeOrder.length;
+    const round = wraps ? data.round + 1 : data.round;
+    const nextActorId = data.initiativeOrder[(actorIndex + 1) % data.initiativeOrder.length];
+    const updatedActors = data.actors.map(item => item.id === target.id ? { ...item, currentHitPoints: remainingHitPoints } : item.id === nextActorId ? { ...item, movementRemaining: item.speed, reactionAvailable: true, disengaged: false } : item);
     const logEntry = { round: data.round, actorId: actor.id, actorName: actor.name, targetId: target.id, targetName: target.name, kind, d20, attackTotal, armorClass: target.armorClass, damageRolls, damageModifier: hit ? damageModifier : 0, damage, remainingHitPoints, defeated };
-    const updated = { ...data, actors: updatedActors, actionsUsed, status: defeated ? 'complete' : data.status, combatLog: [...data.combatLog, logEntry].slice(-100) };
+    const updated = { ...data, actors: updatedActors, actionsUsed, currentTurnIndex, round, status: defeated ? 'complete' : data.status, combatLog: [...data.combatLog, logEntry].slice(-100) };
     return { outcomes: [outcome(`revised5e.attack.${kind}`, logEntry)], decisions: [{ id: `${input.operationId}.attack`, data: { naturalD20: d20, attackModifier: modifier, attackTotal, armorClass: target.armorClass, hit, critical, damageRolls, damageModifier, damage, defeated }, visibility: 'public' }], effects: [
       patch(input.operationId, 'example.revised5e.encounter-state', input.state.entityId, updated)
     ] };

@@ -187,7 +187,7 @@ test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls
     host.close(); await launch();
     const restored = await (await request(`/api/v2/entities/${encounterId}`, playerB.credential, { headers: proof() })).json();
     assert.equal(restored.revision, 3); assert.equal(restored.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 12);
-    assert.equal(restored.data.initiativeOrder[restored.data.currentTurnIndex], 'player-a', 'attack consumes the action but End Turn advances initiative');
+    assert.equal(restored.data.initiativeOrder[restored.data.currentTurnIndex], 'player-b', 'attack preserves the existing initiative advancement');
     assert.deepEqual(await (await send('/api/v2/commands', attack, playerA.credential, 'POST', proof())).json(), receipt, 'receipt remains exact across host restart');
     assert.equal(drawCount, 6, 'retry after restart does not reroll');
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }

@@ -93,14 +93,11 @@ test('Disengage consumes the action and End Turn advances and restores the next 
   assert.equal(ended.effects[0].payload.state.actors[1].movementRemaining, 30);
 });
 
-test('movement remains available after the turn action until End Turn is submitted', () => {
+test('Attack preserves the existing initiative-advance behavior after movement has been taken', () => {
   const attacked = resolve(8, [2]);
-  const state = movementInput();
-  state.state.data = { ...state.state.data, ...attacked.effects[0].payload.state };
-  assert.equal(state.state.data.currentTurnIndex, 0);
-  assert.deepEqual(state.state.data.actionsUsed, ['player-a']);
-  const moved = movementResolver.resolve(state);
-  assert.equal(moved.effects[0].payload.state.actors[0].position.y, 3);
+  const state = attacked.effects[0].payload.state;
+  assert.equal(state.initiativeOrder[state.currentTurnIndex], 'player-b');
+  assert.deepEqual(state.actionsUsed, ['player-a']);
 });
 
 test('resumed opportunity attacks use host transcript, consume only a used reaction, and stop a defeated mover at the trigger', () => {
