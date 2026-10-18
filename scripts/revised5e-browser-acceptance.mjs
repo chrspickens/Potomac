@@ -171,7 +171,7 @@ try {
   const beforeEvents = await evaluate('playerB', `(async()=>{const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());return fetch('/api/v2/events',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'x-v2-lock-digest':lock.digest}}).then(r=>r.json())})()`);
   host.close(); await delay(300); host = await startHost(); await hostReady();
   await click('playerB', 'Refresh host state');
-  await wait('playerB', `document.querySelector('.v2-log')?.innerText.includes('Mira Vale attacks')`, 'recovered combat result');
+  await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="critical"]'))`, 'recovered combat result');
   const enemyHpAfterRestart = await evaluate('playerB', `([...document.querySelectorAll('.v2-actor-card')].find(card=>card.querySelector('h2')?.textContent==='Mire Warden')?.querySelector('.v2-hp')?.textContent||'').trim()`);
   assert.equal(enemyHpAfterRestart, enemyHpBeforeRestart, 'enemy HP is unchanged after host restart');
   const retry = await evaluate('playerA', `(async()=>{const capture=window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.attack');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(capture.body)});return {status:response.status,body:await response.json()}})()`);
