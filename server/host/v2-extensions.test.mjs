@@ -14,7 +14,7 @@ const allRefs = [moduleRef, ...Object.values(starshipRefs)];
 const lock = { lockVersion: 1, campaignId, entries: allRefs.map(ref => ({ ...ref, source: 'bundled', optional: false })), rootModule: { id: moduleRef.id, version: moduleRef.implementationVersion, digest: moduleRef.digest } };
 const data = () => ({ power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: [] });
 const reactionIntent = { ordering: 'simultaneous', visibility: 'gm', audiences: [{ audience: 'entity-owner', priority: 2, actions: [{ actionId: 'narrative-interrupt', inputSchema: { type: 'object', properties: { choice: { type: 'string', enum: ['accept', 'decline'] } }, required: ['choice'], additionalProperties: false }, visibility: 'public' }] }] };
-const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false, reactionContinuationResolver, resume, randomOnReaction = false, intent = reactionIntent, resolveReactionEligibility, authorizeReactionResponder, reauthorizePendingActor, databasePath, database } = {}) => {
+const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false, reactionContinuationResolver, resume, randomOnReaction = false, randomResolverId = reactionContinuationResolver, randomVisibility = 'public', intent = reactionIntent, resolveReactionEligibility, authorizeReactionResponder, reauthorizePendingActor, databasePath, database } = {}) => {
   const path = databasePath || join(mkdtempSync(join(tmpdir(), 'potomac-v2-extensions-')), 'host.sqlite');
   const db = database || new DatabaseSync(path);
   let time = '2026-10-17T12:00:00.000Z';
@@ -23,7 +23,7 @@ const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = fa
   const roles = new Map([['gm-1', 'gm'], ['player-a', 'player'], ['player-b', 'player'], ['player-c', 'player']]);
   const effectHandlers = starshipEffectHandlers.map(handler => ({ ...handler, apply: context => { assert.equal(context.db, undefined); assert.equal(context.transaction, undefined); assert(Object.isFrozen(context.entity.data)); assert(Object.isFrozen(context.effect.payload)); return handler.apply(context); } }));
   let randomDraws = 0;
-  const resolvers = starshipResolvers.map(resolver => ({ ...resolver, ...(resolver.ref.id === reactionContinuationResolver && randomOnReaction ? { randomRequests: ({ randomness }) => randomness.length ? [] : [{ requestId: 'narrative-host-die', kind: 'die', count: 1, sides: 20 }] } : {}), resolve: input => { assert.equal(input.db, undefined); assert.equal(input.transaction, undefined); assert(Object.isFrozen(input)); assert(Object.isFrozen(input.state.data)); const output = resolver.resolve(input); return resolver.ref.id === reactionContinuationResolver ? { ...output, effects: [], continuation: { continuationId: 'pending-reaction-1', state: { privateDetail: 'not projected' }, resumeOn: 'reaction', expiresAt: '2026-10-17T13:00:00.000Z', step: 1, reaction: intent } } : output; }, ...(resolver.ref.id === reactionContinuationResolver && resume ? { resume } : {}) }));
+  const resolvers = starshipResolvers.map(resolver => ({ ...resolver, ...(resolver.ref.id === randomResolverId && randomOnReaction ? { randomRequests: ({ randomness }) => randomness.length ? [] : [{ requestId: 'narrative-host-die', kind: 'die', count: 1, sides: 20, visibility: randomVisibility }] } : {}), resolve: input => { assert.equal(input.db, undefined); assert.equal(input.transaction, undefined); assert(Object.isFrozen(input)); assert(Object.isFrozen(input.state.data)); const output = resolver.resolve(input); return resolver.ref.id === reactionContinuationResolver ? { ...output, effects: [], continuation: { continuationId: 'pending-reaction-1', state: { privateDetail: 'not projected' }, resumeOn: 'reaction', expiresAt: '2026-10-17T13:00:00.000Z', step: 1, reaction: intent } } : output; }, ...(resolver.ref.id === reactionContinuationResolver && resume ? { resume } : {}) }));
   const kernel = createV2ExtensionKernel({ db, entities: [starshipEntity], commands: starshipCommands, workflows: [starshipWorkflow], effectHandlers, resolvers,
     authenticate: principalId => roles.has(principalId) ? { principalId, role: roles.get(principalId) } : undefined,
     getCampaignLock: id => {
@@ -62,6 +62,17 @@ test('stores versioned entities, applies a host-authorized power command and fil
   db.close();
 });
 
+test('private host randomness is retained in trusted receipts but omitted from immediate command audit events', () => {
+  const context = make({ randomResolverId: starshipRefs.powerResolver.id, randomOnReaction: true, randomVisibility: 'gm' }); create(context.kernel);
+  const receipt = context.kernel.executeCommand(powerRequest());
+  assert.equal(receipt.resolutionTranscript.randomness[0].visibility, 'gm');
+  for (const principalId of ['gm-1', 'player-a']) {
+    const event = context.kernel.events(campaignId, principalId).find(item => item.operationId === 'route-1' && item.kind === 'command.applied');
+    assert.ok(event); assert.deepEqual(event.payload.randomness, [], `${principalId} audit view excludes GM-only draws`);
+  }
+  context.db.close();
+});
+
 test('an entity read grant does not disclose private event payloads to a non-owner', () => {
   const { db, kernel } = make({ authorizeRead: ({ member }) => member.principalId === 'player-c' });
   create(kernel);
@@ -98,7 +109,7 @@ test('durably suspends and resumes a generic narrative command exactly once afte
     decisions: [],
     effects: input.reaction.status === 'resolved' && input.reaction.decisions.some(item => item.decision === 'accept') ? [{ effectId: `${input.operationId}.narrative-effect`, handler: starshipRefs.allocateEffect.id, targetId: input.state.entityId, payload: { subsystem: 'propulsion', amount: 3 }, visibility: 'private' }] : []
   });
-  const context = make({ reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true }); create(context.kernel);
+  const context = make({ reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true, randomVisibility: 'gm' }); create(context.kernel);
   const suspended = context.kernel.executeCommand(powerRequest());
   assert.equal(suspended.status, 'pending');
   assert.equal(context.kernel.executeCommand(powerRequest()).status, 'pending', 'exact initial retry returns pending without re-resolving');
@@ -109,10 +120,11 @@ test('durably suspends and resumes a generic narrative command exactly once afte
   assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 0);
   const initialReceipt = JSON.parse(context.db.prepare('SELECT response FROM v2_extension_receipts WHERE operation_id=?').get('route-1').response);
   assert.equal(initialReceipt.suspensionTranscript.randomness[0].values[0], 1, 'host draw is durable with the suspension transcript');
+  assert.equal(initialReceipt.suspensionTranscript.randomness[0].visibility, 'gm');
   assert.equal(JSON.stringify(context.kernel.events(campaignId, 'player-a')).includes('not projected'), false, 'private continuation is absent from player events');
   const path = context.path; context.db.close();
   const db = new DatabaseSync(path);
-  const restored = make({ database: db, databasePath: path, reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true });
+  const restored = make({ database: db, databasePath: path, reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true, randomVisibility: 'gm' });
   const result = restored.kernel.submitReaction({ operationId: 'narrative-reply-1', windowId: suspended.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' });
   assert.equal(result.status, 'resolved');
   assert.equal(restored.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'completed');
@@ -121,10 +133,15 @@ test('durably suspends and resumes a generic narrative command exactly once afte
   assert.equal(restored.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_receipts WHERE operation_id=?').get('route-1').count, 1);
   const completedReceipt = JSON.parse(restored.db.prepare('SELECT response FROM v2_extension_receipts WHERE operation_id=?').get('route-1').response);
   assert.deepEqual(completedReceipt.resolutionTranscript.input.resume.reaction.decisions.map(item => item.principalId), ['player-a'], 'resume transcript digest input binds the exact ordered decision');
+  assert.equal(completedReceipt.resolutionTranscript.randomness[0].visibility, 'gm');
+  for (const principalId of ['gm-1', 'player-a']) {
+    const event = restored.kernel.events(campaignId, principalId).find(item => item.kind === 'command.resumed');
+    assert.ok(event); assert.deepEqual(event.payload.randomness, [], `${principalId} resumed audit view omits GM-only dice`);
+  }
   assert.equal(restored.getRandomDrawCount(), 1, 'resume draws independently under host control');
   restored.db.close();
   const completedDb = new DatabaseSync(path);
-  const afterCompletionRestart = make({ database: completedDb, databasePath: path, reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true });
+  const afterCompletionRestart = make({ database: completedDb, databasePath: path, reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true, randomVisibility: 'gm' });
   assert.equal(afterCompletionRestart.kernel.executeCommand(powerRequest()).status, 'applied', 'post-completion restart returns the committed receipt');
   assert.equal(afterCompletionRestart.getRandomDrawCount(), 0, 'completed retry does not reroll');
   assert.equal(afterCompletionRestart.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 1, 'completed retry does not replay effects');

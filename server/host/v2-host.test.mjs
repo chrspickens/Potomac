@@ -192,3 +192,57 @@ test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls
     assert.equal(drawCount, 6, 'retry after restart does not reroll');
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('authenticated HTTP reaction routes recover, authorize and resume a generic interruption exactly once', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-reaction-http-'));
+  const databasePath = join(directory, 'host.sqlite'); let host, baseUrl, draws = 0;
+  const launch = async () => { host = createHost({ databasePath, campaignId: 'campaign-v2-reaction-http', enableV2Api: true, v2RandomInt: min => { draws++; return min; } }); const address = await host.listen(0); baseUrl = `http://127.0.0.1:${address.port}`; };
+  const request = (path, token = 'local-gm', options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers } });
+  const send = (path, body, token = 'local-gm', headers = {}) => request(path, token, { method: 'POST', body: JSON.stringify(body), headers });
+  let playerA, playerB, digest, pending, decisionBody;
+  try {
+    await launch();
+    playerA = await (await send('/api/members/enroll', { displayName: 'Interrupt initiator' })).json();
+    playerB = await (await send('/api/members/enroll', { displayName: 'Eligible responder' })).json();
+    const pinned = await request('/api/v2/campaign/lock', 'local-gm', { method: 'PUT', body: JSON.stringify({ moduleId: 'example.interruption' }), headers: { 'content-type': 'application/json' } });
+    assert.equal(pinned.status, 201, await pinned.clone().text()); digest = (await pinned.json()).digest; const lock = { 'x-v2-lock-digest': digest };
+    const created = await send('/api/v2/entities', { operationId: 'create-interrupt-record', entityId: 'interrupt-record', typeId: 'example.interruption.record', visibility: 'owner', ownerPrincipalId: playerB.memberId, data: { title: 'Signal from the old station', status: 'ready', lastChoice: 'none', gmNote: '' } }, 'local-gm', lock);
+    assert.equal(created.status, 201, await created.clone().text());
+    assert.equal((await send('/api/v2/entities/interrupt-record/grants', { memberId: playerA.memberId, permissions: ['act'] }, 'local-gm', lock)).status, 201);
+    const command = { operationId: 'initiate-interruption', commandId: 'example.interruption.request', entityId: 'interrupt-record', expectedRevision: 1, input: {} };
+    const started = await send('/api/v2/commands', command, playerA.credential, lock); assert.equal(started.status, 200, await started.clone().text()); pending = await started.json(); assert.equal(pending.status, 'pending');
+    assert.equal(draws, 1, 'host draws and records the private suspension randomness');
+    assert.equal((await (await request('/api/v2/reactions', playerA.credential, { headers: lock })).json()).length, 0, 'initiator does not see GM-private responder window');
+    const visible = await (await request('/api/v2/reactions', playerB.credential, { headers: lock })).json(); assert.equal(visible.length, 1); assert.equal(visible[0].permissions.submit, true);
+    const detail = await (await request(`/api/v2/reactions/${pending.windowId}`, playerB.credential, { headers: lock })).json();
+    assert.equal(detail.availableActions[0].actionId, 'example.interruption.choose'); assert.equal(JSON.stringify(detail).includes('hidden table prompt'), false);
+    assert.equal((await send(`/api/v2/reactions/${pending.windowId}/decisions`, { operationId: 'spoof', actionId: 'example.interruption.choose', input: { choice: 'accept' }, decision: 'accept', principalId: playerA.memberId }, playerB.credential, lock)).status, 400, 'caller cannot select principal identity');
+    host.close(); await launch();
+    decisionBody = { operationId: 'player-b-choice', actionId: 'example.interruption.choose', input: { choice: 'accept' }, decision: 'accept' };
+    const resolved = await send(`/api/v2/reactions/${pending.windowId}/decisions`, decisionBody, playerB.credential, lock); assert.equal(resolved.status, 200, await resolved.clone().text()); assert.equal((await resolved.json()).status, 'resolved');
+    assert.equal(draws, 2, 'resume draw is host generated after restart');
+    const exact = await Promise.all([send(`/api/v2/reactions/${pending.windowId}/decisions`, decisionBody, playerB.credential, lock), send(`/api/v2/reactions/${pending.windowId}/decisions`, decisionBody, playerB.credential, lock)]); assert.deepEqual(exact.map(response => response.status), [200, 200], 'concurrent exact retries return authorized existing projections');
+    assert.equal((await send(`/api/v2/reactions/${pending.windowId}/decisions`, { ...decisionBody, input: { choice: 'decline' } }, playerB.credential, lock)).status, 409, 'altered retry payload conflicts');
+    assert.equal((await send(`/api/v2/reactions/${pending.windowId}/decisions`, { ...decisionBody, operationId: 'competing-choice' }, playerB.credential, lock)).status, 409, 'concurrent duplicate responder choice cannot apply twice');
+    const playerEntity = await (await request('/api/v2/entities/interrupt-record', playerB.credential, { headers: lock })).json(); assert.equal(playerEntity.data.status, 'accepted', JSON.stringify(host.db.prepare('SELECT status,response FROM v2_extension_pending_commands WHERE operation_id=?').get(command.operationId))); assert.equal('gmNote' in playerEntity.data, false);
+    const gmEntity = await (await request('/api/v2/entities/interrupt-record', 'local-gm', { headers: lock })).json(); assert.match(gmEntity.data.gmNote, /hidden table prompt/);
+    const publicEvents = await (await request('/api/v2/events', playerB.credential, { headers: lock })).json();
+    assert.ok(publicEvents.some(event => event.kind === 'command.resumed' && event.payload.outcomes.some(outcome => outcome.kind === 'interruption.completed')));
+    assert.equal(JSON.stringify(publicEvents).includes('hidden table prompt'), false); assert.equal(JSON.stringify(publicEvents).includes('suspension-audit-draw'), false);
+    const pendingRow = host.db.prepare('SELECT status,suspension_transcript FROM v2_extension_pending_commands WHERE operation_id=?').get(command.operationId);
+    assert.equal(pendingRow.status, 'completed'); assert.equal(JSON.parse(pendingRow.suspension_transcript).randomness[0].visibility, 'gm');
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get(command.operationId).count, 1);
+    assert.deepEqual(await (await send('/api/v2/commands', command, playerA.credential, lock)).json().then(result => result.status), 'applied', 'completed parent retry does not remain pending');
+    assert.equal(draws, 2); assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get(command.operationId).count, 1);
+    const secondEntity = await send('/api/v2/entities', { operationId: 'create-revocation-record', entityId: 'revocation-record', typeId: 'example.interruption.record', visibility: 'owner', ownerPrincipalId: playerB.memberId, data: { title: 'Revocation check', status: 'ready', lastChoice: 'none', gmNote: '' } }, 'local-gm', lock); assert.equal(secondEntity.status, 201);
+    assert.equal((await send('/api/v2/entities/revocation-record/grants', { memberId: playerA.memberId, permissions: ['act'] }, 'local-gm', lock)).status, 201);
+    const revokedCommand = { operationId: 'revocation-interruption', commandId: 'example.interruption.request', entityId: 'revocation-record', expectedRevision: 1, input: {} };
+    const revokedPending = await send('/api/v2/commands', revokedCommand, playerA.credential, lock); assert.equal((await revokedPending.json()).status, 'pending');
+    const revokedWindowId = (await host.db.prepare('SELECT window_id FROM v2_extension_pending_commands WHERE operation_id=?').get(revokedCommand.operationId)).window_id;
+    assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/expire`, {}, playerB.credential, lock)).status, 403, 'player cannot force host expiry');
+    assert.equal((await request(`/api/members/${playerB.memberId}`, 'local-gm', { method: 'DELETE' })).status, 200, 'GM can revoke the responder membership');
+    assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/decisions`, { operationId: 'revoked-responder-choice', actionId: 'example.interruption.choose', input: { choice: 'accept' }, decision: 'accept' }, playerB.credential, lock)).status, 401, 'revoked responder cannot use a previously eligible reaction');
+    assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/adjudicate`, { decision: 'accept' }, 'local-gm', lock)).status, 200, 'authorized GM adjudication resumes after responder revocation');
+    assert.equal(host.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get(revokedCommand.operationId).status, 'completed');
+  } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
+});

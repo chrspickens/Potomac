@@ -579,7 +579,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('vary', 'origin');
     }
-    if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-headers': 'authorization,content-type,x-file-name,x-operation-id,x-base-revision', 'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS' }); return res.end(); }
+    if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-headers': 'authorization,content-type,x-v2-lock-digest,x-file-name,x-operation-id,x-base-revision', 'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS' }); return res.end(); }
     const auth = authFor(req);
     if (url.pathname === '/health') return json(res, 200, { ok: true });
     if (!auth) return json(res, 401, { error: 'Bearer token required' });
@@ -607,6 +607,38 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
             return json(res, 200, v2Api.list(campaignId, typeId || undefined, auth.principalId, headerLockDigest, proof));
           }
           if (req.method === 'GET' && url.pathname === '/api/v2/events') return json(res, 200, v2Api.events(campaignId, auth.principalId, proof));
+          const reactionPath = url.pathname.match(/^\/api\/v2\/reactions(?:\/([^/]+)(?:\/(decisions|decline|expire|adjudicate))?)?$/);
+          if (reactionPath) {
+            if (typeof headerLockDigest !== 'string') return json(res, 428, { error: 'Current X-V2-Lock-Digest is required', reasonCode: 'unsupported' });
+            const currentLock = v2Api.getLock(auth.principalId, proof);
+            if (currentLock.digest !== headerLockDigest) return json(res, 409, { error: 'Campaign capability lock digest is stale', reasonCode: 'unsupported' });
+            const [, encodedWindowId, operation] = reactionPath;
+            if (req.method === 'GET' && !encodedWindowId) return json(res, 200, v2Api.listReactions(campaignId, auth.principalId, proof));
+            if (req.method === 'GET' && encodedWindowId && !operation) {
+              const view = v2Api.viewReaction(decodeURIComponent(encodedWindowId), auth.principalId, proof);
+              if (!view) return json(res, 404, { error: 'Reaction window is unavailable', reasonCode: 'unavailable' });
+              return json(res, 200, view);
+            }
+            if (req.method === 'POST' && encodedWindowId && operation) {
+              const body = await readBody(req);
+              const allowed = operation === 'decisions' ? ['operationId', 'actionId', 'input', 'decision'] : operation === 'decline' ? ['operationId', 'actionId', 'input'] : operation === 'adjudicate' ? ['decision'] : [];
+              if (Object.keys(body).some(key => !allowed.includes(key)) || Object.hasOwn(body, 'principalId') || Object.hasOwn(body, 'campaignId')) return json(res, 400, { error: 'Reaction authority and continuation state are host-derived', reasonCode: 'invalid' });
+              const windowId = decodeURIComponent(encodedWindowId);
+              if (operation === 'decisions') {
+                if (body.decision !== 'accept') return json(res, 400, { error: 'Use the decline operation for a decline decision', reasonCode: 'invalid' });
+                return json(res, 200, v2Api.submitReaction(auth.principalId, proof, { operationId: body.operationId, windowId, actionId: body.actionId, input: body.input, decision: 'accept' }));
+              }
+              if (operation === 'decline') return json(res, 200, v2Api.declineReaction(auth.principalId, proof, windowId, body.operationId, body.actionId, body.input));
+              if (operation === 'expire') {
+                if (Object.keys(body).length) return json(res, 400, { error: 'Expiry accepts no client-selected state', reasonCode: 'invalid' });
+                return json(res, 200, v2Api.expireReaction(auth.principalId, proof, windowId));
+              }
+              if (operation === 'adjudicate') {
+                if (!['accept', 'decline'].includes(body.decision)) return json(res, 400, { error: 'GM adjudication decision must be accept or decline', reasonCode: 'invalid' });
+                return json(res, 200, v2Api.adjudicateReaction(auth.principalId, proof, windowId, body.decision));
+              }
+            }
+          }
           if (req.method === 'POST' && url.pathname === '/api/v2/entities') {
             const body = await readBody(req);
             if ('principalId' in body || 'campaignId' in body || 'authorityToken' in body) return json(res, 400, { error: 'Principal and campaign identity are host-derived', reasonCode: 'invalid' });
