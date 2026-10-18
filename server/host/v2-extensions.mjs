@@ -249,11 +249,15 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const events = (campaignId, principalId, authorityToken) => transaction(() => {
     const member = principal(principalId, campaignId, authorityToken); const lock = lockFor(campaignId);
     return db.prepare('SELECT * FROM v2_extension_events WHERE campaign_id=? ORDER BY rowid').all(campaignId).flatMap(row => {
-      if (row.visibility !== 'public' && member.role !== 'gm') {
+      if (row.visibility === 'private' && member.role !== 'gm') {
+        const found = entityRows(campaignId, row.entity_id); if (!found) return [];
+        try { const entity = decodeEntity(campaignId, found.row, found.metadata); currentDescriptor(entity, lock); if (entity.ownerPrincipalId !== member.principalId) return []; } catch { return []; }
+      }
+      if (row.visibility === 'gm' && member.role !== 'gm') return [];
+      if (row.visibility === 'public' && member.role !== 'gm') {
         const found = entityRows(campaignId, row.entity_id); if (!found) return [];
         try { const entity = decodeEntity(campaignId, found.row, found.metadata); currentDescriptor(entity, lock); if (!canRead(member, entity)) return []; } catch { return []; }
       }
-      if (row.visibility === 'gm' && member.role !== 'gm') return [];
       return [{ eventId: row.event_id, operationId: row.operation_id, entityId: row.entity_id, kind: row.kind, visibility: row.visibility, payload: JSON.parse(row.payload) }];
     });
   }, 'DEFERRED');
