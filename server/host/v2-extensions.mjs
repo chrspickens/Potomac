@@ -245,10 +245,11 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     return { ...base, outcomes: visibleOutcomes(allOutcomes, member, entity) };
   };
   const writeEvent = (request, entityId, kind, visibility, payload) => db.prepare('INSERT INTO v2_extension_events(event_id,operation_id,campaign_id,entity_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?,?)').run(`${request.operationId}:${kind}`, request.operationId, request.campaignId, entityId, kind, visibility, json(payload), now());
-  const drawResolverRandomness = (resolver, member, command, state, input) => {
+  const drawResolverRandomness = (resolver, member, command, state, input, resume) => {
     const randomness = [];
     for (let step = 0; step < 4; step++) {
-      const requested = resolver.randomRequests?.({ principalId: member.principalId, command: clone(command), state: clone(state), input: clone(input), randomness: clone(randomness) }) ?? [];
+      const requestContext = { principalId: member.principalId, command: clone(command), state: clone(state), input: clone(input), randomness: clone(randomness), ...(resume ? { resume: clone(resume) } : {}) };
+      const requested = resolver.randomRequests?.(requestContext) ?? [];
       if (!Array.isArray(requested) || requested.length > 4) fail('invalid', 'resolver requested an invalid random transcript');
       const known = new Set(randomness.map(item => item.requestId));
       for (const item of requested) {
@@ -259,7 +260,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
         randomness.push({ ...clone(item), values: Array.from({ length: item.count }, () => drawRandom(1, item.sides + 1)), visibility });
       }
     }
-    if (resolver.randomRequests?.({ principalId: member.principalId, command: clone(command), state: clone(state), input: clone(input), randomness: clone(randomness) })?.length) fail('invalid', 'resolver random request budget was exhausted');
+    if (resolver.randomRequests?.({ principalId: member.principalId, command: clone(command), state: clone(state), input: clone(input), randomness: clone(randomness), ...(resume ? { resume: clone(resume) } : {}) })?.length) fail('invalid', 'resolver random request budget was exhausted');
     return randomness;
   };
   const applyOutputEffects = ({ output, request, command, member, lock, workflowCtx, beforeApply = () => undefined }) => {
@@ -335,9 +336,9 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       assertCurrentLock(pending.campaign_id, storedLock);
       const continuation = JSON.parse(pending.continuation);
       const state = { entityId: record.entityId, entityType: record.typeId, revision: record.revision, data: record.data };
-      const randomness = drawResolverRandomness(resolver, currentMember, command, state, request.input);
       const logicalTime = now();
       const resumeContext = { continuation, reaction: { status, decisions: clone(decisions) } };
+      const randomness = drawResolverRandomness(resolver, currentMember, command, state, request.input, resumeContext);
       const resumeResolver = { ...resolver, resolve: input => { const { resume: context, ...base } = input; return resolver.resume(freezeJson({ ...base, ...context })); } };
       const result = executeResolver(resumeResolver, { operationId: pending.operation_id, campaignId: pending.campaign_id, principalId: pending.principal_id, logicalTime, state, input: request.input, randomness, resume: resumeContext }, storedLock);
       const output = result.transcript;

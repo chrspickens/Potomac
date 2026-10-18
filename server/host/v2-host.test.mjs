@@ -148,12 +148,12 @@ test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls
     const pin = await send('/api/v2/campaign/lock', { moduleId: 'example.revised5e' }, 'local-gm', 'PUT');
     assert.equal(pin.status, 201, await pin.clone().text()); lockDigest = (await pin.json()).digest;
     const actors = [
-      { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: playerA.memberId, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
-      { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: playerB.memberId, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
-      { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
+      { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: playerA.memberId, position: { x: 2, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
+      { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: playerB.memberId, position: { x: 1, y: 4 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+      { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', position: { x: 3, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
     ];
     const encounterId = 'encounter';
-    const created = await send('/api/v2/entities', { operationId: 'create-encounter', entityId: encounterId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [] } }, 'local-gm', 'POST', proof());
+    const created = await send('/api/v2/entities', { operationId: 'create-encounter', entityId: encounterId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', grid: { width: 8, height: 5, squareFeet: 5, blocked: [] }, actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [], movementLog: [] } }, 'local-gm', 'POST', proof());
     assert.equal(created.status, 201, await created.clone().text());
     for (const member of [playerA, playerB]) assert.equal((await send(`/api/v2/entities/${encounterId}/grants`, { memberId: member.memberId, permissions: ['act'] }, 'local-gm', 'POST', proof())).status, 201);
     const init = await send('/api/v2/commands', { operationId: 'roll-initiative', commandId: 'example.revised5e.initialize', entityId: encounterId, expectedRevision: 1, input: {} }, 'local-gm', 'POST', proof());
@@ -190,6 +190,57 @@ test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls
     assert.equal(restored.data.initiativeOrder[restored.data.currentTurnIndex], 'player-b');
     assert.deepEqual(await (await send('/api/v2/commands', attack, playerA.credential, 'POST', proof())).json(), receipt, 'receipt remains exact across host restart');
     assert.equal(drawCount, 6, 'retry after restart does not reroll');
+  } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Revised 5e opportunity attack resumes the exact movement after restart through authenticated HTTP', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-5e-movement-'));
+  const databasePath = join(directory, 'host.sqlite');
+  const draws = [20, 1, 1, 20, 4, 4]; let drawCount = 0, host, baseUrl, lockDigest;
+  const launch = async () => { host = createHost({ databasePath, campaignId: 'campaign-v2-5e-movement', enableV2Api: true, v2RandomInt: (min, max) => { const value = draws[drawCount++]; assert.ok(value >= min && value < max); return value; } }); const address = await host.listen(0); baseUrl = `http://127.0.0.1:${address.port}`; };
+  const request = (path, token = 'local-gm', options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers } });
+  const send = (path, body, token = 'local-gm', method = 'POST', headers = {}) => request(path, token, { method, body: JSON.stringify(body), headers });
+  const proof = () => ({ 'x-v2-lock-digest': lockDigest });
+  try {
+    await launch();
+    const playerA = await (await send('/api/members/enroll', { displayName: 'Mira' })).json();
+    const playerB = await (await send('/api/members/enroll', { displayName: 'Oren' })).json();
+    const pin = await send('/api/v2/campaign/lock', { moduleId: 'example.revised5e' }, 'local-gm', 'PUT'); lockDigest = (await pin.json()).digest;
+    const actors = [
+      { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: playerA.memberId, position: { x: 2, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
+      { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: playerB.memberId, position: { x: 1, y: 4 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+      { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', position: { x: 3, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
+    ];
+    const entityId = 'movement-encounter';
+    const createBody = { operationId: 'movement-create', entityId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Movement proof', status: 'setup', grid: { width: 8, height: 5, squareFeet: 5, blocked: [] }, actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [], movementLog: [] } };
+    assert.equal((await send('/api/v2/entities', createBody, 'local-gm', 'POST', proof())).status, 201);
+    for (const member of [playerA, playerB]) assert.equal((await send(`/api/v2/entities/${entityId}/grants`, { memberId: member.memberId, permissions: ['act'] }, 'local-gm', 'POST', proof())).status, 201);
+    assert.equal((await send('/api/v2/commands', { operationId: 'movement-init', commandId: 'example.revised5e.initialize', entityId, expectedRevision: 1, input: {} }, 'local-gm', 'POST', proof())).status, 200);
+    const move = { operationId: 'mira-move-out', commandId: 'example.revised5e.move', entityId, expectedRevision: 2, input: { actorId: 'player-a', path: [{ x: 1, y: 2 }] } };
+    assert.equal((await send('/api/v2/commands', { ...move, operationId: 'wrong-owner-movement' }, playerB.credential, 'POST', proof())).status, 403, 'Player B cannot move Player A');
+    assert.equal((await send('/api/v2/commands', { ...move, operationId: 'forged-enemy-movement', input: { actorId: 'enemy', path: [{ x: 4, y: 2 }] } }, playerB.credential, 'POST', proof())).status, 403, 'players cannot move the GM-controlled enemy');
+    assert.equal(drawCount, 3, 'unauthorized movement consumes no host randomness');
+    const suspendedResponse = await send('/api/v2/commands', move, playerA.credential, 'POST', proof()); assert.equal(suspendedResponse.status, 200);
+    const suspended = await suspendedResponse.json(); assert.equal(suspended.status, 'pending'); assert.equal(drawCount, 3, 'opening the window does not roll the OA early');
+    let state = await (await request(`/api/v2/entities/${entityId}`, playerA.credential, { headers: proof() })).json();
+    assert.equal(state.revision, 2); assert.deepEqual(state.data.actors[0].position, { x: 2, y: 2 }); assert.equal(state.data.actors[0].movementRemaining, 30, 'suspended movement has no committed partial effects');
+    host.close(); await launch();
+    const windows = await (await request('/api/v2/reactions', 'local-gm', { headers: proof() })).json(); assert.ok(windows.some(item => item.windowId === suspended.windowId), 'GM sees the durable window after restart');
+    assert.ok([403, 404].includes((await send(`/api/v2/reactions/${suspended.windowId}/decisions`, { operationId: 'wrong-responder', actionId: 'example.revised5e.opportunity-attack', input: {}, decision: 'accept' }, playerB.credential, 'POST', proof())).status));
+    const decision = { operationId: 'gm-opportunity-attack', actionId: 'example.revised5e.opportunity-attack', input: {}, decision: 'accept' };
+    const resolvedResponse = await send(`/api/v2/reactions/${suspended.windowId}/decisions`, decision, 'local-gm', 'POST', proof()); assert.equal(resolvedResponse.status, 200);
+    const resolved = await resolvedResponse.json(); assert.equal(resolved.status, 'resolved'); assert.equal(drawCount, 6);
+    state = await (await request(`/api/v2/entities/${entityId}`, playerB.credential, { headers: proof() })).json();
+    assert.equal(state.revision, 3); assert.deepEqual(state.data.actors.find(actor => actor.id === 'player-a').position, { x: 1, y: 2 });
+    assert.equal(state.data.actors.find(actor => actor.id === 'player-a').currentHitPoints, 2); assert.equal(state.data.actors.find(actor => actor.id === 'enemy').reactionAvailable, false);
+    assert.equal(state.data.combatLog.at(-1).kind, 'opportunity-critical');
+    const events = await (await request('/api/v2/events', playerB.credential, { headers: proof() })).json();
+    const resumed = events.find(event => event.kind === 'command.resumed' && event.operationId === move.operationId);
+    assert.deepEqual(resumed.payload.randomness.map(item => item.values), [[20], [4, 4]], 'public OA dice are host-generated and audited');
+    assert.equal(resumed.payload.resolutionTranscript, undefined);
+    const retry = await send(`/api/v2/reactions/${suspended.windowId}/decisions`, decision, 'local-gm', 'POST', proof()); assert.equal(retry.status, 200);
+    assert.equal(drawCount, 6, 'exact decision retry does not reroll or replay movement');
+    assert.equal(host.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get('campaign-v2-5e-movement', entityId).revision, 3);
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
