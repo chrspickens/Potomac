@@ -91,7 +91,7 @@ try {
   const privacy = await evaluate(sessionId, `({permitted:document.querySelector('#permitted').innerText, denied:document.querySelector('#denied').innerText, deniedButtons:document.querySelectorAll('#denied button').length, labels:[...document.querySelectorAll('#permitted label')].map(item=>item.textContent.trim())})`);
   assert.match(privacy.permitted, /Available power/);
   assert.equal(privacy.deniedButtons, 0, 'host-denied commands are not rendered');
-  assert.ok(privacy.labels.includes('Subsystem *') && privacy.labels.includes('Amount *'), `form has associated accessible labels: ${privacy.labels.join(', ')}`);
+  assert.ok(privacy.labels.includes('Subsystem *') && privacy.labels.includes('Amount *'), `composed form has associated accessible labels; labels=${JSON.stringify(privacy.labels)}; permitted text=${JSON.stringify(privacy.permitted)}; markup=${await evaluate(sessionId, 'document.querySelector("#permitted").innerHTML')}`);
 
   await key(sessionId, 'Tab');
   assert.equal(await evaluate(sessionId, 'document.activeElement.tagName'), 'SELECT', 'native select is reachable by keyboard');
