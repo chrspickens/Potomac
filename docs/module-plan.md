@@ -29,7 +29,7 @@ Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md
 | Resolver/host kernel | **Isolated evidence complete; production implementation not started** | PR #130 commit `f06307b` passes 9 focused tests for SQLite atomicity, rollback, hashes, action eligibility and continuation recovery. Production adapters and policies remain required. |
 | Extension data plane (issue #136 slice) | Implemented; production integration deferred | Versioned generic entity/command/workflow contracts, host SQLite kernel, atomic V2 effects/receipts/events, serialized continuation, starship proof and focused tests. Routes, migrations and archive wiring remain deferred. |
 | UI contribution plane (issue #137 slice) | Experimental declarative client renderer; workspace wiring deferred | Exact-pinned typed contracts and host React renderer for sheets, panels, action/forms, displays, resources and composable bricks. Starship and d20/dice-pool probes use the same renderer. A default-off V2 host API now serves authenticated projections/commands for one bundled proof, but the web workspace does not mount it. |
-| System probes and QA | Not started | Revised 5e-shaped, dice-pool Testbed, starship and third-module fixtures; historical archive/device QA remains separate. |
+| System probes and QA | **Two bundled V2 probes; third-module authoring challenge blocked at public API boundary** | Revised 5e and dice-pool modules exercise the shared generic kernels. In the post-#156 third-module challenge, an author restricted to public docs/contracts stopped before coding because effect-handler schemas, digest/pinning, registration, and schema-subset guidance were missing. The separate implementation audit confirms no general loader or UI mount exists. See [third-module authoring report](third-module-authoring-report.md). This is evidence of bundled-kernel reuse, not independent module loadability. |
 
 ## Recommended implementation order
 
@@ -73,7 +73,7 @@ This is a minimum execution/registry scope, not a complete UI/content platform. 
 | 5 | Backup/migration compatibility | V1 archive regression, V2 lock/continuation provenance, backup-first migration, unavailable-module read-only/fail-closed behavior. |
 | 6 | Extension entities and UI | Starship-style entity/command/workflow/view/brick with host authorization, safe projections, accessible pending/offline states and migration tests. |
 
-The registry and transaction spike reduce uncertainty but do not satisfy these production acceptance gates. Do not create issues or milestones from this plan yet.
+The registry and transaction spike reduce uncertainty but do not satisfy these production acceptance gates. Do not create issues or milestones from this plan yet. The third-module challenge documents the difference between authoring against public contracts and contributing another explicitly bundled proof; see [third-module authoring report](third-module-authoring-report.md).
 
 ## Decision status and critical open questions
 
