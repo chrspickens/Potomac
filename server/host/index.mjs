@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, readdirSync, lstatSync, existsSync, writeFileS
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, executeAction, getActionPolicy, getRequiredRollCount } from '../../packages/rules-engine/src/index.ts';
+import { createV2HostAdapter } from './v2-host.mjs';
 
 const schema = `
 PRAGMA journal_mode = WAL;
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS map_operations (operation_id TEXT PRIMARY KEY, princi
 
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_CAMPAIGN_ASSET_BYTES = 100 * 1024 * 1024;
+const v2AuthorityProof = Symbol('v2AuthorityProof');
 const ASSET_TYPES = {
   'image/png': { extension: '.png', signature: bytes => bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) },
   'image/jpeg': { extension: '.jpg', signature: bytes => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
@@ -158,7 +160,7 @@ function applyRuleAction(action, state, parameters) {
 }
 
 // These fixed role tokens are development fixtures; authentication accepts them only on loopback listeners.
-export function createHost({ databasePath = './data/potomac.sqlite', gmToken = 'local-gm', playerToken = 'local-player', campaignId = 'foundation-demo', seedDemo = false } = {}) {
+export function createHost({ databasePath = './data/potomac.sqlite', gmToken = 'local-gm', playerToken = 'local-player', campaignId = 'foundation-demo', seedDemo = false, enableV2Api = false } = {}) {
   mkdirSync(dirname(resolve(databasePath)), { recursive: true });
   const assetDirectory = `${resolve(databasePath)}.assets`;
   mkdirSync(assetDirectory, { recursive: true });
@@ -262,13 +264,22 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const authFor = req => {
     if (!loopbackOnly()) return null;
     const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    if (same(token, gmToken)) return { role: 'gm', memberId: null, principalId: 'gm' };
+    if (same(token, gmToken)) return { role: 'gm', memberId: null, principalId: 'gm', [v2AuthorityProof]: { kind: 'static-gm', credentialHash: createHash('sha256').update(token).digest('hex') } };
     if (same(token, playerToken)) return { role: 'player', memberId: null, principalId: 'legacy-player', legacy: true };
     const credentialHash = createHash('sha256').update(token).digest('hex');
     const member = db.prepare('SELECT id FROM members WHERE credential_hash=? AND revoked_at IS NULL').get(credentialHash);
-    if (member) return { role: 'player', memberId: member.id, principalId: member.id };
+    if (member) return { role: 'player', memberId: member.id, principalId: member.id, [v2AuthorityProof]: { kind: 'member-session', memberId: member.id, credentialHash } };
     return null;
   };
+  const v2Api = enableV2Api ? createV2HostAdapter({
+    db, campaignId,
+    writeGrantAudit: event => insertEvent(event),
+    authenticateBearer(principalId, proof) {
+      if (!proof) return false;
+      if (principalId === 'gm') return proof.kind === 'static-gm' && same(proof.credentialHash, createHash('sha256').update(gmToken).digest('hex'));
+      return proof.kind === 'member-session' && proof.memberId === principalId && Boolean(db.prepare('SELECT 1 FROM members WHERE id=? AND credential_hash=? AND revoked_at IS NULL').get(principalId, proof.credentialHash));
+    }
+  }) : undefined;
   const projectActor = (row, auth) => {
     const actor = { id: row.id, moduleId: row.module_id, moduleVersion: row.module_version, revision: row.revision, data: JSON.parse(row.data) };
     const moduleRecord = moduleRow.get(row.module_id, row.module_version);
@@ -567,6 +578,57 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     if (url.pathname === '/health') return json(res, 200, { ok: true });
     if (!auth) return json(res, 401, { error: 'Bearer token required' });
     try {
+      if (url.pathname.startsWith('/api/v2/')) {
+        if (!v2Api) return json(res, 404, { error: 'V2 host API is disabled', reasonCode: 'unavailable' });
+        const proof = auth[v2AuthorityProof];
+        const headerLockDigest = req.headers['x-v2-lock-digest'];
+        const v2Error = error => {
+          const status = ({ invalid: 400, unauthorized: 403, forbidden: 403, unavailable: 404, stale: 409, conflict: 409, idempotency_conflict: 409, unsupported: 409 })[error?.code] || 500;
+          return json(res, status, { error: status === 500 ? 'V2 host request failed' : error.message, reasonCode: error?.code || 'internal_error' });
+        };
+        try {
+          if (url.pathname === '/api/v2/campaign/lock' && req.method === 'GET') return json(res, 200, v2Api.getLock(auth.principalId, proof));
+          if (url.pathname === '/api/v2/campaign/lock' && req.method === 'PUT') {
+            const result = v2Api.pinLock(auth.principalId, proof);
+            if (!result.alreadyPinned) notify();
+            return json(res, result.alreadyPinned ? 200 : 201, result);
+          }
+          if (req.method === 'POST' && url.pathname === '/api/v2/entities') {
+            const body = await readBody(req);
+            if ('principalId' in body || 'campaignId' in body || 'authorityToken' in body) return json(res, 400, { error: 'Principal and campaign identity are host-derived', reasonCode: 'invalid' });
+            if (typeof headerLockDigest !== 'string') return json(res, 428, { error: 'Current X-V2-Lock-Digest is required', reasonCode: 'unsupported' });
+            const result = v2Api.createEntity({ ...body, campaignId, principalId: auth.principalId, authorityToken: proof, expectedLockDigest: headerLockDigest });
+            return json(res, 201, result);
+          }
+          const entityMatch = url.pathname.match(/^\/api\/v2\/entities\/([^/]+)$/);
+          if (req.method === 'GET' && entityMatch) {
+            if (typeof headerLockDigest !== 'string') return json(res, 428, { error: 'Current X-V2-Lock-Digest is required', reasonCode: 'unsupported' });
+            const entity = v2Api.read(campaignId, decodeURIComponent(entityMatch[1]), auth.principalId, headerLockDigest, proof);
+            return json(res, 200, entity);
+          }
+          if (req.method === 'POST' && url.pathname === '/api/v2/commands') {
+            const body = await readBody(req);
+            if ('principalId' in body || 'campaignId' in body || 'authorityToken' in body) return json(res, 400, { error: 'Principal and campaign identity are host-derived', reasonCode: 'invalid' });
+            if (typeof headerLockDigest !== 'string') return json(res, 428, { error: 'Current X-V2-Lock-Digest is required', reasonCode: 'unsupported' });
+            const result = v2Api.executeCommand({ ...body, campaignId, principalId: auth.principalId, authorityToken: proof, expectedLockDigest: headerLockDigest });
+            return json(res, 200, result);
+          }
+          const grantMatch = url.pathname.match(/^\/api\/v2\/entities\/([^/]+)\/grants(?:\/([^/]+))?$/);
+          if (grantMatch && req.method === 'POST' && !grantMatch[2]) {
+            const body = await readBody(req);
+            if ('principalId' in body || 'campaignId' in body || 'authorityToken' in body) return json(res, 400, { error: 'Principal and campaign identity are host-derived', reasonCode: 'invalid' });
+            const result = v2Api.grant(auth.principalId, proof, decodeURIComponent(grantMatch[1]), body.memberId, body.permissions);
+            notify();
+            return json(res, 201, result);
+          }
+          if (grantMatch && req.method === 'DELETE' && grantMatch[2]) {
+            const result = v2Api.revoke(auth.principalId, proof, decodeURIComponent(grantMatch[1]), decodeURIComponent(grantMatch[2]));
+            notify();
+            return json(res, 200, result);
+          }
+          return json(res, 404, { error: 'V2 endpoint not found', reasonCode: 'unavailable' });
+        } catch (error) { return v2Error(error); }
+      }
       const loreAssetsMatch = url.pathname.match(/^\/api\/lore\/([^/]+)\/assets$/);
       const mapBackgroundMatch = url.pathname.match(/^\/api\/maps\/([^/]+)\/background(?:\/content)?$/);
       if (mapBackgroundMatch && req.method === 'POST' && url.pathname.endsWith('/background')) {
@@ -1604,7 +1666,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const host = createHost({ databasePath: process.env.POTOMAC_DB || './data/potomac.sqlite', gmToken: process.env.POTOMAC_GM_TOKEN || 'local-gm', playerToken: process.env.POTOMAC_PLAYER_TOKEN || 'local-player', seedDemo: process.env.POTOMAC_SEED_DEMO === '1' });
+  const host = createHost({ databasePath: process.env.POTOMAC_DB || './data/potomac.sqlite', gmToken: process.env.POTOMAC_GM_TOKEN || 'local-gm', playerToken: process.env.POTOMAC_PLAYER_TOKEN || 'local-player', seedDemo: process.env.POTOMAC_SEED_DEMO === '1', enableV2Api: process.env.POTOMAC_ENABLE_EXPERIMENTAL_V2 === '1' });
   const address = await host.listen(Number(process.env.PORT || 4177));
   console.log(`Potomac foundation host listening at http://${address.address}:${address.port}`);
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => host.close());

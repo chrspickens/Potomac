@@ -27,6 +27,7 @@ export const starshipEntity = {
     engineeringLog: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 160 } }
   }),
   ownership: { kind: 'principal' }, visibility: ['owner'], creationRoles: ['gm'],
+  fieldVisibility: [{ path: 'engineeringLog', roles: ['gm'] }],
   migration: { migrationId: 'example.starship.reactor.v1-initial', fromSchemaVersion: 0, toSchemaVersion: 1 }
 };
 

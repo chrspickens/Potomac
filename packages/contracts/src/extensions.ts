@@ -31,6 +31,8 @@ export type ExtensionEntityDescriptor = {
   schema: JsonValue;
   ownership: ExtensionOwnership;
   visibility: ExtensionVisibility[];
+  /** Entity data paths omitted from projections for roles not explicitly listed. */
+  fieldVisibility?: Array<{ path: string; roles: Array<"gm" | "player"> }>;
   creationRoles: Array<"gm" | "player">;
   migration: MigrationIdentity;
 };

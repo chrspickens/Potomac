@@ -62,6 +62,19 @@ function validateBoundedJson(value, schema) {
 function validateEntityDescriptor(descriptor) {
   if (!descriptor || descriptor.descriptorVersion !== 1 || !NAMESPACED.test(descriptor.typeId) || !Number.isInteger(descriptor.schemaVersion) || descriptor.schemaVersion < 1 || !NAMESPACED.test(descriptor.migration?.migrationId) || descriptor.migration.toSchemaVersion !== descriptor.schemaVersion || descriptor.migration.fromSchemaVersion !== descriptor.schemaVersion - 1 || !['campaign', 'principal'].includes(descriptor.ownership?.kind) || !Array.isArray(descriptor.visibility) || descriptor.visibility.length === 0 || descriptor.visibility.some(value => !['public', 'gm', 'owner'].includes(value)) || !Array.isArray(descriptor.creationRoles) || descriptor.creationRoles.some(role => !['gm', 'player'].includes(role))) fail('invalid', 'invalid entity descriptor');
   validateCapabilityRef(descriptor.capability); validateV2SchemaDefinition(descriptor.schema);
+  if (descriptor.fieldVisibility !== undefined) {
+    if (!Array.isArray(descriptor.fieldVisibility)) fail('invalid', 'invalid field visibility rules');
+    const paths = new Set();
+    for (const rule of descriptor.fieldVisibility) {
+      if (!rule || typeof rule.path !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/.test(rule.path) || paths.has(rule.path) || !Array.isArray(rule.roles) || rule.roles.length === 0 || rule.roles.some(role => !['gm', 'player'].includes(role))) fail('invalid', 'invalid field visibility rule');
+      let schema = descriptor.schema;
+      for (const part of rule.path.split('.')) {
+        schema = schema?.properties?.[part];
+        if (!schema) fail('invalid', `field visibility path ${rule.path} is not declared by the entity schema`);
+      }
+      paths.add(rule.path);
+    }
+  }
 }
 
 function validateCommandDescriptor(command) {
@@ -83,7 +96,7 @@ function validateWorkflowDescriptor(workflow) {
   }
 }
 
-export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, authorizeEffect = () => true, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
+export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, authorizeEffect = () => true, authorizeRead = () => false, authorizeCommand = () => false, authorizeOwner = () => true, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
   if (!db || !Array.isArray(entities) || !Array.isArray(commands) || !Array.isArray(workflows) || !Array.isArray(effectHandlers) || !Array.isArray(resolvers) || typeof authenticate !== 'function' || typeof getCampaignLock !== 'function' || typeof validateLock !== 'function') fail('invalid', 'invalid extension kernel configuration');
   const entityTypes = new Map(); const commandTypes = new Map(); const workflowTypes = new Map(); const resolverMap = new Map(); const effectMap = new Map();
   for (const descriptor of entities) { validateEntityDescriptor(descriptor); if (entityTypes.has(descriptor.typeId)) fail('invalid', 'duplicate entity descriptor'); entityTypes.set(descriptor.typeId, clone(descriptor)); }
@@ -102,8 +115,8 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   for (const command of commandTypes.values()) for (const ref of command.effects) if (!effectMap.has(refKey(ref))) fail('invalid', `command ${command.commandId} declares an unavailable effect handler`);
 
   db.exec(V2_EXTENSION_SCHEMA);
-  const principal = (principalId, campaignId) => {
-    const result = authenticate(principalId, { campaignId });
+  const principal = (principalId, campaignId, authorityToken) => {
+    const result = authenticate(principalId, { campaignId, authorityToken });
     if (!result || result.principalId !== principalId || !['gm', 'player'].includes(result.role)) fail('unauthorized', 'authenticated campaign member required');
     return result;
   };
@@ -124,8 +137,27 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     const metadata = db.prepare('SELECT descriptor_id, schema_version, migration_id, capability, owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, entityId);
     return row && metadata ? { row, metadata } : undefined;
   };
-  const canRead = (member, entity, participants = []) => entity.visibility === 'public' || member.role === 'gm' || (entity.visibility === 'owner' && (entity.ownerPrincipalId === member.principalId || participants.includes(member.principalId)));
-  const canCommand = (member, entity, permission, participants = []) => permission.roles.includes(member.role) && (permission.ownership === 'any' || (permission.ownership === 'gm' && member.role === 'gm') || (permission.ownership === 'owner' && entity.ownerPrincipalId === member.principalId) || (permission.ownership === 'owner-or-participant' && (entity.ownerPrincipalId === member.principalId || participants.includes(member.principalId) || member.role === 'gm')));
+  const canRead = (member, entity, participants = []) => entity.visibility === 'public' || member.role === 'gm' || (entity.visibility === 'owner' && (entity.ownerPrincipalId === member.principalId || participants.includes(member.principalId))) || authorizeRead({ member: clone(member), entity: clone(entity) }) === true;
+  const canCommand = (member, entity, permission, participants = []) => {
+    if (!permission.roles.includes(member.role)) return false;
+    const ownershipMatches = permission.ownership === 'any' || (permission.ownership === 'gm' && member.role === 'gm') || (permission.ownership === 'owner' && entity.ownerPrincipalId === member.principalId) || (permission.ownership === 'owner-or-participant' && (entity.ownerPrincipalId === member.principalId || participants.includes(member.principalId) || member.role === 'gm'));
+    const grantCanAuthorize = permission.ownership !== 'gm' && authorizeCommand({ member: clone(member), entity: clone(entity), permission: clone(permission) }) === true;
+    return ownershipMatches || grantCanAuthorize;
+  };
+  const projectRecord = (record, descriptor, member) => {
+    const result = clone(record);
+    for (const rule of descriptor.fieldVisibility || []) if (!rule.roles.includes(member.role)) {
+      const parts = rule.path.split('.'); let parent = result.data;
+      for (const part of parts.slice(0, -1)) parent = parent?.[part];
+      if (parent && typeof parent === 'object') delete parent[parts.at(-1)];
+    }
+    if (member.role !== 'gm' && result.ownerPrincipalId !== member.principalId) delete result.ownerPrincipalId;
+    return result;
+  };
+  const transaction = (work, mode = 'IMMEDIATE') => {
+    if (db.isTransaction) fail('invalid', 'nested V2 host transaction is not supported');
+    db.exec(`BEGIN ${mode}`); try { const value = work(); db.exec('COMMIT'); return value; } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
+  };
   const currentDescriptor = (record, lock) => {
     const descriptor = entityTypes.get(record.typeId);
     if (!descriptor || descriptor.typeId !== record.typeId || descriptor.schemaVersion !== record.schemaVersion || descriptor.migration.migrationId !== record.migrationId || refKey(descriptor.capability) !== refKey(record.capability)) fail('unsupported', 'entity capability or schema is unavailable');
@@ -139,7 +171,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     validateBoundedJson(data, descriptor.schema);
   };
   const effects = createV2EffectKernel({
-    db, handlers: effectHandlers, authenticate: (principalId, proposal) => Boolean(principal(principalId, proposal.campaignId)),
+    db, handlers: effectHandlers, authenticate: (principalId, proposal) => Boolean(principal(principalId, proposal.campaignId, proposal.authorityToken)),
     validateLock: (campaignId, lock, moduleId) => {
       const currentLock = lockFor(campaignId);
       if (hashV2Json(currentLock) !== hashV2Json(lock)) fail('unsupported', 'campaign capability lock changed during command execution');
@@ -149,7 +181,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       const found = entityRows(context.campaignId, context.effect.target.entityId); if (!found) return false;
       const record = decodeEntity(context.campaignId, found.row, found.metadata); const lock = lockFor(context.campaignId);
       try { currentDescriptor(record, lock); } catch { return false; }
-      const member = principal(context.principalId, context.campaignId); const command = commandTypes.get(context.commandId);
+      const member = principal(context.principalId, context.campaignId, context.authorityToken); const command = commandTypes.get(context.commandId);
       const targetParticipants = context.effect.target.entityId === context.workflowEntityId ? context.authorizedParticipants || [] : [];
       if (!command || !canRead(member, record, targetParticipants)) return false;
       let sourceRecord = record;
@@ -197,11 +229,25 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     return { ...base, outcomes: visibleOutcomes(allOutcomes, member, entity) };
   };
   const writeEvent = (request, entityId, kind, visibility, payload) => db.prepare('INSERT INTO v2_extension_events(event_id,operation_id,campaign_id,entity_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?,?)').run(`${request.operationId}:${kind}`, request.operationId, request.campaignId, entityId, kind, visibility, json(payload), now());
-  const read = (campaignId, entityId, principalId) => {
-    const member = principal(principalId, campaignId); const lock = lockFor(campaignId); return clone(readRecord(campaignId, entityId, member, lock).record);
-  };
-  const events = (campaignId, principalId) => {
-    const member = principal(principalId, campaignId); const lock = lockFor(campaignId);
+  const read = (campaignId, entityId, principalId, expectedLockDigest, authorityToken) => transaction(() => {
+    const member = principal(principalId, campaignId, authorityToken); const lock = lockFor(campaignId);
+    if (expectedLockDigest !== undefined && hashV2Json(lock) !== expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
+    const { record, descriptor } = readRecord(campaignId, entityId, member, lock);
+    return projectRecord(record, descriptor, member);
+  }, 'DEFERRED');
+  const list = (campaignId, typeId, principalId, expectedLockDigest, authorityToken) => transaction(() => {
+    const member = principal(principalId, campaignId, authorityToken); const lock = lockFor(campaignId); const descriptor = entityTypes.get(typeId);
+    if (!descriptor) fail('unsupported', 'entity capability is unavailable'); assertTypePinned(campaignId, lock, descriptor);
+    if (expectedLockDigest !== undefined && hashV2Json(lock) !== expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
+    return db.prepare('SELECT e.*, x.descriptor_id, x.schema_version, x.migration_id, x.capability, x.owner_principal_id FROM v2_effect_entities e JOIN v2_extension_entities x USING(campaign_id,entity_id) WHERE e.campaign_id=? AND e.entity_type=? ORDER BY e.entity_id').all(campaignId, typeId).flatMap(row => {
+      const metadata = { descriptor_id: row.descriptor_id, schema_version: row.schema_version, migration_id: row.migration_id, capability: row.capability, owner_principal_id: row.owner_principal_id };
+      const record = decodeEntity(campaignId, row, metadata);
+      try { currentDescriptor(record, lock); validateBoundedJson(record.data, descriptor.schema); } catch { return []; }
+      return canRead(member, record) ? [projectRecord(record, descriptor, member)] : [];
+    });
+  }, 'DEFERRED');
+  const events = (campaignId, principalId, authorityToken) => transaction(() => {
+    const member = principal(principalId, campaignId, authorityToken); const lock = lockFor(campaignId);
     return db.prepare('SELECT * FROM v2_extension_events WHERE campaign_id=? ORDER BY rowid').all(campaignId).flatMap(row => {
       if (row.visibility !== 'public' && member.role !== 'gm') {
         const found = entityRows(campaignId, row.entity_id); if (!found) return [];
@@ -210,31 +256,24 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       if (row.visibility === 'gm' && member.role !== 'gm') return [];
       return [{ eventId: row.event_id, operationId: row.operation_id, entityId: row.entity_id, kind: row.kind, visibility: row.visibility, payload: JSON.parse(row.payload) }];
     });
-  };
-  const list = (campaignId, typeId, principalId) => {
-    const member = principal(principalId, campaignId); const lock = lockFor(campaignId); const descriptor = entityTypes.get(typeId);
-    if (!descriptor) fail('unsupported', 'entity capability is unavailable'); assertTypePinned(campaignId, lock, descriptor);
-    return db.prepare('SELECT e.*, x.descriptor_id, x.schema_version, x.migration_id, x.capability, x.owner_principal_id FROM v2_effect_entities e JOIN v2_extension_entities x USING(campaign_id,entity_id) WHERE e.campaign_id=? AND e.entity_type=? ORDER BY e.entity_id').all(campaignId, typeId).flatMap(row => {
-      const metadata = { descriptor_id: row.descriptor_id, schema_version: row.schema_version, migration_id: row.migration_id, capability: row.capability, owner_principal_id: row.owner_principal_id };
-      const record = decodeEntity(campaignId, row, metadata);
-      try { currentDescriptor(record, lock); validateBoundedJson(record.data, descriptor.schema); } catch { return []; }
-      return canRead(member, record) ? [clone(record)] : [];
-    });
-  };
+  }, 'DEFERRED');
   const createEntity = request => {
     if (!request || !ID.test(request.operationId) || !ID.test(request.campaignId) || !ID.test(request.principalId) || !ID.test(request.entityId) || !['public', 'gm', 'owner'].includes(request.visibility)) fail('invalid', 'malformed entity creation');
     const descriptor = entityTypes.get(request.typeId); if (!descriptor) fail('unsupported', 'entity capability is unavailable');
     validateBoundedJson(request.data, descriptor.schema);
     db.exec('BEGIN IMMEDIATE;');
     try {
-      const currentMember = principal(request.principalId, request.campaignId); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, descriptor);
+      const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, descriptor);
+      if (request.expectedLockDigest !== undefined && hashV2Json(currentLock) !== request.expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
       if (!descriptor.creationRoles.includes(currentMember.role)) fail('unauthorized', 'entity creation is not permitted');
       const owner = descriptor.ownership.kind === 'principal' ? (currentMember.role === 'gm' ? request.ownerPrincipalId ?? request.principalId : request.principalId) : null;
       if (descriptor.ownership.kind === 'principal' && (!ID.test(owner ?? '') || request.visibility !== 'owner')) fail('invalid', 'principal-owned entities require an owner and owner visibility');
       if (descriptor.ownership.kind === 'campaign' && (owner || request.visibility === 'owner')) fail('invalid', 'campaign-owned entities cannot have an owner visibility');
       if (!descriptor.visibility.includes(request.visibility)) fail('invalid', 'entity visibility is not declared by its descriptor');
       if (currentMember.role !== 'gm' && owner !== currentMember.principalId) fail('unauthorized', 'member cannot assign another entity owner');
-      const payload = { ...request, ownerPrincipalId: owner, capability: descriptor.capability, schemaVersion: descriptor.schemaVersion, migrationId: descriptor.migration.migrationId };
+      if (owner && owner !== currentMember.principalId && !authorizeOwner({ campaignId: request.campaignId, ownerPrincipalId: owner })) fail('unavailable', 'entity owner is not an active campaign member');
+      const { authorityToken: _authorityToken, ...publicRequest } = request;
+      const payload = { ...publicRequest, ownerPrincipalId: owner, capability: descriptor.capability, schemaVersion: descriptor.schemaVersion, migrationId: descriptor.migration.migrationId };
       const payloadHash = hashV2Json(payload); const retry = receipt(request, payloadHash);
       if (retry) { assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return retry; }
       db.prepare('INSERT INTO v2_effect_entities(campaign_id,entity_id,entity_type,revision,visibility,data) VALUES(?,?,?,?,?,?)').run(request.campaignId, request.entityId, descriptor.typeId, 1, storedVisibility(request.visibility), json(request.data));
@@ -254,14 +293,15 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     const stateData = request.stateData ?? {}; validateBoundedJson(stateData, initialState.schema);
     db.exec('BEGIN IMMEDIATE;');
     try {
-      const currentMember = principal(request.principalId, request.campaignId); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, workflow);
+      const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, workflow);
       const { record } = readRecord(request.campaignId, request.entityId, currentMember, currentLock);
       if (record.typeId !== workflow.entityTypeId) fail('unsupported', 'workflow entity type is unavailable');
       if (currentMember.role !== 'gm' && record.ownerPrincipalId !== currentMember.principalId) fail('unauthorized', 'only the entity owner or GM can start this workflow');
       const participants = [...new Set([record.ownerPrincipalId, ...(request.participants ?? [])].filter(Boolean))];
       if (participants.length > 100 || participants.some(id => !ID.test(id))) fail('invalid', 'workflow participants are invalid');
       if (currentMember.role !== 'gm' && participants.some(id => id !== currentMember.principalId)) fail('unauthorized', 'only the GM may designate other workflow participants');
-      const payload = { ...request, stateData, participants, capability: workflow.capability }; const payloadHash = hashV2Json(payload); const retry = receipt(request, payloadHash);
+      const { authorityToken: _authorityToken, ...publicRequest } = request;
+      const payload = { ...publicRequest, stateData, participants, capability: workflow.capability }; const payloadHash = hashV2Json(payload); const retry = receipt(request, payloadHash);
       if (retry) { assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return retry; }
       if (Date.parse(request.expiresAt) <= Date.parse(now())) fail('invalid', 'workflow expiry must be in the future');
       if (record.revision !== request.expectedEntityRevision) fail('stale', 'workflow entity revision is stale');
@@ -278,10 +318,12 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     if (request.workflow && (!ID.test(request.workflow.workflowId) || !Number.isInteger(request.workflow.expectedRevision) || !ID.test(request.workflow.expectedContinuationId) || !ID.test(request.workflow.transitionId))) fail('invalid', 'malformed workflow continuation');
     const command = commandTypes.get(request.commandId); if (!command) fail('unsupported', 'command capability is unavailable');
     validateBoundedJson(request.input, command.inputSchema);
-    const payloadHash = hashV2Json(request);
+    const { authorityToken: _authorityToken, ...payload } = request;
+    const payloadHash = hashV2Json(payload);
     db.exec('BEGIN IMMEDIATE;');
     try {
-      const currentMember = principal(request.principalId, request.campaignId); const lock = lockFor(request.campaignId);
+      const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const lock = lockFor(request.campaignId);
+      if (request.expectedLockDigest !== undefined && hashV2Json(lock) !== request.expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
       requireCapability(lock, command.capability, request.campaignId); requireCapability(lock, command.resolver, request.campaignId);
       const resolver = resolverMap.get(refKey(command.resolver)); if (!resolver) fail('unsupported', 'required command resolver is unavailable');
       if (command.workflowOnly && !request.workflow) fail('invalid', 'this command requires an authorized workflow continuation');
@@ -343,6 +385,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       }) } : undefined;
       if (effectProposal) {
         effectProposal.commandEntityId = request.entityId;
+        if (request.authorityToken !== undefined) effectProposal.authorityToken = request.authorityToken;
         effectProposal.effectTargetPolicy = command.permission.effectTargetPolicy || 'source-entity';
         effects.applyInTransaction(effectProposal);
       }
