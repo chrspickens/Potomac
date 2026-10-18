@@ -86,7 +86,7 @@ function validateEntityDescriptor(descriptor) {
 }
 
 function validateCommandDescriptor(command) {
-  if (!command || command.descriptorVersion !== 1 || !NAMESPACED.test(command.commandId) || !NAMESPACED.test(command.entityTypeId) || !Array.isArray(command.permission?.roles) || command.permission.roles.length === 0 || command.permission.roles.some(role => !['gm', 'player'].includes(role)) || !['any', 'owner', 'gm', 'owner-or-participant'].includes(command.permission.ownership) || command.permission.effectTargetPolicy !== undefined && !['source-entity', 'campaign-visible'].includes(command.permission.effectTargetPolicy) || command.workflowOnly !== undefined && typeof command.workflowOnly !== 'boolean' || !Array.isArray(command.effects)) fail('invalid', 'invalid command descriptor');
+  if (!command || command.descriptorVersion !== 1 || !NAMESPACED.test(command.commandId) || !NAMESPACED.test(command.entityTypeId) || !Array.isArray(command.permission?.roles) || command.permission.roles.length === 0 || command.permission.roles.some(role => !['gm', 'player'].includes(role)) || !['any', 'owner', 'gm', 'owner-or-participant'].includes(command.permission.ownership) || command.permission.effectTargetPolicy !== undefined && !['source-entity', 'campaign-visible'].includes(command.permission.effectTargetPolicy) || command.permission.noPendingContinuations !== undefined && typeof command.permission.noPendingContinuations !== 'boolean' || command.workflowOnly !== undefined && typeof command.workflowOnly !== 'boolean' || !Array.isArray(command.effects)) fail('invalid', 'invalid command descriptor');
   validateCapabilityRef(command.capability); validateCapabilityRef(command.resolver); validateV2SchemaDefinition(command.inputSchema); validateV2SchemaDefinition(command.resultSchema);
   for (const ref of command.effects) validateCapabilityRef(ref);
 }
@@ -504,6 +504,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       // the successful first attempt has already advanced them.
       const retry = projectCommandReceipt(request, payloadHash, currentMember, currentRecord);
       if (retry) { assertCurrentLock(request.campaignId, lock); db.exec('COMMIT;'); return retry; }
+      if (command.permission.noPendingContinuations && db.prepare("SELECT 1 FROM v2_extension_pending_commands WHERE campaign_id=? AND entity_id=? AND status='pending' LIMIT 1").get(request.campaignId, request.entityId)) fail('conflict', 'command is unavailable while a reaction continuation is pending');
       if (currentRecord.revision !== request.expectedRevision) fail('stale', 'entity revision changed');
 
       let workflowCtx;

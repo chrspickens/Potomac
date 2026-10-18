@@ -20,7 +20,7 @@ BEFORE DELETE ON v2_campaign_locks BEGIN SELECT RAISE(ABORT, 'V2 campaign capabi
 const source = path => readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const bundledModules = new Map([
   ['example.starship.system', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.starship/v2/extensions.mjs')).digest('hex')}`, refs: Object.values(starshipRefs) }],
-  ['example.revised5e', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.revised5e/v2/manifest.json') + '\n' + source('../../examples/example.revised5e/v2/extensions.mjs') + '\n' + source('../../examples/example.revised5e/v2/ui/combat.json')).digest('hex')}`, refs: Object.values(revised5eRefs) }],
+  ['example.revised5e', { version: '1.1.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.revised5e/v2/manifest.json') + '\n' + source('../../examples/example.revised5e/v2/extensions.mjs') + '\n' + source('../../examples/example.revised5e/v2/ui/combat.json')).digest('hex')}`, refs: Object.values(revised5eRefs) }],
   ['example.interruption', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.interruption/v2/extensions.mjs')).digest('hex')}`, refs: Object.values(interruptionRefs) }]
 ]);
 const secureEqual = (left, right) => {

@@ -4,12 +4,14 @@ import { revised5eResolvers, revised5eRefs } from './extensions.mjs';
 
 const resolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.attackResolver.id);
 const movementResolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.movementResolver.id);
+const secondWindResolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.secondWindResolver.id);
+const shortRestResolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.shortRestResolver.id);
 const encounter = () => ({ entityId: 'encounter', entityType: 'example.revised5e.encounter', revision: 2, data: {
-  status: 'active', initiativeOrder: ['player-a', 'player-b', 'enemy'], currentTurnIndex: 0, round: 1, actionsUsed: [], combatLog: [],
+  status: 'active', initiativeOrder: ['player-a', 'player-b', 'enemy'], currentTurnIndex: 0, round: 1, actionsUsed: [], shortRestCount: 0, combatLog: [],
   actors: [
-    { id: 'player-a', name: 'Mira Vale', kind: 'player', position: { x: 2, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
-    { id: 'player-b', name: 'Oren Pike', kind: 'player', position: { x: 1, y: 4 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
-    { id: 'enemy', name: 'Mire Warden', kind: 'enemy', position: { x: 3, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
+    { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: 'player-a', position: { x: 2, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, bonusActionAvailable: true, classId: 'fighter', classLevel: 1, secondWindMaximum: 2, secondWindUses: 2, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
+    { id: 'player-b', name: 'Oren Pike', kind: 'player', position: { x: 1, y: 4 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, bonusActionAvailable: true, classId: 'not-modeled', classLevel: 0, secondWindMaximum: 0, secondWindUses: 0, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+    { id: 'enemy', name: 'Mire Warden', kind: 'enemy', position: { x: 3, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, bonusActionAvailable: true, classId: 'not-modeled', classLevel: 0, secondWindMaximum: 0, secondWindUses: 0, abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
   ]
 } });
 const resolve = (d20, damageRolls = []) => resolver.resolve({
@@ -122,4 +124,53 @@ test('resumed opportunity attacks use host transcript, consume only a used react
   const declined = movementResolver.resume({ ...request, continuation, reaction: { status: 'resolved', decisions: [{ actionId: 'example.revised5e.opportunity-attack', decision: 'decline' }] }, randomness: [] });
   assert.equal(declined.effects[0].payload.state.actors[2].reactionAvailable, true);
   assert.equal(declined.effects[0].payload.state.actors[0].position.x, 1);
+});
+
+test('Second Wind spends one use and one Bonus Action, rolls host d10 plus Fighter level, and caps healing at maximum HP', () => {
+  const request = { operationId: 'second-wind-test', campaignId: 'test', principalId: 'player-a', logicalTime: '2026-10-17T12:00:00.000Z', state: encounter(), input: { actorId: 'player-a' }, randomness: [{ requestId: 'second-wind-healing', kind: 'die', count: 1, sides: 10, values: [8], visibility: 'public' }] };
+  request.state.data.actors[0].currentHitPoints = 2;
+  const result = secondWindResolver.resolve(request);
+  const next = result.effects[0].payload.state.actors[0];
+  assert.equal(next.currentHitPoints, 11, 'd10 8 + Fighter level 1 heals 9 HP');
+  assert.equal(next.secondWindUses, 1);
+  assert.equal(next.bonusActionAvailable, false);
+  assert.equal(result.decisions[0].data.healingDie, 8);
+  assert.equal(result.outcomes[0].data.kind, 'second-wind');
+
+  request.state.data.actors[0].currentHitPoints = 10;
+  const capped = secondWindResolver.resolve(request);
+  assert.equal(capped.effects[0].payload.state.actors[0].currentHitPoints, 12);
+  assert.equal(capped.effects[0].payload.state.combatLog.at(-1).healing, 2);
+});
+
+test('Second Wind rejects depleted uses, a second Bonus Action, wrong actor ownership and out-of-turn use without dice', () => {
+  const input = { actorId: 'player-a' }, request = { state: encounter(), input, randomness: [] };
+  request.state.data.actors[0].secondWindUses = 0;
+  assert.throws(() => secondWindResolver.randomRequests({ ...request, principalId: 'player-a' }), error => error.code === 'conflict');
+  request.state.data.actors[0].secondWindUses = 2; request.state.data.actors[0].bonusActionAvailable = false;
+  assert.throws(() => secondWindResolver.randomRequests({ ...request, principalId: 'player-a' }), error => error.code === 'conflict');
+  request.state.data.actors[0].bonusActionAvailable = true;
+  assert.throws(() => secondWindResolver.randomRequests({ ...request, principalId: 'player-b' }), error => error.code === 'unauthorized');
+  request.state.data.currentTurnIndex = 1;
+  assert.throws(() => secondWindResolver.randomRequests({ ...request, principalId: 'player-a' }), error => error.code === 'conflict');
+});
+
+test('Short Rest after a GM-confirmed completed encounter restores exactly one use and never heals HP', () => {
+  const state = encounter(); state.data.status = 'complete';
+  const request = { operationId: 'short-rest-test', principalId: 'gm', state, input: {}, randomness: [] };
+  state.data.actors[0].currentHitPoints = 4;
+  state.data.actors[0].secondWindUses = 0;
+  const restoredFromZero = shortRestResolver.resolve(request).effects[0].payload.state;
+  assert.equal(restoredFromZero.actors[0].secondWindUses, 1);
+  assert.equal(restoredFromZero.actors[0].currentHitPoints, 4);
+  state.data.actors[0].secondWindUses = 1;
+  const restoredOne = shortRestResolver.resolve(request).effects[0].payload.state;
+  assert.equal(restoredOne.actors[0].secondWindUses, 2);
+  const alreadyFull = shortRestResolver.resolve(request).effects[0].payload.state;
+  assert.equal(alreadyFull.actors[0].secondWindUses, 2);
+  assert.throws(() => shortRestResolver.randomRequests({ state: encounter(), principalId: 'gm' }), error => error.code === 'conflict');
+  assert.throws(() => shortRestResolver.randomRequests({ state, principalId: 'player-a' }), error => error.code === 'conflict');
+  state.data.actors[0].currentHitPoints = 0;
+  state.data.actors[0].secondWindUses = 0;
+  assert.equal(shortRestResolver.resolve(request).effects[0].payload.state.actors[0].secondWindUses, 0, '0 HP creature cannot begin this example rest');
 });

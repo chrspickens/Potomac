@@ -16,7 +16,7 @@ const hostPort = await freePort(), webPort = await freePort(), debugPort = await
 const children = [];
 let socket, sequence = 0;
 let hostInstance;
-const testDice = [20, 1, 1, 20, 4, 4, 20, 6, 6];
+const testDice = [20, 1, 1, 20, 4, 4, 8, 20, 6, 6, 20, 4, 4];
 let diceIndex = 0;
 const pending = new Map(), sessions = {};
 async function freePort() {
@@ -66,6 +66,10 @@ async function selectActor(name, actorId) {
   assert.equal(selected, true, 'module actor and target choices are selected');
   const submit = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="Attack"]'); const b=form?.querySelector('button[type="submit"]'); if(!b||b.disabled)return false; b.click(); return true; })()`);
   assert.equal(submit, true, `Attack form is ready for ${actorId}`);
+}
+async function submitActorForm(name, label, actorId) {
+  const submitted = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="${label}"]'); const field=form?.querySelector('select'); if(!field)return false; const option=[...field.options].find(item=>item.textContent===${JSON.stringify(actorId)}); if(!option)return false; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(field,option.value); field.dispatchEvent(new Event('change',{bubbles:true})); const button=form.querySelector('button[type="submit"]'); if(!button||button.disabled)return false; button.click(); return true; })()`);
+  assert.equal(submitted, true, `${label} form submits as ${actorId}`);
 }
 async function page(name) {
   const context = await call('Target.createBrowserContext');
@@ -132,6 +136,8 @@ try {
   assert.ok(pendingWindowId, 'host has a durable pending opportunity-attack window');
   const positionBeforeReaction = await evaluate('playerA', `document.querySelectorAll('.v2-actor-card')[0]?.textContent.includes('Position') && document.querySelectorAll('.v2-actor-card')[0]?.innerText.includes('2, 2')`);
   assert.ok(positionBeforeReaction, 'suspended movement has not applied the final position');
+  const restWhilePending = await evaluate('gm', `(async()=>{const credential=sessionStorage.getItem('potomac.v2.revised5e.credential');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+credential}}).then(r=>r.json());const entity=await fetch('/api/v2/entities/revised5e-demo-encounter',{headers:{authorization:'Bearer '+credential,'x-v2-lock-digest':lock.digest}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+credential,'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify({operationId:'rest-during-pending-browser',commandId:'example.revised5e.short-rest',entityId:entity.entityId,expectedRevision:entity.revision,input:{}})});return {status:response.status,body:await response.json()}})()`);
+  assert.equal(restWhilePending.status, 409, 'host refuses Short Rest while a reaction continuation remains pending');
   host.close(); await delay(300); host = await startHost(); await hostReady();
   await click('gm', 'Refresh host state');
   await wait('gm', `Boolean(document.querySelector('.v2-reactions button'))`, 'pending reaction recovered after host restart');
@@ -144,6 +150,16 @@ try {
   await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.textContent.includes('1, 2')`, 'movement resumes after the reaction');
   await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('opportunity-d20: d20 [20]')`, 'public host dice audit is visible');
 
+  await wait('playerA', `document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('2 / 12 HP')`, 'Player A sees opportunity-attack damage before healing');
+  await submitActorForm('playerA', 'Use Second Wind (Bonus Action)', 'player-a');
+  await wait('playerA', `Boolean(document.querySelector('[data-combat-log-kind="second-wind"]'))`, 'Second Wind result committed from Player A UI');
+  await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('11 / 12 HP')`, 'Player B sees bounded Second Wind recovery');
+  await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('1 / 2 uses')`, 'Second Wind resource decremented');
+  await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('second-wind-healing: d10 [8]')`, 'Player B sees the host-audited healing die');
+  await submitActorForm('playerA', 'Use Second Wind (Bonus Action)', 'player-a');
+  await wait('playerA', `document.querySelector('form[aria-label="Use Second Wind (Bonus Action)"] [role="alert"]')?.textContent.includes('not accepted')`, 'host rejects a second Bonus Action on this turn');
+  const secondWindCapture = await evaluate('playerA', `window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.second-wind'&&item.response?.status==='applied')`);
+  assert.ok(secondWindCapture, 'the successful Second Wind command was sent over authenticated HTTP');
   let playerAAttacked = false;
   for (let turn = 0; turn < 3; turn++) {
     const current = await evaluate('gm', `document.querySelector('.v2-turn-card strong')?.textContent || ''`);
@@ -164,23 +180,43 @@ try {
   await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="critical"]'))`, 'Player B sees Player A combat result');
   await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('attack: d20')`, 'Player B sees host-supplied attack roll audit');
   const enemyHpBeforeRestart = await evaluate('playerB', `([...document.querySelectorAll('.v2-actor-card')].find(card=>card.querySelector('h2')?.textContent==='Mire Warden')?.querySelector('.v2-hp')?.textContent||'').trim()`);
-  assert.match(enemyHpBeforeRestart, /^([0-9]|1[0-9]|2[01]) \/ 22 HP$/, `Player B sees committed HP loss: ${enemyHpBeforeRestart}`);
+  assert.match(enemyHpBeforeRestart, /^7 \/ 22 HP$/, `Player B sees committed HP loss: ${enemyHpBeforeRestart}`);
+
+  await wait('playerB', `document.querySelector('.v2-turn-card strong')?.textContent.includes('Oren Pike')`, 'Player B receives the next turn');
+  await selectActor('playerB', 'player-b');
+  await wait('gm', `document.querySelector('.v2-turn-card')?.textContent.includes('Encounter complete')`, 'Player B defeats the enemy on the host');
+  await click('gm', 'Complete Short Rest (GM)');
+  await wait('gm', `document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('2 / 2 uses')`, 'GM completes a Short Rest and restores one expended use');
+  await wait('playerB', `document.querySelector('[data-combat-log-kind="short-rest"]')?.textContent.includes('Short Rest')`, 'Player B sees the Short Rest outcome');
+  const secondWindRetry = await evaluate('playerA', `(async()=>{const capture=window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.second-wind'&&item.response?.status==='applied');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(capture.body)});return {status:response.status,body:await response.json(),original:capture.response}})()`);
+  assert.equal(secondWindRetry.status, 200, 'exact Second Wind retry succeeds after the rest');
+  assert.deepEqual(secondWindRetry.body, secondWindCapture.response, 'exact retry returns the original receipt without re-healing or re-spending');
+  const alteredSecondWindRetry = await evaluate('playerA', `(async()=>{const capture=window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.second-wind'&&item.response?.status==='applied');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const body={...capture.body,expectedRevision:capture.body.expectedRevision+1};const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(body)});return response.status})()`);
+  assert.equal(alteredSecondWindRetry, 409, 'same operation ID with altered payload conflicts');
 
   const forbidden = await evaluate('playerB', `(async()=>{const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const entity=await fetch('/api/v2/entities/revised5e-demo-encounter',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'x-v2-lock-digest':lock.digest}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify({operationId:'browser-cross-player',commandId:'example.revised5e.attack',entityId:'revised5e-demo-encounter',expectedRevision:entity.revision,input:{actorId:'player-a',targetId:'enemy'}})});return response.status})()`);
   assert.equal(forbidden, 403, 'Player B cannot submit an attack as Player A');
   const beforeEvents = await evaluate('playerB', `(async()=>{const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());return fetch('/api/v2/events',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'x-v2-lock-digest':lock.digest}}).then(r=>r.json())})()`);
   host.close(); await delay(300); host = await startHost(); await hostReady();
   await click('playerB', 'Refresh host state');
-  await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="critical"]'))`, 'recovered combat result');
+  await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="critical"]')&&document.querySelector('[data-combat-log-kind="short-rest"]'))`, 'recovered combat and rest results');
+  await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('2 / 2 uses')`, 'recovered Second Wind uses');
+  await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('11 / 12 HP')`, 'Short Rest did not silently restore HP');
+  const secondWindRestartRetry = await evaluate('playerA', `(async()=>{const capture=window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.second-wind'&&item.response?.status==='applied');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(capture.body)});return {status:response.status,body:await response.json(),original:capture.response}})()`);
+  assert.equal(secondWindRestartRetry.status, 200, 'Second Wind receipt is available after host restart');
+  assert.deepEqual(secondWindRestartRetry.body, secondWindCapture.response, 'post-restart retry returns the original Second Wind receipt without rerolling');
+  const shortRestRestartRetry = await evaluate('gm', `(async()=>{const capture=window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.short-rest'&&item.response?.status==='applied');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(capture.body)});return {status:response.status,body:await response.json(),original:capture.response}})()`);
+  assert.equal(shortRestRestartRetry.status, 200, 'Short Rest receipt is available after host restart');
+  assert.deepEqual(shortRestRestartRetry.body, shortRestRestartRetry.original, 'post-restart Short Rest retry does not restore an extra use');
   const enemyHpAfterRestart = await evaluate('playerB', `([...document.querySelectorAll('.v2-actor-card')].find(card=>card.querySelector('h2')?.textContent==='Mire Warden')?.querySelector('.v2-hp')?.textContent||'').trim()`);
-  assert.equal(enemyHpAfterRestart, enemyHpBeforeRestart, 'enemy HP is unchanged after host restart');
+  assert.equal(enemyHpAfterRestart, '0 / 22 HP', 'defeated enemy HP remains committed after host restart');
   const retry = await evaluate('playerA', `(async()=>{const capture=window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.attack');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(capture.body)});return {status:response.status,body:await response.json()}})()`);
   assert.equal(retry.status, 200, 'exact browser command retry succeeds after restart');
   assert.deepEqual(retry.body, commandCapture.response, 'restart retry returns the same committed receipt');
   const afterEvents = await evaluate('playerB', `(async()=>{const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());return fetch('/api/v2/events',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'x-v2-lock-digest':lock.digest}}).then(r=>r.json())})()`);
   assert.equal(afterEvents.filter(event => event.operationId === commandCapture.body.operationId).length, 1, 'one attack event persisted exactly once');
   assert.equal(beforeEvents.filter(event => event.operationId === commandCapture.body.operationId).length, 1);
-  console.log('Revised 5e real-host browser acceptance passed: independent GM/Player A/Player B contexts; deterministic test dice; suspended movement, restart, unauthorized reaction denial, GM opportunity attack, public audit/result and resumed position; attack loop, cross-player denial, restart recovery and exact retry.');
+  console.log('Revised 5e real-host browser acceptance passed: independent GM/Player A/Player B contexts; deterministic host dice; durable opportunity-attack suspension/restart/resumption; Player A Second Wind d10 + level healing and bonus-action enforcement; Player B attack defeats enemy; GM Short Rest restores exactly one use without HP healing; persistence, exact/altered retry and cross-player denial.');
   await call('Target.disposeBrowserContext', { browserContextId: playerAContext });
   await call('Target.disposeBrowserContext', { browserContextId: playerBContext });
   await call('Target.disposeBrowserContext', { browserContextId: gmContext });

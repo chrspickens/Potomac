@@ -13,8 +13,10 @@
       "children": [
         { "kind": "command", "id": "example.revised5e.combat.initialize", "commandId": "example.revised5e.initialize", "label": "Roll initiative and begin" },
         { "kind": "form", "id": "example.revised5e.combat.attack", "commandId": "example.revised5e.attack", "label": "Attack" },
+        { "kind": "form", "id": "example.revised5e.combat.second-wind", "commandId": "example.revised5e.second-wind", "label": "Use Second Wind (Bonus Action)" },
         { "kind": "form", "id": "example.revised5e.combat.disengage", "commandId": "example.revised5e.disengage", "label": "Disengage" },
-        { "kind": "form", "id": "example.revised5e.combat.end-turn", "commandId": "example.revised5e.end-turn", "label": "End turn" }
+        { "kind": "form", "id": "example.revised5e.combat.end-turn", "commandId": "example.revised5e.end-turn", "label": "End turn" },
+        { "kind": "command", "id": "example.revised5e.combat.short-rest", "commandId": "example.revised5e.short-rest", "label": "Complete Short Rest (GM)" }
       ]
     }
   ]

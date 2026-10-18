@@ -1,13 +1,15 @@
 const ref = (id, digest) => ({ id, apiVersion: '1.0.0', implementationVersion: '1.0.0', digest: `sha256:${digest}` });
 export const revised5eRefs = {
-  entity: ref('example.revised5e.encounter', '9c96a631d26441e3968cae778679283d4e9ec65f31a115b10164a0acf771263e'),
-  commands: ref('example.revised5e.commands', 'dd4020117252dfd94bdaef57fe1771a5d0110e9a742219da1261c91701168a65'),
-  ui: ref('example.revised5e.combat-ui', '55c898ea717a254a12802826c1b18ff0350420bbf884ddc109c62b8083da15a9'),
+  entity: ref('example.revised5e.encounter', '4dbfc9e1bf26568d9a5d31ca4ee80c2e79ad2763210f1c21dd2fcb95da76f583'),
+  commands: ref('example.revised5e.commands', 'fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52'),
+  ui: ref('example.revised5e.combat-ui', '278838eb75ffef4c3ed442eb6135ac58c2b4fac17f5d199c0372b9f355a6abca'),
   initiativeResolver: ref('example.revised5e.initiative-resolver', '1bb7a6a6491b93c62ab3ece968d6b97b0dcd4382a4dcc3bd807bad5c18cad3a4'),
-  attackResolver: ref('example.revised5e.attack-resolver', '55a284c32088fb77f4a3d342534a0e59f3177a6eaa4b16c41339f72a2ced24f6'),
+  attackResolver: ref('example.revised5e.attack-resolver', '7a52f081b97c843573830f0ab41c810b3f56a93d4438c33d2508c4eaf82aa3b1'),
   movementResolver: ref('example.revised5e.movement-resolver', 'eaf765e4a74995d52e4e51a652a3105e14d14f897343b3c6b38f288ec5da9f6c'),
   disengageResolver: ref('example.revised5e.disengage-resolver', '843e1773e4d83758e7b94ad73949c15f2cdde8b25fe085b32c928b5d1eb8a3d9'),
-  endTurnResolver: ref('example.revised5e.end-turn-resolver', '187c366aa52b1f5129a92c8e2c5f01357c8520776038227517675294a85d10b0'),
+  endTurnResolver: ref('example.revised5e.end-turn-resolver', '4dc866df96e074893baab0401eb2a37c2781dd402e090cc7eac7a8d431ebc88f'),
+  secondWindResolver: ref('example.revised5e.second-wind-resolver', '8f84f9f6b984b02b51c7067dce6a632a9da26373130429cd9d8ad6be06c34e3d'),
+  shortRestResolver: ref('example.revised5e.short-rest-resolver', '0eaf4ff91d8fce2f4189eadd05c166b33691ae54d93db41e62423ba84e53cd76'),
   encounterEffect: ref('example.revised5e.encounter-state', 'be939a00e5f080b573b149a00a889747d0d887c565ba75a1d4599ba7f1cc7b11')
 };
 
@@ -18,6 +20,8 @@ const actorSchema = object({
   position: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }),
   speed: { type: 'integer', enum: [25, 30, 35, 40] }, movementRemaining: { type: 'integer', minimum: 0, maximum: 40 },
   meleeReach: { type: 'integer', enum: [5, 10] }, reactionAvailable: { type: 'boolean' }, disengaged: { type: 'boolean' },
+  bonusActionAvailable: { type: 'boolean' }, classId: { type: 'string', enum: ['fighter', 'not-modeled'] }, classLevel: { type: 'integer', minimum: 0, maximum: 20 },
+  secondWindMaximum: { type: 'integer', minimum: 0, maximum: 4 }, secondWindUses: { type: 'integer', minimum: 0, maximum: 4 },
   ownerPrincipalId: { type: 'string', minLength: 1, maxLength: 128 },
   abilityModifiers: object({ strength: { type: 'integer', minimum: -5, maximum: 10 }, dexterity: { type: 'integer', minimum: -5, maximum: 10 } }),
   proficiencyBonus: { type: 'integer', minimum: 2, maximum: 6 }, armorClass: { type: 'integer', minimum: 1, maximum: 30 },
@@ -25,25 +29,25 @@ const actorSchema = object({
   initiativeModifier: { type: 'integer', minimum: -5, maximum: 10 },
   weapon: object({ name: { type: 'string', minLength: 1, maxLength: 40 }, damageDie: { type: 'integer', enum: [4, 6, 8, 10, 12] }, damageType: { type: 'string', enum: ['bludgeoning', 'piercing', 'slashing'] }, attackAbility: { type: 'string', enum: ['strength', 'dexterity'] }, proficient: { type: 'boolean' } })
 });
-const combatLogItem = object({ round: { type: 'integer', minimum: 0 }, actorId: stringId, actorName: stringId, targetId: stringId, targetName: stringId, kind: { type: 'string', enum: ['initiative', 'miss', 'hit', 'critical', 'defeat', 'opportunity-miss', 'opportunity-hit', 'opportunity-critical', 'opportunity-defeat'] }, d20: { type: 'integer', minimum: 1, maximum: 20 }, attackTotal: { type: 'integer', minimum: -10, maximum: 100 }, armorClass: { type: 'integer', minimum: 1, maximum: 30 }, damageRolls: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1, maximum: 12 } }, damageModifier: { type: 'integer', minimum: -5, maximum: 10 }, damage: { type: 'integer', minimum: 0, maximum: 100 }, remainingHitPoints: { type: 'integer', minimum: 0, maximum: 500 }, defeated: { type: 'boolean' } });
+const combatLogItem = object({ round: { type: 'integer', minimum: 0 }, actorId: stringId, actorName: stringId, targetId: stringId, targetName: stringId, kind: { type: 'string', enum: ['initiative', 'miss', 'hit', 'critical', 'defeat', 'opportunity-miss', 'opportunity-hit', 'opportunity-critical', 'opportunity-defeat', 'second-wind', 'short-rest'] }, d20: { type: 'integer', minimum: 1, maximum: 20 }, attackTotal: { type: 'integer', minimum: -10, maximum: 100 }, armorClass: { type: 'integer', minimum: 1, maximum: 30 }, damageRolls: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1, maximum: 12 } }, damageModifier: { type: 'integer', minimum: -5, maximum: 10 }, damage: { type: 'integer', minimum: 0, maximum: 100 }, healingRoll: { type: 'integer', minimum: 1, maximum: 10 }, healingBonus: { type: 'integer', minimum: 0, maximum: 20 }, healing: { type: 'integer', minimum: 0, maximum: 100 }, remainingHitPoints: { type: 'integer', minimum: 0, maximum: 500 }, resourceUsesRemaining: { type: 'integer', minimum: 0, maximum: 4 }, defeated: { type: 'boolean' } }, ['round', 'actorId', 'actorName', 'kind']);
 const movementLogItem = object({ round: { type: 'integer', minimum: 0 }, actorId: stringId, actorName: stringId, from: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }), to: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }), feetSpent: { type: 'integer', minimum: 0, maximum: 40 }, remaining: { type: 'integer', minimum: 0, maximum: 40 }, stoppedByDefeat: { type: 'boolean' } });
 
 export const revised5eEncounter = {
-  descriptorVersion: 1, typeId: 'example.revised5e.encounter', schemaVersion: 1, capability: revised5eRefs.entity,
+  descriptorVersion: 1, typeId: 'example.revised5e.encounter', schemaVersion: 2, capability: revised5eRefs.entity,
   schema: object({
     title: { type: 'string', minLength: 1, maxLength: 100 }, status: { type: 'string', enum: ['setup', 'active', 'complete'] },
     actors: { type: 'array', minItems: 3, maxItems: 3, items: actorSchema },
     grid: object({ width: { type: 'integer', minimum: 1, maximum: 20 }, height: { type: 'integer', minimum: 1, maximum: 20 }, squareFeet: { type: 'integer', enum: [5] }, blocked: { type: 'array', maxItems: 20, items: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }) } }),
     initiativeOrder: { type: 'array', maxItems: 3, items: stringId }, initiativeRolls: { type: 'array', maxItems: 3, items: { type: 'integer', minimum: 1, maximum: 20 } },
     currentTurnIndex: { type: 'integer', minimum: 0, maximum: 2 }, round: { type: 'integer', minimum: 0, maximum: 10000 },
-    actionsUsed: { type: 'array', maxItems: 3, items: stringId },
+    actionsUsed: { type: 'array', maxItems: 3, items: stringId }, shortRestCount: { type: 'integer', minimum: 0, maximum: 10000 },
     combatLog: { type: 'array', maxItems: 100, items: combatLogItem }, movementLog: { type: 'array', maxItems: 100, items: movementLogItem }
   }),
   ownership: { kind: 'campaign' }, visibility: ['public'], creationRoles: ['gm'],
   fieldVisibility: [
     { path: 'actors.*.ownerPrincipalId', roles: ['gm'] }
   ],
-  migration: { migrationId: 'example.revised5e.encounter.v1-initial', fromSchemaVersion: 0, toSchemaVersion: 1 }
+  migration: { migrationId: 'example.revised5e.encounter.v2-resources', fromSchemaVersion: 1, toSchemaVersion: 2 }
 };
 
 const empty = object({});
@@ -55,6 +59,7 @@ const attackInput = object({
 });
 const movementInput = object({ actorId: { type: 'string', enum: ['player-a', 'player-b', 'enemy'] }, path: { type: 'array', minItems: 1, maxItems: 8, items: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }) } });
 const actorActionInput = object({ actorId: { type: 'string', enum: ['player-a', 'player-b', 'enemy'] } });
+const shortRestInput = empty;
 const gmOnly = { roles: ['gm'], ownership: 'any' };
 const enrolledPlayers = { roles: ['gm', 'player'], ownership: 'owner-or-participant' };
 const command = (commandId, resolver, inputSchema, permission, effects, effectTargetPolicy = 'source-entity') => ({ descriptorVersion: 1, commandId, capability: revised5eRefs.commands, entityTypeId: revised5eEncounter.typeId, inputSchema, resultSchema: outcomeSchema, permission: { ...permission, effectTargetPolicy }, resolver, effects });
@@ -63,7 +68,9 @@ export const revised5eCommands = [
   command('example.revised5e.attack', revised5eRefs.attackResolver, attackInput, enrolledPlayers, [revised5eRefs.encounterEffect], 'source-entity'),
   command('example.revised5e.move', revised5eRefs.movementResolver, movementInput, enrolledPlayers, [revised5eRefs.encounterEffect], 'source-entity'),
   command('example.revised5e.disengage', revised5eRefs.disengageResolver, actorActionInput, enrolledPlayers, [revised5eRefs.encounterEffect], 'source-entity'),
-  command('example.revised5e.end-turn', revised5eRefs.endTurnResolver, actorActionInput, enrolledPlayers, [revised5eRefs.encounterEffect], 'source-entity')
+  command('example.revised5e.end-turn', revised5eRefs.endTurnResolver, actorActionInput, enrolledPlayers, [revised5eRefs.encounterEffect], 'source-entity'),
+  command('example.revised5e.second-wind', revised5eRefs.secondWindResolver, actorActionInput, enrolledPlayers, [revised5eRefs.encounterEffect]),
+  { ...command('example.revised5e.short-rest', revised5eRefs.shortRestResolver, shortRestInput, gmOnly, [revised5eRefs.encounterEffect]), permission: { ...gmOnly, effectTargetPolicy: 'source-entity', noPendingContinuations: true } }
 ];
 
 const actorById = (state, id) => state.data.actors.find(actor => actor.id === id);
@@ -85,7 +92,7 @@ const initResolver = {
       .sort((a, b) => b.total - a.total || a.index - b.index);
     const order = ranked.map(item => item.actor.id);
     const combatLog = ranked.map(item => ({ round: 1, actorId: item.actor.id, actorName: item.actor.name, targetId: item.actor.id, targetName: item.actor.name, kind: 'initiative', d20: item.roll, attackTotal: item.total, armorClass: item.actor.armorClass, damageRolls: [], damageModifier: 0, damage: 0, remainingHitPoints: item.actor.currentHitPoints, defeated: false }));
-    const updated = { ...data, status: 'active', initiativeOrder: order, initiativeRolls: rolls, currentTurnIndex: 0, round: 1, actionsUsed: [], actors: data.actors.map(actor => ({ ...actor, movementRemaining: actor.speed, reactionAvailable: true, disengaged: false })), combatLog: [...data.combatLog, ...combatLog].slice(-100) };
+    const updated = { ...data, status: 'active', initiativeOrder: order, initiativeRolls: rolls, currentTurnIndex: 0, round: 1, actionsUsed: [], actors: data.actors.map(actor => ({ ...actor, movementRemaining: actor.speed, reactionAvailable: true, bonusActionAvailable: true, disengaged: false })), combatLog: [...data.combatLog, ...combatLog].slice(-100) };
     return { outcomes: [outcome('revised5e.initiative-rolled', { order, rolls, totals: ranked.map(item => item.total) })], decisions: ranked.map((item, rank) => ({ id: `initiative.${item.actor.id}`, data: { actorId: item.actor.id, d20: item.roll, modifier: item.actor.initiativeModifier, total: item.total, rank: rank + 1 }, visibility: 'public' })), effects: [patch(input.operationId, 'example.revised5e.encounter-state', input.state.entityId, updated)] };
   }
 };
@@ -122,7 +129,7 @@ const attackResolver = {
     const currentTurnIndex = wraps ? 0 : (actorIndex + 1) % data.initiativeOrder.length;
     const round = wraps ? data.round + 1 : data.round;
     const nextActorId = data.initiativeOrder[(actorIndex + 1) % data.initiativeOrder.length];
-    const updatedActors = data.actors.map(item => item.id === target.id ? { ...item, currentHitPoints: remainingHitPoints } : item.id === nextActorId ? { ...item, movementRemaining: item.speed, reactionAvailable: true, disengaged: false } : item);
+    const updatedActors = data.actors.map(item => item.id === target.id ? { ...item, currentHitPoints: remainingHitPoints } : item.id === nextActorId ? { ...item, movementRemaining: item.speed, reactionAvailable: true, bonusActionAvailable: true, disengaged: false } : item);
     const logEntry = { round: data.round, actorId: actor.id, actorName: actor.name, targetId: target.id, targetName: target.name, kind, d20, attackTotal, armorClass: target.armorClass, damageRolls, damageModifier: hit ? damageModifier : 0, damage, remainingHitPoints, defeated };
     const updated = { ...data, actors: updatedActors, actionsUsed, currentTurnIndex, round, status: defeated ? 'complete' : data.status, combatLog: [...data.combatLog, logEntry].slice(-100) };
     return { outcomes: [outcome(`revised5e.attack.${kind}`, logEntry)], decisions: [{ id: `${input.operationId}.attack`, data: { naturalD20: d20, attackModifier: modifier, attackTotal, armorClass: target.armorClass, hit, critical, damageRolls, damageModifier, damage, defeated }, visibility: 'public' }], effects: [
@@ -217,6 +224,44 @@ const movementResolver = {
   }
 };
 
+const secondWindResolver = {
+  ref: revised5eRefs.secondWindResolver,
+  randomRequests({ state, input, randomness, principalId }) {
+    const actor = actorById(state, input.actorId);
+    if (!actor || state.data.status !== 'active' || state.data.initiativeOrder[state.data.currentTurnIndex] !== actor.id || actor.currentHitPoints <= 0 || actor.classId !== 'fighter' || actor.classLevel < 1 || actor.secondWindUses <= 0 || !actor.bonusActionAvailable) throw Object.assign(new Error('Second Wind is not legal for this actor or turn'), { code: 'conflict' });
+    authorizeActor(actor, principalId);
+    return randomValues(randomness, 'second-wind-healing').length ? [] : [{ requestId: 'second-wind-healing', kind: 'die', count: 1, sides: 10, visibility: 'public' }];
+  },
+  resolve(input) {
+    const data = input.state.data, actor = actorById(input.state, input.input.actorId), roll = randomValues(input.randomness, 'second-wind-healing')[0];
+    if (!actor || data.status !== 'active' || data.initiativeOrder[data.currentTurnIndex] !== actor.id || actor.currentHitPoints <= 0 || actor.classId !== 'fighter' || actor.classLevel < 1 || actor.secondWindUses <= 0 || !actor.bonusActionAvailable || !Number.isInteger(roll) || roll < 1 || roll > 10) throw Object.assign(new Error('Second Wind is not legal or its host healing die is missing'), { code: 'conflict' });
+    authorizeActor(actor, input.principalId);
+    const healedTo = Math.min(actor.maximumHitPoints, actor.currentHitPoints + roll + actor.classLevel), healing = healedTo - actor.currentHitPoints;
+    const uses = actor.secondWindUses - 1;
+    const log = { round: data.round, actorId: actor.id, actorName: actor.name, targetId: actor.id, targetName: actor.name, kind: 'second-wind', healingRoll: roll, healingBonus: actor.classLevel, healing, remainingHitPoints: healedTo, resourceUsesRemaining: uses, defeated: false };
+    const updated = { ...data, actors: data.actors.map(item => item.id === actor.id ? { ...item, currentHitPoints: healedTo, secondWindUses: uses, bonusActionAvailable: false } : item), combatLog: [...data.combatLog, log].slice(-100) };
+    return { outcomes: [outcome('revised5e.second-wind', log)], decisions: [{ id: `${input.operationId}.second-wind`, data: { actorId: actor.id, healingDie: roll, fighterLevel: actor.classLevel, healing, currentHitPoints: healedTo, maximumHitPoints: actor.maximumHitPoints, usesRemaining: uses }, visibility: 'public' }], effects: [patch(input.operationId, 'example.revised5e.encounter-state', input.state.entityId, updated)] };
+  }
+};
+
+const shortRestResolver = {
+  ref: revised5eRefs.shortRestResolver,
+  randomRequests({ state, principalId }) {
+    if (principalId !== 'gm' || state.data.status !== 'complete') throw Object.assign(new Error('GM must confirm a completed one-hour Short Rest after combat'), { code: 'conflict' });
+    return [];
+  },
+  resolve(input) {
+    const data = input.state.data;
+    if (input.principalId !== 'gm' || data.status !== 'complete') throw Object.assign(new Error('GM must confirm a completed one-hour Short Rest after combat'), { code: 'conflict' });
+    const eligible = data.actors.filter(actor => actor.classId === 'fighter' && actor.classLevel > 0 && actor.currentHitPoints > 0);
+    const recovered = eligible.map(actor => ({ actorId: actor.id, usesRestored: Math.min(1, actor.secondWindMaximum - actor.secondWindUses), usesRemaining: Math.min(actor.secondWindMaximum, actor.secondWindUses + 1) }));
+    const actors = data.actors.map(actor => { const result = recovered.find(item => item.actorId === actor.id); return result ? { ...actor, secondWindUses: result.usesRemaining } : actor; });
+    const logs = recovered.map(result => { const actor = actorById(input.state, result.actorId); return { round: data.round, actorId: actor.id, actorName: actor.name, targetId: actor.id, targetName: actor.name, kind: 'short-rest', healing: 0, remainingHitPoints: actor.currentHitPoints, resourceUsesRemaining: result.usesRemaining, defeated: false }; });
+    const updated = { ...data, actors, shortRestCount: (data.shortRestCount || 0) + 1, combatLog: [...data.combatLog, ...logs].slice(-100) };
+    return { outcomes: [outcome('revised5e.short-rest-completed', { shortRestCount: updated.shortRestCount, recovered })], decisions: [], effects: [patch(input.operationId, 'example.revised5e.encounter-state', input.state.entityId, updated)] };
+  }
+};
+
 const disengageResolver = {
   ref: revised5eRefs.disengageResolver,
   randomRequests({ state, input, principalId }) {
@@ -246,7 +291,7 @@ const endTurnResolver = {
     const data = input.state.data, actor = actorById(input.state, input.input.actorId), currentIndex = data.currentTurnIndex;
     if (!actor || data.status !== 'active' || data.initiativeOrder[currentIndex] !== actor.id || actor.currentHitPoints <= 0) throw Object.assign(new Error('turn cannot be ended from this encounter state'), { code: 'conflict' });
     const wraps = currentIndex === data.initiativeOrder.length - 1, nextIndex = (currentIndex + 1) % data.initiativeOrder.length, nextId = data.initiativeOrder[nextIndex];
-    const actors = data.actors.map(item => item.id === nextId ? { ...item, movementRemaining: item.speed, reactionAvailable: true, disengaged: false } : item);
+    const actors = data.actors.map(item => item.id === nextId ? { ...item, movementRemaining: item.speed, reactionAvailable: true, bonusActionAvailable: true, disengaged: false } : item);
     const updated = { ...data, actors, actionsUsed: wraps ? [] : [...new Set([...data.actionsUsed, actor.id])], currentTurnIndex: nextIndex, round: wraps ? data.round + 1 : data.round };
     return { outcomes: [revised5eOutcome('revised5e.turn-ended', { actorId: actor.id, nextActorId: nextId, round: updated.round })], decisions: [], effects: [patch(input.operationId, 'example.revised5e.encounter-state', input.state.entityId, updated)] };
   }
@@ -258,7 +303,7 @@ function finishMove(data, actorId, destination, feetSpent, stoppedByDefeat, orig
   return { ...data, actors, movementLog: [...(data.movementLog || []), { round, actorId, actorName: moved.name, from: { ...origin }, to: { ...destination }, feetSpent, remaining: moved.movementRemaining, stoppedByDefeat }].slice(-100) };
 }
 
-export const revised5eResolvers = [initResolver, attackResolver, movementResolver, disengageResolver, endTurnResolver];
+export const revised5eResolvers = [initResolver, attackResolver, movementResolver, disengageResolver, endTurnResolver, secondWindResolver, shortRestResolver];
 const mergeEffect = {
   ...revised5eRefs.encounterEffect, atomic: true, conflict: 'reject-overlap', targetType: revised5eEncounter.typeId, targetVisibility: 'public',
   payloadSchema: object({ state: { type: 'object', properties: {}, additionalProperties: true } }),
