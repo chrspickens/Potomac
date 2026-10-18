@@ -141,7 +141,7 @@ try {
   await wait('playerA', `Boolean(document.querySelector('[data-combat-log-kind="opportunity-critical"]'))`, 'Player A sees the resolved opportunity attack');
   await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="opportunity-critical"]'))`, 'Player B sees the public opportunity-attack result');
   await wait('playerB', `document.querySelector('.v2-actor-card')?.innerText.includes('2 / 12 HP')`, 'Player B sees host-rolled damage to Mira');
-  await wait('playerB', `document.querySelector('.v2-actor-card')?.innerText.includes('Position') && document.body.innerText.includes('1, 2')`, 'movement resumes after the reaction');
+  await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.textContent.includes('1, 2')`, 'movement resumes after the reaction');
   await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('opportunity-d20: d20 [20]')`, 'public host dice audit is visible');
 
   let playerAAttacked = false;
