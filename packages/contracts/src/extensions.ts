@@ -17,6 +17,8 @@ export type ExtensionPermission = {
   ownership: "any" | "owner" | "gm" | "owner-or-participant";
   /** Where declared effects may target. Campaign-visible still requires source authorization and target read access. */
   effectTargetPolicy?: "source-entity" | "campaign-visible";
+  /** Host guard: reject the command while any durable reaction continuation is pending for its source entity. */
+  noPendingContinuations?: boolean;
 };
 export type MigrationIdentity = {
   migrationId: CapabilityId;

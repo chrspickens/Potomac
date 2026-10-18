@@ -127,7 +127,7 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
 test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls, and recovers receipts and combat state', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-5e-'));
   const databasePath = join(directory, 'host.sqlite');
-  const draws = [20, 1, 1, 20, 4, 3];
+  const draws = [20, 1, 1, 8, 20, 4, 3];
   let drawCount = 0, host, baseUrl;
   const launch = async () => {
     host = createHost({ databasePath, campaignId: 'campaign-v2-5e', enableV2Api: true, v2RandomInt: (min, max) => {
@@ -152,44 +152,64 @@ test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls
       { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: playerB.memberId, position: { x: 1, y: 4 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
       { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', position: { x: 3, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
     ];
+    for (const actor of actors) Object.assign(actor, { bonusActionAvailable: true, classId: actor.id === 'player-a' ? 'fighter' : 'not-modeled', classLevel: actor.id === 'player-a' ? 1 : 0, secondWindMaximum: actor.id === 'player-a' ? 2 : 0, secondWindUses: actor.id === 'player-a' ? 2 : 0 });
     const encounterId = 'encounter';
-    const created = await send('/api/v2/entities', { operationId: 'create-encounter', entityId: encounterId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', grid: { width: 8, height: 5, squareFeet: 5, blocked: [] }, actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [], movementLog: [] } }, 'local-gm', 'POST', proof());
+    const created = await send('/api/v2/entities', { operationId: 'create-encounter', entityId: encounterId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', shortRestCount: 0, grid: { width: 8, height: 5, squareFeet: 5, blocked: [] }, actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [], movementLog: [] } }, 'local-gm', 'POST', proof());
     assert.equal(created.status, 201, await created.clone().text());
     for (const member of [playerA, playerB]) assert.equal((await send(`/api/v2/entities/${encounterId}/grants`, { memberId: member.memberId, permissions: ['act'] }, 'local-gm', 'POST', proof())).status, 201);
     const init = await send('/api/v2/commands', { operationId: 'roll-initiative', commandId: 'example.revised5e.initialize', entityId: encounterId, expectedRevision: 1, input: {} }, 'local-gm', 'POST', proof());
     assert.equal(init.status, 200, await init.clone().text());
     assert.equal(drawCount, 3);
-    const attack = { operationId: 'mira-attack-1', commandId: 'example.revised5e.attack', entityId: encounterId, expectedRevision: 2, input: { actorId: 'player-a', targetId: 'enemy' } };
+    assert.equal((await send('/api/v2/commands', { operationId: 'rest-during-active-combat', commandId: 'example.revised5e.short-rest', entityId: encounterId, expectedRevision: 2, input: {} }, 'local-gm', 'POST', proof())).status, 409, 'active combat is not a legal Short Rest state');
+    const secondWind = { operationId: 'mira-second-wind-full-hp', commandId: 'example.revised5e.second-wind', entityId: encounterId, expectedRevision: 2, input: { actorId: 'player-a' } };
+    const wrongOwnerSecondWind = await send('/api/v2/commands', { ...secondWind, operationId: 'cross-player-second-wind' }, playerB.credential, 'POST', proof());
+    assert.equal(wrongOwnerSecondWind.status, 403, 'Player B cannot spend Mira\'s Second Wind'); assert.equal(drawCount, 3, 'unauthorized feature use consumes no randomness');
+    const fullHpUse = await send('/api/v2/commands', secondWind, playerA.credential, 'POST', proof()); assert.equal(fullHpUse.status, 200, await fullHpUse.clone().text());
+    const secondWindReceipt = await fullHpUse.json(); assert.equal(drawCount, 4, 'host rolled one d10 for Second Wind');
+    const afterWind = await (await request(`/api/v2/entities/${encounterId}`, playerB.credential, { headers: proof() })).json();
+    const mira = afterWind.data.actors.find(actor => actor.id === 'player-a');
+    assert.equal(mira.currentHitPoints, 12, 'healing is capped at maximum HP'); assert.equal(mira.secondWindUses, 1); assert.equal(mira.bonusActionAvailable, false);
+    assert.equal(afterWind.data.combatLog.at(-1).healingRoll, 8); assert.equal(afterWind.data.combatLog.at(-1).healing, 0, 'full-HP use consumes its feature but heals zero');
+    const duplicateBonusAction = await send('/api/v2/commands', { ...secondWind, operationId: 'duplicate-second-wind', expectedRevision: 3 }, playerA.credential, 'POST', proof());
+    assert.equal(duplicateBonusAction.status, 409, 'a second Bonus Action on the same turn is rejected'); assert.equal(drawCount, 4, 'rejected duplicate spends no die');
+    assert.equal((await send('/api/v2/commands', secondWind, playerA.credential, 'POST', { 'x-v2-lock-digest': 'sha256:' + '0'.repeat(64) })).status, 409, 'stale exact lock is rejected');
+    const attack = { operationId: 'mira-attack-1', commandId: 'example.revised5e.attack', entityId: encounterId, expectedRevision: 3, input: { actorId: 'player-a', targetId: 'enemy' } };
     const denied = await send('/api/v2/commands', { ...attack, operationId: 'cross-player', input: { actorId: 'player-a', targetId: 'enemy' } }, playerB.credential, 'POST', proof());
-    assert.equal(denied.status, 403, 'Player B cannot act for Player A'); assert.equal(drawCount, 3, 'unauthorized command consumes no randomness');
+    assert.equal(denied.status, 403, 'Player B cannot act for Player A'); assert.equal(drawCount, 4, 'unauthorized command consumes no randomness');
     const accepted = await send('/api/v2/commands', attack, playerA.credential, 'POST', proof());
     assert.equal(accepted.status, 200, await accepted.clone().text());
     const receipt = await accepted.json();
-    assert.equal(receipt.revision, 3);
+    assert.equal(receipt.revision, 4);
     assert.equal(receipt.outcomes[0].kind, 'revised5e.attack.critical');
     assert.equal(receipt.outcomes[0].data.damage, 10);
-    assert.equal(drawCount, 6);
+    assert.equal(drawCount, 7);
     const playerViewResponse = await request(`/api/v2/entities/${encounterId}`, playerB.credential, { headers: proof() });
     assert.equal(playerViewResponse.status, 200); const playerView = await playerViewResponse.json();
     assert.equal(playerView.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 12);
+    assert.equal(playerView.data.actors.find(actor => actor.id === 'player-a').secondWindUses, 1, 'player projection includes the public resource counter');
     assert.equal('ownerPrincipalId' in playerView.data.actors[0], false, 'player projection hides ownership identities');
     const eventsResponse = await request('/api/v2/events', playerB.credential, { headers: proof() });
     assert.equal(eventsResponse.status, 200); const publicEvents = await eventsResponse.json();
     const attackEvent = publicEvents.find(event => event.operationId === attack.operationId);
     assert.ok(attackEvent); assert.deepEqual(attackEvent.payload.randomness.map(item => item.values), [[20], [4, 3]]);
     assert.equal(attackEvent.payload.resolutionTranscript, undefined, 'public audit exposes rolls but not internal transcript state');
+    const secondWindEvent = publicEvents.find(event => event.operationId === secondWind.operationId);
+    assert.ok(secondWindEvent); assert.deepEqual(secondWindEvent.payload.randomness.map(item => item.values), [[8]], 'Second Wind d10 is host-generated and public-audited');
+    assert.deepEqual(await (await send('/api/v2/commands', secondWind, playerA.credential, 'POST', proof())).json(), secondWindReceipt, 'exact Second Wind retry remains idempotent');
+    assert.equal((await send('/api/v2/commands', { ...secondWind, expectedRevision: 3 }, playerA.credential, 'POST', proof())).status, 409, 'changed Second Wind retry is rejected');
     assert.deepEqual(await (await send('/api/v2/commands', attack, playerA.credential, 'POST', proof())).json(), receipt, 'exact retry is exactly-once');
     assert.equal((await send('/api/v2/commands', { ...attack, expectedRevision: 1 }, playerA.credential, 'POST', proof())).status, 409, 'altered retry payload rejected');
     assert.equal((await send('/api/v2/commands', { ...attack, operationId: 'stale-revision', expectedRevision: 1 }, playerA.credential, 'POST', proof())).status, 409, 'stale revision rejected');
     assert.equal((await send('/api/v2/commands', { ...attack, operationId: 'client-rolls', randomness: [{ values: [20] }] }, playerA.credential, 'POST', proof())).status, 400, 'client-supplied rolls rejected');
-    const wrongTurn = await send('/api/v2/commands', { ...attack, operationId: 'wrong-turn', expectedRevision: 3 }, playerA.credential, 'POST', proof());
-    assert.equal(wrongTurn.status, 409, 'actor cannot attack after turn advanced'); assert.equal(drawCount, 6, 'illegal turns consume no random draws');
+    const wrongTurn = await send('/api/v2/commands', { ...attack, operationId: 'wrong-turn', expectedRevision: 4 }, playerA.credential, 'POST', proof());
+    assert.equal(wrongTurn.status, 409, 'actor cannot attack after turn advanced'); assert.equal(drawCount, 7, 'illegal turns consume no random draws');
     host.close(); await launch();
     const restored = await (await request(`/api/v2/entities/${encounterId}`, playerB.credential, { headers: proof() })).json();
-    assert.equal(restored.revision, 3); assert.equal(restored.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 12);
+    assert.equal(restored.revision, 4); assert.equal(restored.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 12);
+    assert.equal(restored.data.actors.find(actor => actor.id === 'player-a').secondWindUses, 1, 'resource state survives restart');
     assert.equal(restored.data.initiativeOrder[restored.data.currentTurnIndex], 'player-b', 'attack preserves the existing initiative advancement');
     assert.deepEqual(await (await send('/api/v2/commands', attack, playerA.credential, 'POST', proof())).json(), receipt, 'receipt remains exact across host restart');
-    assert.equal(drawCount, 6, 'retry after restart does not reroll');
+    assert.equal(drawCount, 7, 'retry after restart does not reroll');
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -211,8 +231,9 @@ test('Revised 5e opportunity attack resumes the exact movement after restart thr
       { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: playerB.memberId, position: { x: 1, y: 4 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
       { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', position: { x: 3, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } }
     ];
+    for (const actor of actors) Object.assign(actor, { bonusActionAvailable: true, classId: actor.id === 'player-a' ? 'fighter' : 'not-modeled', classLevel: actor.id === 'player-a' ? 1 : 0, secondWindMaximum: actor.id === 'player-a' ? 2 : 0, secondWindUses: actor.id === 'player-a' ? 2 : 0 });
     const entityId = 'movement-encounter';
-    const createBody = { operationId: 'movement-create', entityId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Movement proof', status: 'setup', grid: { width: 8, height: 5, squareFeet: 5, blocked: [] }, actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [], movementLog: [] } };
+    const createBody = { operationId: 'movement-create', entityId, typeId: 'example.revised5e.encounter', visibility: 'public', data: { title: 'Movement proof', status: 'setup', shortRestCount: 0, grid: { width: 8, height: 5, squareFeet: 5, blocked: [] }, actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [], movementLog: [] } };
     assert.equal((await send('/api/v2/entities', createBody, 'local-gm', 'POST', proof())).status, 201);
     for (const member of [playerA, playerB]) assert.equal((await send(`/api/v2/entities/${entityId}/grants`, { memberId: member.memberId, permissions: ['act'] }, 'local-gm', 'POST', proof())).status, 201);
     assert.equal((await send('/api/v2/commands', { operationId: 'movement-init', commandId: 'example.revised5e.initialize', entityId, expectedRevision: 1, input: {} }, 'local-gm', 'POST', proof())).status, 200);
@@ -222,6 +243,8 @@ test('Revised 5e opportunity attack resumes the exact movement after restart thr
     assert.equal(drawCount, 3, 'unauthorized movement consumes no host randomness');
     const suspendedResponse = await send('/api/v2/commands', move, playerA.credential, 'POST', proof()); assert.equal(suspendedResponse.status, 200);
     const suspended = await suspendedResponse.json(); assert.equal(suspended.status, 'pending'); assert.equal(drawCount, 3, 'opening the window does not roll the OA early');
+    const restWhilePending = await send('/api/v2/commands', { operationId: 'rest-while-reaction-pending', commandId: 'example.revised5e.short-rest', entityId, expectedRevision: 2, input: {} }, 'local-gm', 'POST', proof());
+    assert.equal(restWhilePending.status, 409, 'the host descriptor guard rejects rest while a durable continuation is pending');
     let state = await (await request(`/api/v2/entities/${entityId}`, playerA.credential, { headers: proof() })).json();
     assert.equal(state.revision, 2); assert.deepEqual(state.data.actors[0].position, { x: 2, y: 2 }); assert.equal(state.data.actors[0].movementRemaining, 30, 'suspended movement has no committed partial effects');
     host.close(); await launch();
