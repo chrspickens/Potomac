@@ -13,7 +13,7 @@ const moduleRef = { id: 'example.starship.system', apiVersion: '1.0.0', implemen
 const allRefs = [moduleRef, ...Object.values(starshipRefs)];
 const lock = { lockVersion: 1, campaignId, entries: allRefs.map(ref => ({ ...ref, source: 'bundled', optional: false })), rootModule: { id: moduleRef.id, version: moduleRef.implementationVersion, digest: moduleRef.digest } };
 const data = () => ({ power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: [] });
-const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false } = {}) => {
+const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false } = {}) => {
   const path = join(mkdtempSync(join(tmpdir(), 'potomac-v2-extensions-')), 'host.sqlite');
   const db = new DatabaseSync(path);
   let time = '2026-10-17T12:00:00.000Z';
@@ -30,7 +30,7 @@ const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = fa
       lockReadHook?.(db);
       return pinnedLock;
     },
-    validateLock: (id, value) => { if (id !== campaignId || value.campaignId !== id || value.lockVersion !== 1) throw new Error('lock mismatch'); },
+    validateLock: (id, value) => { if (id !== campaignId || value.campaignId !== id || value.lockVersion !== 1) throw new Error('lock mismatch'); }, authorizeRead,
     now: () => time, createId: () => 'continuation-1', failureAt
   });
   return { db, path, kernel, setTime: value => { time = value; }, getTime: () => time, setLock: value => { pinnedLock = value; }, getLock: () => pinnedLock, setLockReadHook: value => { lockReadHook = value; }, roles };
@@ -56,9 +56,20 @@ test('stores versioned entities, applies a host-authorized power command and fil
   db.close();
 });
 
+test('an entity read grant does not disclose private event payloads to a non-owner', () => {
+  const { db, kernel } = make({ authorizeRead: ({ member }) => member.principalId === 'player-c' });
+  create(kernel);
+  kernel.executeCommand(powerRequest());
+  assert.equal(kernel.read(campaignId, 'reactor-1', 'player-c').revision, 2, 'the explicit entity read grant is honored');
+  assert.deepEqual(kernel.events(campaignId, 'player-c'), [], 'private command events remain owner/GM-only');
+  assert.equal(kernel.events(campaignId, 'player-a').length, 2, 'the entity owner still receives the private history');
+  db.close();
+});
+
 test('validates descriptors and entity data against the supported schema dialect', () => {
   const { db } = make();
   assert.throws(() => createV2ExtensionKernel({ db, entities: [{ ...starshipEntity, schema: { type: 'object', properties: {}, patternProperties: {} } }], commands: [], effectHandlers: [], resolvers: [], authenticate: () => undefined, getCampaignLock: () => lock, validateLock: () => undefined }), /unsupported schema keyword/);
+  assert.throws(() => createV2ExtensionKernel({ db, entities: [{ ...starshipEntity, fieldVisibility: [{ path: 'unlisted.secret', roles: ['gm'] }] }], commands: [], effectHandlers: [], resolvers: [], authenticate: () => undefined, getCampaignLock: () => lock, validateLock: () => undefined }), /not declared by the entity schema/);
   assert.throws(() => createV2ExtensionKernel({ db, entities: [starshipEntity], commands: starshipCommands, workflows: [{ ...starshipWorkflow, initialState: starshipWorkflow.terminalStates[0] }], effectHandlers: starshipEffectHandlers, resolvers: starshipResolvers, authenticate: () => undefined, getCampaignLock: () => lock, validateLock: () => undefined }), /initial workflow state cannot be terminal/);
   const kernel = createV2ExtensionKernel({ db, entities: [starshipEntity], commands: starshipCommands, workflows: [starshipWorkflow], effectHandlers: starshipEffectHandlers, resolvers: starshipResolvers, authenticate: id => ({ principalId: id, role: id === 'gm-1' ? 'gm' : 'player' }), getCampaignLock: () => lock, validateLock: () => undefined });
   assert.throws(() => create(kernel, { data: { ...data(), power: 'many' } }), error => error.code === 'invalid');
