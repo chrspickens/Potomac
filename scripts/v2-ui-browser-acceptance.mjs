@@ -56,6 +56,12 @@ async function waitFor(sessionId, expression, label, timeoutMs = 15000) {
   throw new Error(`Timed out waiting for ${label}: ${await evaluate(sessionId, 'document.body.innerText.slice(0,800)')}`);
 }
 async function key(sessionId, keyName, code = keyName, modifiers = 0) {
+  if (keyName === 'Enter') {
+    await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: keyName, code, modifiers, windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, sessionId);
+    await cdp('Input.dispatchKeyEvent', { type: 'char', key: keyName, code, modifiers, text: '\r', unmodifiedText: '\r', windowsVirtualKeyCode: 13 }, sessionId);
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: keyName, code, modifiers, windowsVirtualKeyCode: 13 }, sessionId);
+    return;
+  }
   await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: keyName, code, modifiers }, sessionId);
   await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: keyName, code, modifiers }, sessionId);
 }
