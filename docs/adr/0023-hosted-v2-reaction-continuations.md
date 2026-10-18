@@ -1,13 +1,13 @@
 # ADR-0023: Suspend and resume V2 commands through durable reactions
 
-- Status: Proposed; integration deferred pending a transaction-aware continuation seam
+- Status: Proposed; transaction-aware reaction-kernel composition seam implemented; command continuation integration deferred
 - Date: 2026-10-18
 
 ## Context and current transaction map
 
 The extension kernel owns command execution. `executeCommand` opens `BEGIN IMMEDIATE`, authenticates the principal, reads the exact campaign lock and entity revisions, authorizes command intent, resolves host-supplied randomness, validates semantic effects, applies them with `effects.applyInTransaction`, and commits extension events and the idempotent command receipt. It rejects nested transactions.
 
-The reaction kernel persists windows, choices, terminal events and effects in SQLite. `submit`, `expire` and `adjudicate` each open their own `BEGIN IMMEDIATE`; completion and `applyEffects` run inside that transaction. `open` currently inserts the window without owning a multi-record transaction. The reaction kernel has no command receipt or authority to run a module resolver.
+The reaction kernel persists windows, choices, terminal events and effects in SQLite. Its standalone `open`, `submit`, `expire` and `adjudicate` operations own a `BEGIN IMMEDIATE` transaction and reject nesting. The host adapter can alternatively call `openInTransaction`, `submitInTransaction`, `expireInTransaction` and `adjudicateInTransaction` only while it already owns an active SQLite transaction. Those methods share the same validation/decision implementation and never begin, commit or roll back. An exception leaves the outer transaction open so its owner chooses the rollback/commit boundary. Completion and the trusted host effect adapter execute within that existing boundary. Completion/effect callbacks receive domain data only; no raw database connection or transaction callback is passed to module resolvers or effect handlers.
 
 Therefore, calling `submit` from command execution (or calling `executeCommand` from reaction completion) would nest transactions. Committing a window before the parent command, or resolving the parent after the reaction transaction, would permit orphan pending operations or a terminal reaction with missing/duplicate effects. The semantic effect kernel already has the necessary `applyInTransaction` seam, but the command and reaction kernels do not yet share a transaction coordinator or a pending-command lifecycle.
 
@@ -30,10 +30,10 @@ Continuation data is host-owned opaque bounded JSON, not executable code or a da
 
 This design composes the existing resolver, reaction and effect kernels; it does not add another rules/execution kernel. The host coordinates lifecycle and transaction ownership while rules, eligibility, interpretation, and proposed effects stay module-owned. The first implementation remains gated, loopback-only and limited to trusted bundled modules. This does not close #145's production identity, multi-process, power-loss, archive/restore or publisher-provenance gates, and it does not add offline V2 support.
 
-The implementation must add explicit typed resolver suspension/resume contracts and a transaction-aware reaction-kernel entry point. If those contracts cannot be enforced without exposing SQLite or bypassing effect validation, this ADR remains proposed and the integration must not be advertised as operational.
+The reaction-kernel transaction composition seam is implemented and tested, including atomic window creation. It is only a host-internal primitive: no pending command is persisted, no resolver is resumed, and no HTTP or browser reaction workflow exists. A future integration must add explicit typed resolver suspension/resume contracts and a transaction coordinator without exposing SQLite or bypassing effect validation.
 
-## Evidence from the current integration attempt
+## Evidence from the transaction seam
 
-The current API has no method for the extension kernel to atomically persist a pending command and open its reaction window, nor a method for the reaction kernel to resume a command inside its existing transaction. The resolver's `ContinuationRequest` is transcript metadata only; it does not suspend execution. `v2-extensions` now rejects `resumeOn: "reaction"` before applying any proposed effects, and its regression test asserts that no command receipt or effect is committed. `v2-reactions` now rejects nested submission/expiry/adjudication before issuing `BEGIN IMMEDIATE`; the regression test verifies rejection leaves the enclosing transaction owned by its caller.
+The extension kernel still has no method to persist a pending command, and the resolver's `ContinuationRequest` remains transcript metadata only. `v2-extensions` rejects `resumeOn: "reaction"` before applying proposed effects. The reaction kernel rejects nesting through its standalone API; host-only transaction-aware methods now compose each lifecycle operation in the caller's transaction. Injected failures after open, submission, expiry transition and terminal completion leave the transaction open and rollbackable by the caller; a composition test commits/rolls back reaction data and an ordinary host write together.
 
-These are safety guards and seam tests, not the requested HTTP/browser integration. They deliberately leave windows independently usable through their existing standalone kernel contract. A follow-up implementation must introduce the shared command/reaction transaction coordinator and typed resume protocol described above before exposing reaction HTTP routes.
+These are kernel-level composition guarantees, not command continuation or playable reaction integration. Windows remain independently usable through the standalone contract. A follow-up must introduce the shared command/reaction coordinator and typed resume protocol before exposing reaction HTTP routes.
