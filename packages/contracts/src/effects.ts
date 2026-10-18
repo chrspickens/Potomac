@@ -5,6 +5,7 @@ export type EffectHandlerRef = { id: string; apiVersion: SemVer; implementationV
 export type EffectTarget = { entityId: string; expectedRevision: number; visibility: EffectVisibility };
 export type SemanticEffectProposal = {
   operationId: string; campaignId: string; principalId: string; moduleId: string;
+  commandId?: string; authorizedParticipants?: string[]; workflowEntityId?: string;
   lock: CapabilityLock; effects: Array<{
     effectId: string; handler: EffectHandlerRef; target: EffectTarget; payload: JsonValue; visibility: EffectVisibility;
   }>;
