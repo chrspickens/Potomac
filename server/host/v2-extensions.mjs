@@ -528,7 +528,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
         if (!reauthorizePendingActor) fail('unsupported', 'reaction suspension requires host-side original-actor reauthorization');
         if (output.effects.length) fail('invalid', 'a suspended command cannot propose effects before its reaction completes');
         const intent = output.continuation.reaction;
-        const candidates = resolveReactionEligibility({ campaignId: request.campaignId, actorPrincipalId: currentMember.principalId, commandId: command.commandId, entityId: currentRecord.entityId, member: clone(currentMember), command: clone(command), entity: clone(currentRecord), intent: clone(intent) });
+        const candidates = resolveReactionEligibility({ campaignId: request.campaignId, actorPrincipalId: currentMember.principalId, commandId: command.commandId, entityId: currentRecord.entityId, member: clone(currentMember), command: clone(command), entity: clone(currentRecord), input: clone(request.input), intent: clone(intent) });
         if (!Array.isArray(candidates) || candidates.length < 1 || candidates.length > 100) fail('invalid', 'host did not resolve a bounded reaction audience');
         const eligibleByPrincipal = new Map();
         for (const candidate of candidates) {

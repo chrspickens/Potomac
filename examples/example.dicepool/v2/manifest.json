@@ -1,0 +1,9 @@
+{
+  "formatVersion": 2,
+  "id": "example.dicepool",
+  "name": "Lanterns in the Fog",
+  "version": "1.0.0",
+  "source": "Original Potomac example rules; no third-party rules text",
+  "trust": "bundled-trusted",
+  "entry": "extensions.mjs"
+}

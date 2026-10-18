@@ -1,0 +1,19 @@
+{
+  "contractVersion": 1,
+  "contributionId": "example.dicepool.scene-ui",
+  "contributionVersion": "1.0.0",
+  "kind": "panel",
+  "entityTypeId": "example.dicepool.scene",
+  "fields": [
+    { "path": "title", "label": "Scene", "control": "text", "readOnly": true },
+    { "path": "obstacle", "label": "Obstacle", "control": "text", "readOnly": true },
+    { "path": "characters.*.pool", "label": "Dice pool", "control": "resource", "readOnly": true },
+    { "path": "characters.*.stress", "label": "Stress", "control": "resource", "readOnly": true },
+    { "path": "log", "label": "Outcomes", "control": "list", "readOnly": true }
+  ],
+  "actions": [
+    { "commandId": "example.dicepool.skill-challenge", "label": "Resolve skill challenge" },
+    { "commandId": "example.dicepool.contested-action", "label": "Start contested action" }
+  ],
+  "accessibility": { "keyboard": true, "label": "Lanterns in the Fog scene", "pendingState": true, "unavailableState": true, "offlineState": true }
+}
