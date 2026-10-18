@@ -47,7 +47,7 @@ async function evaluate(name, expression) {
 async function wait(name, expression, label, timeout = 20000) {
   const until = Date.now() + timeout;
   while (Date.now() < until) { if (await evaluate(name, expression)) return; await delay(100); }
-  throw new Error(`Timed out waiting for ${label}: ${await evaluate(name, 'document.body.innerText.slice(0,1200)')}`);
+  throw new Error(`Timed out waiting for ${label}: ${await evaluate(name, 'JSON.stringify({url:location.href,text:document.body.innerText.slice(0,1200),html:document.body.innerHTML.slice(0,1600),errors:window.__browserErrors||[]})')}`);
 }
 async function click(name, label) {
   const found = await evaluate(name, `(() => { const node=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===${JSON.stringify(label)}); if(!node)return false; node.click(); return true; })()`);
@@ -72,7 +72,7 @@ async function page(name) {
   const { targetId } = await call('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId });
   const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true }); sessions[name] = sessionId;
   await call('Page.enable', {}, sessionId); await call('Runtime.enable', {}, sessionId);
-  await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__v2Commands=[]; const original=window.fetch.bind(window); window.fetch=async (input,init={})=>{const response=await original(input,init); if(String(input).includes('/api/v2/commands')){let body;try{body=JSON.parse(init.body)}catch{};window.__v2Commands.push({body,response:await response.clone().json()})} return response}` }, sessionId);
+  await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__v2Commands=[];window.__browserErrors=[];window.addEventListener('error',event=>window.__browserErrors.push(String(event.error?.stack||event.message)));window.addEventListener('unhandledrejection',event=>window.__browserErrors.push(String(event.reason?.stack||event.reason)));const original=window.fetch.bind(window);window.fetch=async (input,init={})=>{const response=await original(input,init);if(String(input).includes('/api/v2/commands')){let body;try{body=JSON.parse(init.body)}catch{};window.__v2Commands.push({body,response:await response.clone().json()})}return response}` }, sessionId);
   await call('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-combat` }, sessionId);
   await wait(name, `Boolean(document.querySelector('#v2-credential'))`, `${name} login page`);
   return context.browserContextId;
