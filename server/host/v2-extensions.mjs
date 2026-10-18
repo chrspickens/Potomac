@@ -1,6 +1,7 @@
 import { randomInt as cryptoRandomInt, randomUUID } from 'node:crypto';
 import { executeResolver } from '../../packages/rules-engine/src/resolver.ts';
 import { createV2EffectKernel, canonicalV2Json, hashV2Json, validateV2JsonSchema, validateV2SchemaDefinition } from './v2-effects.mjs';
+import { createV2ReactionKernel } from './v2-reactions.mjs';
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const NAMESPACED = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/;
@@ -38,6 +39,13 @@ CREATE TABLE IF NOT EXISTS v2_extension_events (
   event_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
   entity_id TEXT NOT NULL, kind TEXT NOT NULL, visibility TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v2_extension_pending_commands (
+  operation_id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+  command_id TEXT NOT NULL, entity_id TEXT NOT NULL, resolver TEXT NOT NULL, command_capability TEXT NOT NULL,
+  lock TEXT NOT NULL, lock_digest TEXT NOT NULL, request TEXT NOT NULL, payload_hash TEXT NOT NULL, expected_revisions TEXT NOT NULL,
+  continuation TEXT NOT NULL, suspension_transcript TEXT NOT NULL, window_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL, response TEXT, updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS v2_extension_continuation_identity ON v2_extension_workflows(continuation_id);`;
 
@@ -96,7 +104,7 @@ function validateWorkflowDescriptor(workflow) {
   }
 }
 
-export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, authorizeEffect = () => true, authorizeOwner = () => false, authorizeRead = () => false, authorizeCommand = () => false, authorizeCommandIntent = () => true, drawRandom = cryptoRandomInt, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
+export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, authorizeEffect = () => true, authorizeOwner = () => false, authorizeRead = () => false, authorizeCommand = () => false, authorizeCommandIntent = () => true, resolveReactionEligibility = () => [], authorizeReactionResponder = () => false, reauthorizePendingActor, drawRandom = cryptoRandomInt, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
   if (!db || !Array.isArray(entities) || !Array.isArray(commands) || !Array.isArray(workflows) || !Array.isArray(effectHandlers) || !Array.isArray(resolvers) || typeof authenticate !== 'function' || typeof getCampaignLock !== 'function' || typeof validateLock !== 'function') fail('invalid', 'invalid extension kernel configuration');
   const entityTypes = new Map(); const commandTypes = new Map(); const workflowTypes = new Map(); const resolverMap = new Map(); const effectMap = new Map();
   for (const descriptor of entities) { validateEntityDescriptor(descriptor); if (entityTypes.has(descriptor.typeId)) fail('invalid', 'duplicate entity descriptor'); entityTypes.set(descriptor.typeId, clone(descriptor)); }
@@ -120,6 +128,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     if (!result || result.principalId !== principalId || !['gm', 'player'].includes(result.role)) fail('unauthorized', 'authenticated campaign member required');
     return result;
   };
+  if (reauthorizePendingActor !== undefined && typeof reauthorizePendingActor !== 'function' || typeof resolveReactionEligibility !== 'function' || typeof authorizeReactionResponder !== 'function') fail('invalid', 'invalid pending-command authority configuration');
   const lockFor = campaignId => {
     const lock = getCampaignLock(campaignId);
     if (!lock) fail('unsupported', 'campaign capability lock is unavailable');
@@ -230,11 +239,137 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const projectCommandReceipt = (request, payloadHash, member, entity) => {
     const stored = receipt(request, payloadHash); if (!stored) return undefined;
     if (!Array.isArray(stored.allOutcomes)) return stored;
-    const { allOutcomes, resolutionTranscript, ...base } = stored;
+    const { allOutcomes, resolutionTranscript, suspensionTranscript, ...base } = stored;
     if (member.role === 'gm' && resolutionTranscript) base.resolutionTranscript = resolutionTranscript;
+    if (member.role === 'gm' && suspensionTranscript) base.suspensionTranscript = suspensionTranscript;
     return { ...base, outcomes: visibleOutcomes(allOutcomes, member, entity) };
   };
   const writeEvent = (request, entityId, kind, visibility, payload) => db.prepare('INSERT INTO v2_extension_events(event_id,operation_id,campaign_id,entity_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?,?)').run(`${request.operationId}:${kind}`, request.operationId, request.campaignId, entityId, kind, visibility, json(payload), now());
+  const drawResolverRandomness = (resolver, member, command, state, input) => {
+    const randomness = [];
+    for (let step = 0; step < 4; step++) {
+      const requested = resolver.randomRequests?.({ principalId: member.principalId, command: clone(command), state: clone(state), input: clone(input), randomness: clone(randomness) }) ?? [];
+      if (!Array.isArray(requested) || requested.length > 4) fail('invalid', 'resolver requested an invalid random transcript');
+      const known = new Set(randomness.map(item => item.requestId));
+      for (const item of requested) {
+        if (!item || !ID.test(item.requestId) || known.has(item.requestId) || !['die', 'pool'].includes(item.kind) || !Number.isInteger(item.count) || item.count < 1 || item.count > 20 || !Number.isInteger(item.sides) || item.sides < 2 || item.sides > 100) fail('invalid', 'resolver random request exceeds host bounds');
+        known.add(item.requestId);
+        randomness.push({ ...clone(item), values: Array.from({ length: item.count }, () => drawRandom(1, item.sides + 1)), visibility: 'public' });
+      }
+    }
+    if (resolver.randomRequests?.({ principalId: member.principalId, command: clone(command), state: clone(state), input: clone(input), randomness: clone(randomness) })?.length) fail('invalid', 'resolver random request budget was exhausted');
+    return randomness;
+  };
+  const applyOutputEffects = ({ output, request, command, member, lock, workflowCtx, beforeApply = () => undefined }) => {
+    for (const effect of output.effects) {
+      const handler = effectHandlers.find(candidate => candidate.id === effect.handler && command.effects.some(ref => refKey(ref) === refKey(candidate)));
+      if (!handler) fail('unsupported', 'command proposed an undeclared effect handler');
+      requireCapability(lock, handler, request.campaignId);
+      const target = entityRows(request.campaignId, effect.targetId); if (!target) fail('unavailable', 'effect target is unavailable');
+      const targetRecord = decodeEntity(request.campaignId, target.row, target.metadata); currentDescriptor(targetRecord, lock);
+      const expectedRevision = effect.targetId === request.entityId ? request.expectedRevision : request.expectedRevisions?.[effect.targetId];
+      if (!Number.isInteger(expectedRevision) || expectedRevision !== targetRecord.revision) fail('stale', 'effect target revision is missing or stale');
+      if (storedVisibility(targetRecord.visibility) !== effect.visibility) fail('unauthorized', 'effect visibility exceeds target visibility');
+    }
+    if (!output.effects.length) return undefined;
+    beforeApply();
+    const effectProposal = { operationId: request.operationId, campaignId: request.campaignId, principalId: member.principalId, moduleId: lock.rootModule.id, commandId: command.commandId, ...(workflowCtx ? { authorizedParticipants: workflowCtx.state.participants, workflowEntityId: workflowCtx.state.entityId } : {}), lock, effects: output.effects.map(effect => {
+      const handler = effectHandlers.find(candidate => candidate.id === effect.handler && command.effects.some(ref => refKey(ref) === refKey(candidate)));
+      const target = entityRows(request.campaignId, effect.targetId); const targetRecord = decodeEntity(request.campaignId, target.row, target.metadata);
+      return { effectId: effect.effectId, handler: { id: handler.id, apiVersion: handler.apiVersion, implementationVersion: handler.implementationVersion, digest: handler.digest }, target: { entityId: effect.targetId, expectedRevision: effect.targetId === request.entityId ? request.expectedRevision : request.expectedRevisions[effect.targetId], visibility: effect.visibility }, payload: effect.payload, visibility: effect.visibility };
+    }) };
+    effectProposal.commandEntityId = request.entityId;
+    if (request.authorityToken !== undefined) effectProposal.authorityToken = request.authorityToken;
+    effectProposal.effectTargetPolicy = command.permission.effectTargetPolicy || 'source-entity';
+    effects.applyInTransaction(effectProposal);
+    for (const effect of output.effects) {
+      const target = entityRows(request.campaignId, effect.targetId);
+      validateStoredEntity({ campaignId: request.campaignId, entityId: effect.targetId, entityType: target.row.entity_type, data: JSON.parse(target.row.data) });
+    }
+    return effectProposal;
+  };
+  const terminalConflict = (pending, reasonCode) => {
+    const request = JSON.parse(pending.request);
+    const response = { operationId: pending.operation_id, status: 'conflicted', reasonCode, windowId: pending.window_id };
+    writeEvent(request, pending.entity_id, 'command.resume-conflicted', 'gm', { commandId: pending.command_id, windowId: pending.window_id, reasonCode });
+    db.prepare('UPDATE v2_extension_pending_commands SET status=?, response=?, updated_at=? WHERE operation_id=? AND status=?').run('conflicted', json(response), now(), pending.operation_id, 'pending');
+    db.prepare('UPDATE v2_extension_receipts SET response=?, created_at=? WHERE operation_id=? AND payload_hash=?').run(json(response), now(), pending.operation_id, pending.payload_hash);
+    return response;
+  };
+  const resumePendingCommand = ({ window, status, decisions }) => {
+    const pending = db.prepare('SELECT * FROM v2_extension_pending_commands WHERE window_id=?').get(window.windowId);
+    if (!pending || pending.status !== 'pending' || pending.operation_id !== window.parentOperationId || pending.campaign_id !== window.campaignId) fail('conflict', 'pending command is unavailable');
+    const request = JSON.parse(pending.request); const storedLock = JSON.parse(pending.lock); const command = commandTypes.get(pending.command_id);
+    const conflict = error => {
+      const code = ['stale', 'unsupported', 'unauthorized', 'unavailable', 'expired'].includes(error?.code) ? error.code : undefined;
+      if (!code) throw error;
+      return terminalConflict(pending, code);
+    };
+    let effectApplicationStarted = false;
+    try {
+      if (request.operationId !== pending.operation_id || request.campaignId !== pending.campaign_id || request.principalId !== pending.principal_id || request.commandId !== pending.command_id || request.entityId !== pending.entity_id || hashV2Json(request) !== pending.payload_hash) fail('conflict', 'pending command identity integrity check failed');
+      if (hashV2Json(window.lock) !== hashV2Json(storedLock) || hashV2Json(window.resolver) !== hashV2Json(JSON.parse(pending.resolver)) || hashV2Json(window.continuation?.continuation) !== hashV2Json(JSON.parse(pending.continuation)) || window.continuation?.actorPrincipalId !== pending.principal_id) fail('conflict', 'reaction continuation identity does not match its pending command');
+      if (!reauthorizePendingActor) fail('unauthorized', 'pending actor reauthorization is not configured');
+      const currentMember = reauthorizePendingActor({ principalId: pending.principal_id, campaignId: pending.campaign_id, commandId: pending.command_id, entityId: pending.entity_id });
+      if (!currentMember || currentMember.principalId !== pending.principal_id || !['gm', 'player'].includes(currentMember.role)) fail('unauthorized', 'pending actor is no longer authorized');
+      const currentLock = lockFor(pending.campaign_id);
+      if (hashV2Json(storedLock) !== pending.lock_digest || hashV2Json(currentLock) !== pending.lock_digest) fail('unsupported', 'campaign capability lock changed while command was suspended');
+      const pinnedResolverRef = JSON.parse(pending.resolver);
+      if (!command || command.commandId !== pending.command_id || refKey(command.resolver) !== refKey(pinnedResolverRef) || refKey(command.capability) !== refKey(JSON.parse(pending.command_capability)) || refKey(window.resolver) !== refKey(pinnedResolverRef)) fail('unsupported', 'pinned resume resolver or command capability is unavailable');
+      requireCapability(currentLock, command.capability, pending.campaign_id); requireCapability(currentLock, command.resolver, pending.campaign_id);
+      const resolver = resolverMap.get(refKey(pinnedResolverRef)); if (!resolver?.resume) fail('unsupported', 'pinned resolver has no trusted resume implementation');
+      const { record } = readRecord(pending.campaign_id, pending.entity_id, currentMember, currentLock);
+      if (record.typeId !== command.entityTypeId) fail('unsupported', 'source entity type changed while command was suspended');
+      if (record.revision !== request.expectedRevision) fail('stale', 'source entity revision changed while command was suspended');
+      if (!canCommand(currentMember, record, command.permission)) fail('unauthorized', 'source command authority was revoked');
+      if (authorizeCommandIntent({ member: clone(currentMember), entity: clone(record), command: clone(command), request: clone(request) }) !== true) fail('unauthorized', 'suspended command authority was revoked');
+      const expectedRevisions = JSON.parse(pending.expected_revisions);
+      for (const [entityId, expectedRevision] of Object.entries(expectedRevisions)) {
+        const target = entityRows(pending.campaign_id, entityId);
+        if (!target || target.row.revision !== expectedRevision) fail('stale', 'an expected effect target changed while command was suspended');
+        const targetRecord = decodeEntity(pending.campaign_id, target.row, target.metadata); currentDescriptor(targetRecord, currentLock);
+        if (!canRead(currentMember, targetRecord)) fail('unavailable', 'an expected effect target is unavailable');
+      }
+      assertCurrentLock(pending.campaign_id, storedLock);
+      const continuation = JSON.parse(pending.continuation);
+      const state = { entityId: record.entityId, entityType: record.typeId, revision: record.revision, data: record.data };
+      const randomness = drawResolverRandomness(resolver, currentMember, command, state, request.input);
+      const logicalTime = now();
+      const resumeContext = { continuation, reaction: { status, decisions: clone(decisions) } };
+      const resumeResolver = { ...resolver, resolve: input => { const { resume: context, ...base } = input; return resolver.resume(freezeJson({ ...base, ...context })); } };
+      const result = executeResolver(resumeResolver, { operationId: pending.operation_id, campaignId: pending.campaign_id, principalId: pending.principal_id, logicalTime, state, input: request.input, randomness, resume: resumeContext }, storedLock);
+      const output = result.transcript;
+      if (output.continuation) fail('invalid', 'reaction resume cannot create another continuation');
+      if (failureAt === 'after-resume-resolution') fail('injected', 'failure after resume resolution');
+      const resultData = output.outcomes.map(({ kind, data, visibility }) => ({ kind, data, visibility })); validateBoundedJson(resultData, command.resultSchema);
+      const resumeRequest = { ...request, authorityToken: currentMember.authorityToken };
+      applyOutputEffects({ output, request: resumeRequest, command, member: currentMember, lock: storedLock, beforeApply: () => { effectApplicationStarted = true; } });
+      if (failureAt === 'after-resume-effects') fail('injected', 'failure after resumed effects');
+      const refreshed = entityRows(pending.campaign_id, pending.entity_id);
+      const response = { operationId: pending.operation_id, status: 'applied', entityId: pending.entity_id, revision: refreshed.row.revision, windowId: pending.window_id, outcomes: visibleOutcomes(resultData, currentMember, record) };
+      const publicReactionDecisions = decisions.filter(item => window.eligible.find(candidate => candidate.principalId === item.principalId)?.actions.find(action => action.actionId === item.actionId)?.visibility === 'public').map(({ principalId, actionId, decision }) => ({ principalId, actionId, decision }));
+      writeEvent(request, pending.entity_id, 'command.resumed', storedVisibility(record.visibility), { commandId: command.commandId, windowId: pending.window_id, status, outcomes: resultData.filter(item => item.visibility === 'public'), transcriptDigest: output.digest, randomness: output.randomness.filter(item => item.visibility === 'public'), decisions: output.decisions.filter(item => item.visibility === 'public'), reactionDecisions: publicReactionDecisions });
+      const storedResponse = { ...response, allOutcomes: resultData, suspensionTranscript: JSON.parse(pending.suspension_transcript), resolutionTranscript: output };
+      db.prepare('UPDATE v2_extension_pending_commands SET status=?, response=?, updated_at=? WHERE operation_id=? AND status=?').run('completed', json(storedResponse), now(), pending.operation_id, 'pending');
+      db.prepare('UPDATE v2_extension_receipts SET response=?, created_at=? WHERE operation_id=? AND payload_hash=?').run(json(storedResponse), now(), pending.operation_id, pending.payload_hash);
+      if (failureAt === 'after-final-receipt') fail('injected', 'failure after final command receipt');
+      assertCurrentLock(pending.campaign_id, storedLock);
+      return response;
+    } catch (error) { if (effectApplicationStarted) throw error; return conflict(error); }
+  };
+  const reactionKernel = createV2ReactionKernel({
+    db,
+    authenticate: (principalId, context) => Boolean(principal(principalId, context.campaignId, context.authorityToken)),
+    authorizeResponder: context => authorizeReactionResponder(context) === true,
+    authorizeGm: context => { try { return principal(context.principalId, context.campaignId, context.authorityToken).role === 'gm'; } catch { return false; } },
+    authorizeView: context => { try { const member = principal(context.principalId, context.window.campaignId, context.authorityToken); return { role: member.role === 'gm' ? 'gm' : context.window.eligible.some(item => item.principalId === member.principalId) ? 'responder' : context.window.visibility === 'public' ? 'public' : null }; } catch { return null; } },
+    authorizeExpiry: context => { try { return principal(context.principalId, context.window.campaignId, context.authorityToken).role === 'gm'; } catch { return false; } },
+    validateLock: (campaignId, value) => { const current = lockFor(campaignId); if (hashV2Json(current) !== hashV2Json(value)) fail('unsupported', 'reaction capability lock changed'); },
+    validateInput: (input, schema) => validateV2JsonSchema(input, schema),
+    complete: input => { resumePendingCommand(input); return undefined; },
+    applyEffects: () => undefined,
+    now
+  });
   const read = (campaignId, entityId, principalId, expectedLockDigest, authorityToken) => transaction(() => {
     const member = principal(principalId, campaignId, authorityToken); const lock = lockFor(campaignId);
     if (expectedLockDigest !== undefined && hashV2Json(lock) !== expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
@@ -377,22 +512,49 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       }
       const state = { entityId: currentRecord.entityId, entityType: currentRecord.typeId, revision: currentRecord.revision, data: currentRecord.data, ...(workflowCtx ? { workflow: { workflowId: workflowCtx.state.workflowId, state: workflowCtx.state.state, stateData: workflowCtx.state.stateData, continuationId: workflowCtx.state.continuationId } } : {}) };
       const immutableResolver = { ...resolver, resolve: input => resolver.resolve(freezeJson(input)) };
-      const randomness = [];
-      for (let step = 0; step < 4; step++) {
-        const requested = resolver.randomRequests?.({ principalId: currentMember.principalId, command: clone(command), state: clone(state), input: clone(request.input), randomness: clone(randomness) }) ?? [];
-        if (!Array.isArray(requested) || requested.length > 4) fail('invalid', 'resolver requested an invalid random transcript');
-        if (!requested.length) break;
-        const known = new Set(randomness.map(item => item.requestId));
-        for (const item of requested) {
-          if (!item || !ID.test(item.requestId) || known.has(item.requestId) || !['die', 'pool'].includes(item.kind) || !Number.isInteger(item.count) || item.count < 1 || item.count > 20 || !Number.isInteger(item.sides) || item.sides < 2 || item.sides > 100) fail('invalid', 'resolver random request exceeds host bounds');
-          known.add(item.requestId);
-          randomness.push({ ...clone(item), values: Array.from({ length: item.count }, () => drawRandom(1, item.sides + 1)), visibility: 'public' });
-        }
-      }
-      if (resolver.randomRequests?.({ principalId: currentMember.principalId, command: clone(command), state: clone(state), input: clone(request.input), randomness: clone(randomness) })?.length) fail('invalid', 'resolver random request budget was exhausted');
+      const randomness = drawResolverRandomness(resolver, currentMember, command, state, request.input);
       const result = executeResolver(immutableResolver, { operationId: request.operationId, campaignId: request.campaignId, principalId: request.principalId, logicalTime: now(), state, input: request.input, randomness }, lock);
       const output = result.transcript;
-      if (output.continuation?.resumeOn === 'reaction') fail('unsupported', 'reaction continuations are not integrated with extension command execution');
+      if (output.continuation?.resumeOn === 'reaction') {
+        if (!resolver.resume || request.workflow) fail('unsupported', 'reaction suspension requires a pinned resume resolver and cannot suspend a workflow transition');
+        if (!reauthorizePendingActor) fail('unsupported', 'reaction suspension requires host-side original-actor reauthorization');
+        if (output.effects.length) fail('invalid', 'a suspended command cannot propose effects before its reaction completes');
+        const intent = output.continuation.reaction;
+        const candidates = resolveReactionEligibility({ campaignId: request.campaignId, actorPrincipalId: currentMember.principalId, commandId: command.commandId, entityId: currentRecord.entityId, member: clone(currentMember), command: clone(command), entity: clone(currentRecord), intent: clone(intent) });
+        if (!Array.isArray(candidates) || candidates.length < 1 || candidates.length > 100) fail('invalid', 'host did not resolve a bounded reaction audience');
+        const eligibleByPrincipal = new Map();
+        for (const candidate of candidates) {
+          const audience = intent.audiences.find(item => item.audience === candidate.audience);
+          if (!audience || !ID.test(candidate.principalId) || !Number.isInteger(candidate.priority) || candidate.priority !== audience.priority || !Array.isArray(candidate.actions) || candidate.actions.length !== audience.actions.length) fail('invalid', 'host reaction audience does not match module intent');
+          const actions = audience.actions.map(declared => {
+            const supplied = candidate.actions.find(item => item.actionId === declared.actionId);
+            if (!supplied || canonicalV2Json(supplied.inputSchema) !== canonicalV2Json(declared.inputSchema) || supplied.visibility !== declared.visibility) fail('invalid', 'host reaction action does not match module declaration');
+            validateV2SchemaDefinition(declared.inputSchema);
+            return clone(declared);
+          });
+          const prior = eligibleByPrincipal.get(candidate.principalId) || { principalId: candidate.principalId, priority: audience.priority, actions: [] };
+          prior.priority = Math.max(prior.priority, audience.priority);
+          for (const item of actions) { const existing = prior.actions.find(value => value.actionId === item.actionId); if (existing && canonicalV2Json(existing) !== canonicalV2Json(item)) fail('invalid', 'duplicate reaction action declarations conflict'); if (!existing) prior.actions.push(item); }
+          eligibleByPrincipal.set(candidate.principalId, prior);
+        }
+        const eligible = [...eligibleByPrincipal.values()];
+        const windowId = createId(); if (!ID.test(windowId)) fail('invalid', 'host produced invalid reaction-window identity');
+        const expectedRevisions = { ...(request.expectedRevisions || {}), [request.entityId]: request.expectedRevision };
+        for (const [entityId, revision] of Object.entries(expectedRevisions)) if (!ID.test(entityId) || !Number.isInteger(revision) || revision < 1) fail('invalid', 'expected effect revisions are invalid');
+        const privateContinuation = { continuation: clone(output.continuation), actorPrincipalId: currentMember.principalId };
+        const window = { windowId, parentOperationId: request.operationId, campaignId: request.campaignId, resolver: clone(command.resolver), lock: clone(lock), eligible, ordering: intent.ordering, expiresAt: output.continuation.expiresAt, continuation: privateContinuation, visibility: intent.visibility };
+        const pendingRequest = { ...payload };
+        db.prepare('INSERT INTO v2_extension_pending_commands VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(request.operationId, request.campaignId, currentMember.principalId, command.commandId, request.entityId, json(command.resolver), json(command.capability), json(lock), hashV2Json(lock), json(pendingRequest), payloadHash, json(expectedRevisions), json(output.continuation), json(output), windowId, 'pending', null, now());
+        reactionKernel.openInTransaction(window, currentMember.principalId, request.authorityToken);
+        if (failureAt === 'after-pending-window') fail('injected', 'failure after pending reaction window');
+        const resultData = output.outcomes.map(({ kind, data, visibility }) => ({ kind, data, visibility })); validateBoundedJson(resultData, command.resultSchema);
+        const response = { operationId: request.operationId, status: 'pending', windowId, entityId: request.entityId, revision: currentRecord.revision, outcomes: visibleOutcomes(resultData, currentMember, currentRecord) };
+        writeEvent(request, request.entityId, 'command.suspended', storedVisibility(currentRecord.visibility), { commandId: command.commandId, windowId, revision: currentRecord.revision, outcomes: resultData.filter(item => item.visibility === 'public'), transcriptDigest: output.digest, randomness: output.randomness.filter(item => item.visibility === 'public') });
+        const storedResponse = { ...response, allOutcomes: resultData, suspensionTranscript: output };
+        db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(storedResponse), now());
+        if (failureAt === 'after-pending-receipt') fail('injected', 'failure after pending command receipt');
+        assertCurrentLock(request.campaignId, lock); db.exec('COMMIT;'); return response;
+      }
       for (const effect of output.effects) {
         const handler = effectHandlers.find(candidate => candidate.id === effect.handler && command.effects.some(ref => refKey(ref) === refKey(candidate)));
         if (!handler) fail('unsupported', 'command proposed an undeclared effect handler');
@@ -440,6 +602,15 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       db.exec('COMMIT;'); return response;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
+  const hostReactionTransaction = work => {
+    if (db.isTransaction) fail('invalid', 'reaction command cannot be nested in another host transaction');
+    db.exec('BEGIN IMMEDIATE;');
+    try { const result = work(); db.exec('COMMIT;'); return result; }
+    catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
+  };
+  const submitReaction = (submission, authorityToken) => hostReactionTransaction(() => { const result = reactionKernel.submitInTransaction(submission, authorityToken); if (failureAt === 'after-reaction-submission') fail('injected', 'failure after reaction submission'); return result; });
+  const expireReaction = (windowId, principalId, authorityToken) => hostReactionTransaction(() => reactionKernel.expireInTransaction(windowId, principalId, authorityToken));
+  const adjudicateReaction = (windowId, principalId, decision = 'accept', authorityToken) => hostReactionTransaction(() => reactionKernel.adjudicateInTransaction(windowId, principalId, decision, authorityToken));
   const readWorkflow = (workflowId, principalId) => {
     const row = readWorkflowRow(workflowId); if (!row) fail('unavailable', 'workflow is unavailable'); const workflow = decodeWorkflow(row); const member = principal(principalId, workflow.campaignId); const lock = lockFor(workflow.campaignId); const descriptor = workflowTypes.get(workflow.workflowType);
     if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(workflow, descriptor); assertTypePinned(workflow.campaignId, lock, descriptor);
@@ -475,5 +646,5 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     for (const row of data.v2_extension_workflows) { const descriptor = workflowTypes.get(row.workflow_type); if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(decodeWorkflow(row), descriptor); requireCapability(lock, descriptor.capability, campaignId); }
     return clone({ format: 'potomac.v2-extension-snapshot', version: 1, campaignId, lock, data });
   };
-  return { createEntity, read, list, events, executeCommand, startWorkflow, readWorkflow, expireWorkflow, snapshot };
+  return { createEntity, read, list, events, executeCommand, submitReaction, expireReaction, adjudicateReaction, startWorkflow, readWorkflow, expireWorkflow, snapshot };
 }

@@ -47,9 +47,9 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
   db.exec(V2_REACTION_SCHEMA);
   const row = windowId => db.prepare('SELECT * FROM v2_reaction_windows WHERE window_id=?').get(windowId);
   const decode = value => ({ windowId: value.window_id, parentOperationId: value.parent_operation_id, campaignId: value.campaign_id, resolver: JSON.parse(value.resolver), lock: JSON.parse(value.lock), eligible: JSON.parse(value.eligible), ordering: value.ordering, expiresAt: value.expires_at, continuation: JSON.parse(value.continuation), visibility: value.visibility, status: value.status });
-  const view = (windowId, principalId) => {
+  const view = (windowId, principalId, authorityToken) => {
     const stored = row(windowId); if (!stored) return undefined; const window = decode(stored);
-    if (!authenticate(principalId, { windowId, campaignId: window.campaignId })) fail('unauthorized', 'unauthenticated projection request');
+    if (!authenticate(principalId, { windowId, campaignId: window.campaignId, authorityToken })) fail('unauthorized', 'unauthenticated projection request');
     const projection = authorizeView({ principalId, window }); if (!projection || !['public', 'responder', 'gm'].includes(projection.role)) fail('unauthorized', 'unauthorized reaction projection');
     const visible = new Set(projection.visiblePrincipalIds || (projection.role === 'gm' ? window.eligible.map(item => item.principalId) : projection.role === 'responder' ? [principalId] : window.visibility === 'public' ? window.eligible.map(item => item.principalId) : []));
     const submissions = db.prepare('SELECT principal_id, action_id, decision, visibility FROM v2_reaction_submissions WHERE window_id=? ORDER BY sequence').all(windowId).filter(item => visible.has(item.principal_id) && (projection.role !== 'public' || item.visibility === 'public')).map(item => ({ principalId: item.principal_id, actionId: projection.role === 'gm' || item.visibility === 'public' ? item.action_id : 'hidden', decision: item.decision }));
@@ -65,16 +65,16 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
     if (failureAt === 'after-transition') fail('injected', 'failure after reaction transition');
     return { windowId: window.windowId, status, eventId, hidden: window.visibility !== 'public' };
   };
-  const openWork = (window, principalId) => { validateWindow(window); validateLock(window.campaignId, window.lock, window.resolver); if (!authenticate(principalId, { campaignId: window.campaignId }) || !authorizeGm({ principalId, campaignId: window.campaignId, window })) fail('unauthorized', 'unauthorized reaction creation'); db.prepare('INSERT INTO v2_reaction_windows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(window.windowId, window.parentOperationId, window.campaignId, JSON.stringify(window.resolver), JSON.stringify(window.lock), JSON.stringify(window.eligible), window.ordering, window.expiresAt, JSON.stringify(window.continuation), window.visibility, 'pending', null, now()); if (failureAt === 'after-open') fail('injected', 'failure after reaction open'); return view(window.windowId, principalId); };
-  const submitWork = submission => {
+  const openWork = (window, principalId, authorityToken) => { validateWindow(window); validateLock(window.campaignId, window.lock, window.resolver); if (!authenticate(principalId, { campaignId: window.campaignId, authorityToken }) || !authorizeGm({ principalId, campaignId: window.campaignId, window, authorityToken })) fail('unauthorized', 'unauthorized reaction creation'); db.prepare('INSERT INTO v2_reaction_windows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(window.windowId, window.parentOperationId, window.campaignId, JSON.stringify(window.resolver), JSON.stringify(window.lock), JSON.stringify(window.eligible), window.ordering, window.expiresAt, JSON.stringify(window.continuation), window.visibility, 'pending', null, now()); if (failureAt === 'after-open') fail('injected', 'failure after reaction open'); return view(window.windowId, principalId, authorityToken); };
+  const submitWork = (submission, authorityToken) => {
     if (!submission || !ID.test(submission.operationId) || !ID.test(submission.windowId) || !ID.test(submission.principalId) || !ID.test(submission.actionId) || !['accept', 'decline'].includes(submission.decision)) fail('invalid', 'malformed reaction submission');
-    if (!authenticate(submission.principalId, submission)) fail('unauthorized', 'unauthenticated responder');
+    if (!authenticate(submission.principalId, { ...submission, authorityToken })) fail('unauthorized', 'unauthenticated responder');
     {
       const stored = row(submission.windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); validateLock(window.campaignId, window.lock, window.resolver);
-      if (stored.status !== 'pending') { const prior = db.prepare('SELECT request_hash FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); if (prior) { if (prior.request_hash !== hash(submission)) fail('idempotency_conflict', 'operation ID is bound to another submission'); return view(submission.windowId, submission.principalId); } fail('conflict', 'reaction window is terminal'); }
-      if (Date.parse(window.expiresAt) <= Date.parse(now())) { transition(window, 'expired', 'clock', { decision: 'decline' }); return view(submission.windowId, submission.principalId); }
-      const eligible = window.eligible.find(item => item.principalId === submission.principalId); const action = eligible?.actions.find(item => item.actionId === submission.actionId); if (!eligible || !action || !authorizeResponder({ principalId: submission.principalId, window, action })) fail('unauthorized', 'responder or action is not eligible'); validateInput(submission.input, action.inputSchema);
-      const existing = db.prepare('SELECT request_hash, window_id, principal_id FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); const payloadHash = hash(submission); if (existing) { if (existing.request_hash !== payloadHash || existing.window_id !== submission.windowId || existing.principal_id !== submission.principalId) fail('idempotency_conflict', 'operation ID is bound to another submission'); return view(submission.windowId, submission.principalId); }
+      if (stored.status !== 'pending') { const prior = db.prepare('SELECT request_hash FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); if (prior) { if (prior.request_hash !== hash(submission)) fail('idempotency_conflict', 'operation ID is bound to another submission'); return view(submission.windowId, submission.principalId, authorityToken); } fail('conflict', 'reaction window is terminal'); }
+      if (Date.parse(window.expiresAt) <= Date.parse(now())) { transition(window, 'expired', 'clock', { decision: 'decline' }); return view(submission.windowId, submission.principalId, authorityToken); }
+      const eligible = window.eligible.find(item => item.principalId === submission.principalId); const action = eligible?.actions.find(item => item.actionId === submission.actionId); if (!eligible || !action || !authorizeResponder({ principalId: submission.principalId, window, action, authorityToken })) fail('unauthorized', 'responder or action is not eligible'); validateInput(submission.input, action.inputSchema);
+      const existing = db.prepare('SELECT request_hash, window_id, principal_id FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); const payloadHash = hash(submission); if (existing) { if (existing.request_hash !== payloadHash || existing.window_id !== submission.windowId || existing.principal_id !== submission.principalId) fail('idempotency_conflict', 'operation ID is bound to another submission'); return view(submission.windowId, submission.principalId, authorityToken); }
       if (db.prepare('SELECT operation_id FROM v2_reaction_submissions WHERE window_id=? AND principal_id=?').get(submission.windowId, submission.principalId)) fail('conflict', 'responder already decided for this window');
       const sequence = db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM v2_reaction_submissions WHERE window_id=?').get(submission.windowId).next;
       db.prepare('INSERT INTO v2_reaction_submissions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(submission.operationId, submission.windowId, window.campaignId, submission.principalId, submission.actionId, JSON.stringify(submission.input), submission.decision, sequence, action.visibility, payloadHash, now());
@@ -85,23 +85,23 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
       if (failureAt === 'after-submission') fail('injected', 'failure after submission'); return result;
     }
   };
-  const expireWork = (windowId, principalId) => {
-    const stored = row(windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); if (!authenticate(principalId, { windowId, campaignId: window.campaignId }) || !authorizeExpiry({ principalId, window })) fail('unauthorized', 'unauthorized reaction expiry');
+  const expireWork = (windowId, principalId, authorityToken) => {
+    const stored = row(windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); if (!authenticate(principalId, { windowId, campaignId: window.campaignId, authorityToken }) || !authorizeExpiry({ principalId, window, authorityToken })) fail('unauthorized', 'unauthorized reaction expiry');
     const current = row(windowId); const currentWindow = decode(current); if (current.status !== 'pending') return view(windowId, principalId); if (Date.parse(currentWindow.expiresAt) > Date.parse(now())) fail('conflict', 'reaction window has not expired'); return transition(currentWindow, 'expired', principalId, { decision: 'decline' });
   };
-  const adjudicateWork = (windowId, principalId, decision = 'accept') => {
-    if (!authenticate(principalId, { windowId }) || !authorizeGm({ principalId, windowId })) fail('unauthorized', 'unauthorized GM adjudication'); const stored = row(windowId); if (!stored || stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); return transition(decode(stored), decision === 'decline' ? 'declined' : 'resolved', principalId, { decision });
+  const adjudicateWork = (windowId, principalId, decision = 'accept', authorityToken) => {
+    if (!authenticate(principalId, { windowId, authorityToken }) || !authorizeGm({ principalId, windowId, authorityToken })) fail('unauthorized', 'unauthorized GM adjudication'); const stored = row(windowId); if (!stored || stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); return transition(decode(stored), decision === 'decline' ? 'declined' : 'resolved', principalId, { decision });
   };
   const standalone = work => { requireOwnedTransaction(db); try { const result = work(); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; } };
   const inHostTransaction = work => { requireHostTransaction(db); return work(); };
   // Host-adapter-only composition API. Methods accept domain values only: no DB handle or transaction callback crosses into module code.
-  const open = (window, principalId) => standalone(() => openWork(window, principalId));
-  const submit = submission => standalone(() => submitWork(submission));
-  const expire = (windowId, principalId) => standalone(() => expireWork(windowId, principalId));
-  const adjudicate = (windowId, principalId, decision = 'accept') => standalone(() => adjudicateWork(windowId, principalId, decision));
-  const openInTransaction = (window, principalId) => inHostTransaction(() => openWork(window, principalId));
-  const submitInTransaction = submission => inHostTransaction(() => submitWork(submission));
-  const expireInTransaction = (windowId, principalId) => inHostTransaction(() => expireWork(windowId, principalId));
-  const adjudicateInTransaction = (windowId, principalId, decision = 'accept') => inHostTransaction(() => adjudicateWork(windowId, principalId, decision));
+  const open = (window, principalId, authorityToken) => standalone(() => openWork(window, principalId, authorityToken));
+  const submit = (submission, authorityToken) => standalone(() => submitWork(submission, authorityToken));
+  const expire = (windowId, principalId, authorityToken) => standalone(() => expireWork(windowId, principalId, authorityToken));
+  const adjudicate = (windowId, principalId, decision = 'accept', authorityToken) => standalone(() => adjudicateWork(windowId, principalId, decision, authorityToken));
+  const openInTransaction = (window, principalId, authorityToken) => inHostTransaction(() => openWork(window, principalId, authorityToken));
+  const submitInTransaction = (submission, authorityToken) => inHostTransaction(() => submitWork(submission, authorityToken));
+  const expireInTransaction = (windowId, principalId, authorityToken) => inHostTransaction(() => expireWork(windowId, principalId, authorityToken));
+  const adjudicateInTransaction = (windowId, principalId, decision = 'accept', authorityToken) => inHostTransaction(() => adjudicateWork(windowId, principalId, decision, authorityToken));
   return { open, submit, expire, adjudicate, view, openInTransaction, submitInTransaction, expireInTransaction, adjudicateInTransaction };
 }

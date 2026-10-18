@@ -4,14 +4,23 @@ export type ResolverRef = { id: string; apiVersion: SemVer; implementationVersio
 export type Visibility = "public" | "gm" | "private";
 export type RandomRequest = { requestId: string; kind: "die" | "pool" | "draw"; count: number; sides?: number };
 export type RandomInput = RandomRequest & { values: number[]; visibility?: Visibility };
-export type ResolutionInput = { operationId: string; campaignId: string; principalId: string; logicalTime: string; state: JsonValue; input: JsonValue; randomness: RandomInput[] };
 export type SemanticOutcome = { kind: string; data: JsonValue; visibility: Visibility };
 export type ProposedEffect = { effectId: string; handler: string; targetId: string; payload: JsonValue; visibility: Visibility };
 export type ResolverDecision = { id: string; data: JsonValue; visibility: Visibility };
-export type ContinuationRequest = { continuationId: string; state: JsonValue; resumeOn: "command" | "timeout" | "reaction"; expiresAt: string; step: number };
+export type ReactionAudience = "command-actor" | "entity-owner" | "campaign-gm";
+export type ReactionContinuationIntent = {
+  ordering: "priorityThenSubmission" | "simultaneous";
+  visibility: Visibility;
+  audiences: Array<{ audience: ReactionAudience; priority: number; actions: Array<{ actionId: string; inputSchema: JsonValue; visibility: Visibility }> }>;
+};
+export type ContinuationRequest = { continuationId: string; state: JsonValue; resumeOn: "command" | "timeout" | "reaction"; expiresAt: string; step: number; reaction?: ReactionContinuationIntent };
+export type ReactionDecision = { principalId: string; actionId: string; input: JsonValue; decision: "accept" | "decline" };
+export type ReactionResumeContext = { continuation: ContinuationRequest; reaction: { status: "resolved" | "declined" | "expired"; decisions: ReactionDecision[] } };
+export type ResolutionInput = { operationId: string; campaignId: string; principalId: string; logicalTime: string; state: JsonValue; input: JsonValue; randomness: RandomInput[]; resume?: ReactionResumeContext };
+export type ResolverResumeInput = ResolutionInput & ReactionResumeContext;
 export type ResolverOutput = { outcomes: SemanticOutcome[]; effects: ProposedEffect[]; decisions: ResolverDecision[]; continuation?: ContinuationRequest };
-export type Resolver = { ref: ResolverRef; resolve: (input: Readonly<ResolutionInput>) => ResolverOutput };
-export type ResolutionTranscript = { transcriptVersion: 1; resolver: ResolverRef; input: { operationId: string; campaignId: string; principalId: string; logicalTime: string; state: JsonValue; input: JsonValue }; randomness: RandomInput[]; decisions: ResolverDecision[]; outcomes: SemanticOutcome[]; effects: ProposedEffect[]; continuation?: ContinuationRequest; digest: CapabilityDigest };
+export type Resolver = { ref: ResolverRef; resolve: (input: Readonly<ResolutionInput>) => ResolverOutput; resume?: (input: Readonly<ResolverResumeInput>) => ResolverOutput };
+export type ResolutionTranscript = { transcriptVersion: 1; resolver: ResolverRef; input: { operationId: string; campaignId: string; principalId: string; logicalTime: string; state: JsonValue; input: JsonValue; resume?: ReactionResumeContext }; randomness: RandomInput[]; decisions: ResolverDecision[]; outcomes: SemanticOutcome[]; effects: ProposedEffect[]; continuation?: ContinuationRequest; digest: CapabilityDigest };
 export type PublicTranscript = Omit<ResolutionTranscript, "input" | "randomness" | "decisions" | "outcomes" | "effects" | "continuation"> & { input: { operationId: string; campaignId: string; logicalTime: string }; randomness: RandomInput[]; decisions: ResolverDecision[]; outcomes: SemanticOutcome[]; effects: ProposedEffect[]; continuation?: ContinuationRequest };
 export type TranscriptProjection = { role: "public" | "gm"; transcript: PublicTranscript };
 export type TranscriptStore = { putPrivate: (transcript: ResolutionTranscript) => void; project: (transcript: ResolutionTranscript, role: "public" | "gm") => TranscriptProjection };

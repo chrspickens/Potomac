@@ -40,7 +40,7 @@ const begin = (db, mode, work) => {
   catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
 };
 
-export function createV2HostAdapter({ db, campaignId, authenticateBearer, writeGrantAudit = () => undefined, drawRandom = cryptoRandomInt } = {}) {
+export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauthorizePrincipal, writeGrantAudit = () => undefined, drawRandom = cryptoRandomInt } = {}) {
   if (!db || typeof campaignId !== 'string' || typeof authenticateBearer !== 'function') throw new Error('invalid V2 host adapter configuration');
   db.exec(V2_HOST_LOCK_SCHEMA);
   const authenticate = (principalId, { campaignId: requestedCampaign, authorityToken } = {}) => {
@@ -61,6 +61,15 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, writeG
   };
   const grantKey = entityId => `v2:${campaignId}:${entityId}`;
   const hasGrant = (entityId, memberId, permission) => Boolean(db.prepare(`SELECT 1 FROM actor_grants g JOIN members m ON m.id=g.member_id WHERE g.actor_id=? AND g.member_id=? AND m.revoked_at IS NULL AND g.can_${permission}=1`).get(grantKey(entityId), memberId));
+  const resolveReactionEligibility = ({ campaignId: requestedCampaign, actorPrincipalId, entityId, intent }) => {
+    if (requestedCampaign !== campaignId) return [];
+    const owner = db.prepare('SELECT owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, entityId)?.owner_principal_id;
+    const identities = { 'command-actor': actorPrincipalId, 'entity-owner': owner, 'campaign-gm': 'gm' };
+    return intent.audiences.flatMap(audience => {
+      const principalId = identities[audience.audience]; if (!principalId || !reauthorizePrincipal?.(principalId)) return [];
+      return [{ audience: audience.audience, principalId, priority: audience.priority, actions: audience.actions }];
+    });
+  };
   const kernel = createV2ExtensionKernel({
     db, entities: [starshipEntity, revised5eEncounter], commands: [...starshipCommands, ...revised5eCommands], workflows: [starshipWorkflow],
     effectHandlers: [...starshipEffectHandlers, ...revised5eEffectHandlers], resolvers: [...starshipResolvers, ...revised5eResolvers], drawRandom,
@@ -68,7 +77,16 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, writeG
     authorizeCommandIntent: revised5eAuthorizeIntent,
     authorizeRead: ({ member, entity }) => member.role === 'player' && hasGrant(entity.entityId, member.principalId, 'read'),
     authorizeCommand: ({ member, entity }) => member.role === 'player' && hasGrant(entity.entityId, member.principalId, 'act'),
-    authorizeOwner: ({ campaignId: requestedCampaign, ownerPrincipalId }) => requestedCampaign === campaignId && (ownerPrincipalId === 'gm' || Boolean(db.prepare('SELECT 1 FROM members WHERE id=? AND revoked_at IS NULL').get(ownerPrincipalId)))
+    authorizeOwner: ({ campaignId: requestedCampaign, ownerPrincipalId }) => requestedCampaign === campaignId && (ownerPrincipalId === 'gm' || Boolean(db.prepare('SELECT 1 FROM members WHERE id=? AND revoked_at IS NULL').get(ownerPrincipalId))),
+    reauthorizePendingActor: ({ principalId, campaignId: requestedCampaign }) => requestedCampaign === campaignId ? reauthorizePrincipal?.(principalId) : undefined,
+    resolveReactionEligibility,
+    authorizeReactionResponder: ({ principalId, window, action }) => {
+      const pending = db.prepare('SELECT principal_id,entity_id,campaign_id FROM v2_extension_pending_commands WHERE window_id=? AND status=?').get(window.windowId, 'pending');
+      if (!pending || pending.campaign_id !== campaignId || !reauthorizePrincipal?.(principalId) || !window.eligible.some(item => item.principalId === principalId && item.actions.some(candidate => candidate.actionId === action.actionId))) return false;
+      const owner = db.prepare('SELECT owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, pending.entity_id)?.owner_principal_id;
+      const audiences = window.continuation?.continuation?.reaction?.audiences || [];
+      return audiences.some(audience => audience.actions.some(candidate => candidate.actionId === action.actionId) && (audience.audience === 'command-actor' && pending.principal_id === principalId || audience.audience === 'entity-owner' && owner === principalId || audience.audience === 'campaign-gm' && principalId === 'gm'));
+    }
   });
 
   return {
@@ -103,6 +121,13 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, writeG
     list(campaignIdValue, typeId, principalId, expectedLockDigest, authorityToken) { return kernel.list(campaignIdValue, typeId, principalId, expectedLockDigest, authorityToken); },
     events(campaignIdValue, principalId, authorityToken) { return kernel.events(campaignIdValue, principalId, authorityToken); },
     executeCommand(request) { return kernel.executeCommand(request); },
+    // Internal host adapter hooks only; no V2 HTTP routes expose reaction submissions yet.
+    submitReaction(principalId, authorityToken, submission) {
+      if (!submission || Object.hasOwn(submission, 'principalId')) throw Object.assign(new Error('reaction principal identity is host-derived'), { code: 'invalid' });
+      return kernel.submitReaction({ ...submission, principalId }, authorityToken);
+    },
+    expireReaction(principalId, authorityToken, windowId) { return kernel.expireReaction(windowId, principalId, authorityToken); },
+    adjudicateReaction(principalId, authorityToken, windowId, decision) { return kernel.adjudicateReaction(windowId, principalId, decision, authorityToken); },
     grant(principalId, authorityToken, entityId, memberId, permissions) {
       return begin(db, 'IMMEDIATE', () => {
         const member = authenticate(principalId, { campaignId, authorityToken });
