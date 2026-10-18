@@ -15,6 +15,9 @@ const requireOwnedTransaction = db => {
   if (db.isTransaction) fail('invalid', 'reaction operation cannot be nested in another transaction');
   db.exec('BEGIN IMMEDIATE;');
 };
+const requireHostTransaction = db => {
+  if (!db.isTransaction) fail('invalid', 'host reaction operation requires an active host transaction');
+};
 
 export const V2_REACTION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS v2_reaction_windows (
@@ -55,24 +58,23 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
   const order = submissions => [...submissions].sort((a, b) => b.priority - a.priority || a.sequence - b.sequence || a.principalId.localeCompare(b.principalId));
   const transition = (window, status, actor, decision, submissionRows = []) => {
     const ordered = order(submissionRows); const result = complete({ window, status, actor, decisions: ordered.map(item => ({ principalId: item.principalId, actionId: item.actionId, input: item.input, decision: item.decision })) });
-    if (result?.effects) applyEffects(result.effects, { db, window });
+    if (result?.effects) applyEffects(result.effects, { window: structuredClone(window) });
     const eventId = `${window.windowId}:${status}:${actor}`; const publicPayload = window.visibility === 'public' ? { windowId: window.windowId, status } : { windowId: window.windowId, status: 'updated' };
     db.prepare('INSERT INTO v2_reaction_events(event_id,window_id,campaign_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?)').run(eventId, window.windowId, window.campaignId, `reaction.${status}`, window.visibility, JSON.stringify(publicPayload), now());
     db.prepare('UPDATE v2_reaction_windows SET status=?, resolved_by=?, updated_at=? WHERE window_id=? AND status=\'pending\'').run(status, actor, now(), window.windowId);
     if (failureAt === 'after-transition') fail('injected', 'failure after reaction transition');
     return { windowId: window.windowId, status, eventId, hidden: window.visibility !== 'public' };
   };
-  const open = (window, principalId) => { validateWindow(window); validateLock(window.campaignId, window.lock, window.resolver); if (!authenticate(principalId, { campaignId: window.campaignId }) || !authorizeGm({ principalId, campaignId: window.campaignId, window })) fail('unauthorized', 'unauthorized reaction creation'); db.prepare('INSERT INTO v2_reaction_windows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(window.windowId, window.parentOperationId, window.campaignId, JSON.stringify(window.resolver), JSON.stringify(window.lock), JSON.stringify(window.eligible), window.ordering, window.expiresAt, JSON.stringify(window.continuation), window.visibility, 'pending', null, now()); return view(window.windowId, principalId); };
-  const submit = submission => {
+  const openWork = (window, principalId) => { validateWindow(window); validateLock(window.campaignId, window.lock, window.resolver); if (!authenticate(principalId, { campaignId: window.campaignId }) || !authorizeGm({ principalId, campaignId: window.campaignId, window })) fail('unauthorized', 'unauthorized reaction creation'); db.prepare('INSERT INTO v2_reaction_windows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(window.windowId, window.parentOperationId, window.campaignId, JSON.stringify(window.resolver), JSON.stringify(window.lock), JSON.stringify(window.eligible), window.ordering, window.expiresAt, JSON.stringify(window.continuation), window.visibility, 'pending', null, now()); if (failureAt === 'after-open') fail('injected', 'failure after reaction open'); return view(window.windowId, principalId); };
+  const submitWork = submission => {
     if (!submission || !ID.test(submission.operationId) || !ID.test(submission.windowId) || !ID.test(submission.principalId) || !ID.test(submission.actionId) || !['accept', 'decline'].includes(submission.decision)) fail('invalid', 'malformed reaction submission');
     if (!authenticate(submission.principalId, submission)) fail('unauthorized', 'unauthenticated responder');
-    requireOwnedTransaction(db);
-    try {
+    {
       const stored = row(submission.windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); validateLock(window.campaignId, window.lock, window.resolver);
-      if (stored.status !== 'pending') { const prior = db.prepare('SELECT request_hash FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); if (prior) { if (prior.request_hash !== hash(submission)) fail('idempotency_conflict', 'operation ID is bound to another submission'); db.exec('COMMIT;'); return view(submission.windowId, submission.principalId); } fail('conflict', 'reaction window is terminal'); }
-      if (Date.parse(window.expiresAt) <= Date.parse(now())) { transition(window, 'expired', 'clock', { decision: 'decline' }); db.exec('COMMIT;'); return view(submission.windowId, submission.principalId); }
+      if (stored.status !== 'pending') { const prior = db.prepare('SELECT request_hash FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); if (prior) { if (prior.request_hash !== hash(submission)) fail('idempotency_conflict', 'operation ID is bound to another submission'); return view(submission.windowId, submission.principalId); } fail('conflict', 'reaction window is terminal'); }
+      if (Date.parse(window.expiresAt) <= Date.parse(now())) { transition(window, 'expired', 'clock', { decision: 'decline' }); return view(submission.windowId, submission.principalId); }
       const eligible = window.eligible.find(item => item.principalId === submission.principalId); const action = eligible?.actions.find(item => item.actionId === submission.actionId); if (!eligible || !action || !authorizeResponder({ principalId: submission.principalId, window, action })) fail('unauthorized', 'responder or action is not eligible'); validateInput(submission.input, action.inputSchema);
-      const existing = db.prepare('SELECT request_hash, window_id, principal_id FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); const payloadHash = hash(submission); if (existing) { if (existing.request_hash !== payloadHash || existing.window_id !== submission.windowId || existing.principal_id !== submission.principalId) fail('idempotency_conflict', 'operation ID is bound to another submission'); db.exec('COMMIT;'); return view(submission.windowId, submission.principalId); }
+      const existing = db.prepare('SELECT request_hash, window_id, principal_id FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); const payloadHash = hash(submission); if (existing) { if (existing.request_hash !== payloadHash || existing.window_id !== submission.windowId || existing.principal_id !== submission.principalId) fail('idempotency_conflict', 'operation ID is bound to another submission'); return view(submission.windowId, submission.principalId); }
       if (db.prepare('SELECT operation_id FROM v2_reaction_submissions WHERE window_id=? AND principal_id=?').get(submission.windowId, submission.principalId)) fail('conflict', 'responder already decided for this window');
       const sequence = db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM v2_reaction_submissions WHERE window_id=?').get(submission.windowId).next;
       db.prepare('INSERT INTO v2_reaction_submissions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(submission.operationId, submission.windowId, window.campaignId, submission.principalId, submission.actionId, JSON.stringify(submission.input), submission.decision, sequence, action.visibility, payloadHash, now());
@@ -80,14 +82,26 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
       const ready = window.ordering === 'priorityThenSubmission' || submissions.length === window.eligible.length;
       const allDeclined = submissions.length === window.eligible.length && submissions.every(item => item.decision === 'decline');
       const result = ready ? transition(window, allDeclined ? 'declined' : 'resolved', submission.principalId, submission, submissions) : { windowId: window.windowId, status: 'pending' };
-      if (failureAt === 'after-submission') fail('injected', 'failure after submission'); db.exec('COMMIT;'); return result;
-    } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
+      if (failureAt === 'after-submission') fail('injected', 'failure after submission'); return result;
+    }
   };
-  const expire = (windowId, principalId) => {
+  const expireWork = (windowId, principalId) => {
     const stored = row(windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); if (!authenticate(principalId, { windowId, campaignId: window.campaignId }) || !authorizeExpiry({ principalId, window })) fail('unauthorized', 'unauthorized reaction expiry');
-    requireOwnedTransaction(db); try { const current = row(windowId); const currentWindow = decode(current); if (current.status !== 'pending') { db.exec('COMMIT;'); return view(windowId, principalId); } if (Date.parse(currentWindow.expiresAt) > Date.parse(now())) fail('conflict', 'reaction window has not expired'); const result = transition(currentWindow, 'expired', principalId, { decision: 'decline' }); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
+    const current = row(windowId); const currentWindow = decode(current); if (current.status !== 'pending') return view(windowId, principalId); if (Date.parse(currentWindow.expiresAt) > Date.parse(now())) fail('conflict', 'reaction window has not expired'); return transition(currentWindow, 'expired', principalId, { decision: 'decline' });
   };
-  const adjudicate = (windowId, principalId, decision = 'accept') => {
-    if (!authenticate(principalId, { windowId }) || !authorizeGm({ principalId, windowId })) fail('unauthorized', 'unauthorized GM adjudication'); requireOwnedTransaction(db); try { const stored = row(windowId); if (!stored || stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); const result = transition(decode(stored), decision === 'decline' ? 'declined' : 'resolved', principalId, { decision }); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; } };
-  return { open, submit, expire, adjudicate, view };
+  const adjudicateWork = (windowId, principalId, decision = 'accept') => {
+    if (!authenticate(principalId, { windowId }) || !authorizeGm({ principalId, windowId })) fail('unauthorized', 'unauthorized GM adjudication'); const stored = row(windowId); if (!stored || stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); return transition(decode(stored), decision === 'decline' ? 'declined' : 'resolved', principalId, { decision });
+  };
+  const standalone = work => { requireOwnedTransaction(db); try { const result = work(); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; } };
+  const inHostTransaction = work => { requireHostTransaction(db); return work(); };
+  // Host-adapter-only composition API. Methods accept domain values only: no DB handle or transaction callback crosses into module code.
+  const open = (window, principalId) => standalone(() => openWork(window, principalId));
+  const submit = submission => standalone(() => submitWork(submission));
+  const expire = (windowId, principalId) => standalone(() => expireWork(windowId, principalId));
+  const adjudicate = (windowId, principalId, decision = 'accept') => standalone(() => adjudicateWork(windowId, principalId, decision));
+  const openInTransaction = (window, principalId) => inHostTransaction(() => openWork(window, principalId));
+  const submitInTransaction = submission => inHostTransaction(() => submitWork(submission));
+  const expireInTransaction = (windowId, principalId) => inHostTransaction(() => expireWork(windowId, principalId));
+  const adjudicateInTransaction = (windowId, principalId, decision = 'accept') => inHostTransaction(() => adjudicateWork(windowId, principalId, decision));
+  return { open, submit, expire, adjudicate, view, openInTransaction, submitInTransaction, expireInTransaction, adjudicateInTransaction };
 }
