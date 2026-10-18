@@ -4,6 +4,7 @@ import { createV2ExtensionKernel } from './v2-extensions.mjs';
 import { hashV2Json } from './v2-effects.mjs';
 import { starshipCommands, starshipEffectHandlers, starshipEntity, starshipRefs, starshipResolvers, starshipWorkflow } from '../../examples/example.starship/v2/extensions.mjs';
 import { revised5eAuthorizeIntent, revised5eCommands, revised5eEffectHandlers, revised5eEncounter, revised5eRefs, revised5eResolvers } from '../../examples/example.revised5e/v2/extensions.mjs';
+import { interruptionCommands, interruptionEffectHandlers, interruptionEntity, interruptionRefs, interruptionResolvers } from '../../examples/example.interruption/v2/extensions.mjs';
 
 export const V2_HOST_LOCK_SCHEMA = `
 CREATE TABLE IF NOT EXISTS v2_campaign_locks (
@@ -19,7 +20,8 @@ BEFORE DELETE ON v2_campaign_locks BEGIN SELECT RAISE(ABORT, 'V2 campaign capabi
 const source = path => readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const bundledModules = new Map([
   ['example.starship.system', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.starship/v2/extensions.mjs')).digest('hex')}`, refs: Object.values(starshipRefs) }],
-  ['example.revised5e', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.revised5e/v2/manifest.json') + '\n' + source('../../examples/example.revised5e/v2/extensions.mjs') + '\n' + source('../../examples/example.revised5e/v2/ui/combat.json')).digest('hex')}`, refs: Object.values(revised5eRefs) }]
+  ['example.revised5e', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.revised5e/v2/manifest.json') + '\n' + source('../../examples/example.revised5e/v2/extensions.mjs') + '\n' + source('../../examples/example.revised5e/v2/ui/combat.json')).digest('hex')}`, refs: Object.values(revised5eRefs) }],
+  ['example.interruption', { version: '1.0.0', digest: `sha256:${createHash('sha256').update(source('../../examples/example.interruption/v2/extensions.mjs')).digest('hex')}`, refs: Object.values(interruptionRefs) }]
 ]);
 const secureEqual = (left, right) => {
   if (typeof left !== 'string' || typeof right !== 'string') return false;
@@ -71,8 +73,8 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
     });
   };
   const kernel = createV2ExtensionKernel({
-    db, entities: [starshipEntity, revised5eEncounter], commands: [...starshipCommands, ...revised5eCommands], workflows: [starshipWorkflow],
-    effectHandlers: [...starshipEffectHandlers, ...revised5eEffectHandlers], resolvers: [...starshipResolvers, ...revised5eResolvers], drawRandom,
+    db, entities: [starshipEntity, revised5eEncounter, interruptionEntity], commands: [...starshipCommands, ...revised5eCommands, ...interruptionCommands], workflows: [starshipWorkflow],
+    effectHandlers: [...starshipEffectHandlers, ...revised5eEffectHandlers, ...interruptionEffectHandlers], resolvers: [...starshipResolvers, ...revised5eResolvers, ...interruptionResolvers], drawRandom,
     authenticate, getCampaignLock, validateLock,
     authorizeCommandIntent: revised5eAuthorizeIntent,
     authorizeRead: ({ member, entity }) => member.role === 'player' && hasGrant(entity.entityId, member.principalId, 'read'),
@@ -81,7 +83,7 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
     reauthorizePendingActor: ({ principalId, campaignId: requestedCampaign }) => requestedCampaign === campaignId ? reauthorizePrincipal?.(principalId) : undefined,
     resolveReactionEligibility,
     authorizeReactionResponder: ({ principalId, window, action }) => {
-      const pending = db.prepare('SELECT principal_id,entity_id,campaign_id FROM v2_extension_pending_commands WHERE window_id=? AND status=?').get(window.windowId, 'pending');
+      const pending = db.prepare("SELECT principal_id,entity_id,campaign_id FROM v2_extension_pending_commands WHERE window_id=? AND status IN ('pending','completed','conflicted')").get(window.windowId);
       if (!pending || pending.campaign_id !== campaignId || !reauthorizePrincipal?.(principalId) || !window.eligible.some(item => item.principalId === principalId && item.actions.some(candidate => candidate.actionId === action.actionId))) return false;
       const owner = db.prepare('SELECT owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, pending.entity_id)?.owner_principal_id;
       const audiences = window.continuation?.continuation?.reaction?.audiences || [];
@@ -121,13 +123,16 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
     list(campaignIdValue, typeId, principalId, expectedLockDigest, authorityToken) { return kernel.list(campaignIdValue, typeId, principalId, expectedLockDigest, authorityToken); },
     events(campaignIdValue, principalId, authorityToken) { return kernel.events(campaignIdValue, principalId, authorityToken); },
     executeCommand(request) { return kernel.executeCommand(request); },
-    // Internal host adapter hooks only; no V2 HTTP routes expose reaction submissions yet.
+    // Reaction projections and decisions remain authority-filtered by the existing kernels.
     submitReaction(principalId, authorityToken, submission) {
       if (!submission || Object.hasOwn(submission, 'principalId')) throw Object.assign(new Error('reaction principal identity is host-derived'), { code: 'invalid' });
-      return kernel.submitReaction({ ...submission, principalId }, authorityToken);
+      return kernel.submitReaction({ ...submission, campaignId, principalId }, authorityToken);
     },
     expireReaction(principalId, authorityToken, windowId) { return kernel.expireReaction(windowId, principalId, authorityToken); },
     adjudicateReaction(principalId, authorityToken, windowId, decision) { return kernel.adjudicateReaction(windowId, principalId, decision, authorityToken); },
+    declineReaction(principalId, authorityToken, windowId, operationId, actionId, input) { return kernel.submitReaction({ operationId, windowId, actionId, input, decision: 'decline', campaignId, principalId }, authorityToken); },
+    listReactions(campaignIdValue, principalId, authorityToken) { return kernel.listReactions(campaignIdValue, principalId, authorityToken); },
+    viewReaction(windowId, principalId, authorityToken) { return kernel.viewReaction(windowId, principalId, authorityToken); },
     grant(principalId, authorityToken, entityId, memberId, permissions) {
       return begin(db, 'IMMEDIATE', () => {
         const member = authenticate(principalId, { campaignId, authorityToken });

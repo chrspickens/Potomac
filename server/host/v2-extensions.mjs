@@ -254,7 +254,9 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       for (const item of requested) {
         if (!item || !ID.test(item.requestId) || known.has(item.requestId) || !['die', 'pool'].includes(item.kind) || !Number.isInteger(item.count) || item.count < 1 || item.count > 20 || !Number.isInteger(item.sides) || item.sides < 2 || item.sides > 100) fail('invalid', 'resolver random request exceeds host bounds');
         known.add(item.requestId);
-        randomness.push({ ...clone(item), values: Array.from({ length: item.count }, () => drawRandom(1, item.sides + 1)), visibility: 'public' });
+        const visibility = item.visibility ?? 'public';
+        if (!['public', 'gm', 'private'].includes(visibility)) fail('invalid', 'resolver random request has invalid visibility');
+        randomness.push({ ...clone(item), values: Array.from({ length: item.count }, () => drawRandom(1, item.sides + 1)), visibility });
       }
     }
     if (resolver.randomRequests?.({ principalId: member.principalId, command: clone(command), state: clone(state), input: clone(input), randomness: clone(randomness) })?.length) fail('invalid', 'resolver random request budget was exhausted');
@@ -361,8 +363,12 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     db,
     authenticate: (principalId, context) => Boolean(principal(principalId, context.campaignId, context.authorityToken)),
     authorizeResponder: context => authorizeReactionResponder(context) === true,
-    authorizeGm: context => { try { return principal(context.principalId, context.campaignId, context.authorityToken).role === 'gm'; } catch { return false; } },
-    authorizeView: context => { try { const member = principal(context.principalId, context.window.campaignId, context.authorityToken); return { role: member.role === 'gm' ? 'gm' : context.window.eligible.some(item => item.principalId === member.principalId) ? 'responder' : context.window.visibility === 'public' ? 'public' : null }; } catch { return null; } },
+    authorizeGm: context => { try {
+      if (principal(context.principalId, context.campaignId, context.authorityToken).role === 'gm') return true;
+      const pending = db.prepare("SELECT operation_id,principal_id,campaign_id,window_id FROM v2_extension_pending_commands WHERE operation_id=? AND status='pending'").get(context.window?.parentOperationId);
+      return Boolean(pending && pending.principal_id === context.principalId && pending.campaign_id === context.campaignId && pending.window_id === context.window.windowId);
+    } catch { return false; } },
+    authorizeView: context => { try { const member = principal(context.principalId, context.window.campaignId, context.authorityToken); const eligible = context.window.eligible.some(item => item.principalId === member.principalId && item.actions.some(action => authorizeReactionResponder({ principalId: member.principalId, window: context.window, action, authorityToken: context.authorityToken }) === true)); return { role: member.role === 'gm' ? 'gm' : eligible ? 'responder' : context.window.visibility === 'public' ? 'public' : null }; } catch { return null; } },
     authorizeExpiry: context => { try { return principal(context.principalId, context.window.campaignId, context.authorityToken).role === 'gm'; } catch { return false; } },
     validateLock: (campaignId, value) => { const current = lockFor(campaignId); if (hashV2Json(current) !== hashV2Json(value)) fail('unsupported', 'reaction capability lock changed'); },
     validateInput: (input, schema) => validateV2JsonSchema(input, schema),
@@ -592,7 +598,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       if (failureAt === 'after-workflow-transition' && workflowResult) fail('injected', 'failure after workflow transition');
       }
       const outcomes = visibleOutcomes(resultData, currentMember, currentRecord); const response = { operationId: request.operationId, status: 'applied', entityId: request.entityId, revision: refreshed.row.revision, outcomes, ...(workflowResult ? { workflow: workflowResult } : {}), ...(currentMember.role === 'gm' ? { resolutionTranscript: output } : {}) };
-      writeEvent(request, request.entityId, workflowResult ? 'command.workflow-transitioned' : 'command.applied', storedVisibility(currentRecord.visibility), { commandId: command.commandId, revision: response.revision, workflow: workflowResult ? { workflowId: workflowResult.workflowId, state: workflowResult.state, revision: workflowResult.revision } : undefined, outcomes: resultData.filter(item => item.visibility === 'public'), transcriptDigest: output.digest, randomness: output.randomness, decisions: output.decisions.filter(item => item.visibility === 'public') });
+      writeEvent(request, request.entityId, workflowResult ? 'command.workflow-transitioned' : 'command.applied', storedVisibility(currentRecord.visibility), { commandId: command.commandId, revision: response.revision, workflow: workflowResult ? { workflowId: workflowResult.workflowId, state: workflowResult.state, revision: workflowResult.revision } : undefined, outcomes: resultData.filter(item => item.visibility === 'public'), transcriptDigest: output.digest, randomness: output.randomness.filter(item => item.visibility === 'public'), decisions: output.decisions.filter(item => item.visibility === 'public') });
       if (failureAt === 'after-command-event') fail('injected', 'failure after command event');
       if (failureAt === 'after-command-effects' && effectProposal) fail('injected', 'failure after command effects');
       const storedResponse = { ...response, allOutcomes: resultData, resolutionTranscript: output };
@@ -611,6 +617,15 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const submitReaction = (submission, authorityToken) => hostReactionTransaction(() => { const result = reactionKernel.submitInTransaction(submission, authorityToken); if (failureAt === 'after-reaction-submission') fail('injected', 'failure after reaction submission'); return result; });
   const expireReaction = (windowId, principalId, authorityToken) => hostReactionTransaction(() => reactionKernel.expireInTransaction(windowId, principalId, authorityToken));
   const adjudicateReaction = (windowId, principalId, decision = 'accept', authorityToken) => hostReactionTransaction(() => reactionKernel.adjudicateInTransaction(windowId, principalId, decision, authorityToken));
+  const viewReaction = (windowId, principalId, authorityToken) => transaction(() => reactionKernel.view(windowId, principalId, authorityToken));
+  const listReactions = (campaignId, principalId, authorityToken) => transaction(() => {
+    const member = principal(principalId, campaignId, authorityToken); lockFor(campaignId);
+    return db.prepare("SELECT window_id FROM v2_reaction_windows WHERE campaign_id=? AND status='pending' ORDER BY updated_at,window_id").all(campaignId).flatMap(({ window_id }) => {
+      try { return [reactionKernel.view(window_id, member.principalId, authorityToken)]; }
+      catch (error) { if (['unauthorized', 'unavailable'].includes(error?.code)) return []; throw error; }
+    });
+  });
+  const declineReaction = (principalId, authorityToken, windowId, operationId, actionId, input) => submitReaction(principalId, authorityToken, { operationId, windowId, actionId, input, decision: 'decline' });
   const readWorkflow = (workflowId, principalId) => {
     const row = readWorkflowRow(workflowId); if (!row) fail('unavailable', 'workflow is unavailable'); const workflow = decodeWorkflow(row); const member = principal(principalId, workflow.campaignId); const lock = lockFor(workflow.campaignId); const descriptor = workflowTypes.get(workflow.workflowType);
     if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(workflow, descriptor); assertTypePinned(workflow.campaignId, lock, descriptor);
@@ -646,5 +661,5 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     for (const row of data.v2_extension_workflows) { const descriptor = workflowTypes.get(row.workflow_type); if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(decodeWorkflow(row), descriptor); requireCapability(lock, descriptor.capability, campaignId); }
     return clone({ format: 'potomac.v2-extension-snapshot', version: 1, campaignId, lock, data });
   };
-  return { createEntity, read, list, events, executeCommand, submitReaction, expireReaction, adjudicateReaction, startWorkflow, readWorkflow, expireWorkflow, snapshot };
+  return { createEntity, read, list, events, executeCommand, listReactions, viewReaction, submitReaction, declineReaction, expireReaction, adjudicateReaction, startWorkflow, readWorkflow, expireWorkflow, snapshot };
 }

@@ -2,7 +2,7 @@ import type { CapabilityDigest, CapabilityLock, JsonValue, SemVer } from "./inde
 
 export type ResolverRef = { id: string; apiVersion: SemVer; implementationVersion: SemVer; digest: CapabilityDigest };
 export type Visibility = "public" | "gm" | "private";
-export type RandomRequest = { requestId: string; kind: "die" | "pool" | "draw"; count: number; sides?: number };
+export type RandomRequest = { requestId: string; kind: "die" | "pool" | "draw"; count: number; sides?: number; visibility?: Visibility };
 export type RandomInput = RandomRequest & { values: number[]; visibility?: Visibility };
 export type SemanticOutcome = { kind: string; data: JsonValue; visibility: Visibility };
 export type ProposedEffect = { effectId: string; handler: string; targetId: string; payload: JsonValue; visibility: Visibility };

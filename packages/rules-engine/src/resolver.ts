@@ -28,6 +28,7 @@ function validateRandomness(randomness: RandomInput[], limits: ResolverExecution
   if (!Array.isArray(randomness)) fail("malformed_input", "randomness must be an array"); const ids = new Set<string>(); let total = 0;
   for (const item of randomness) {
     if (!item || !idPattern.test(item.requestId) || ids.has(item.requestId) || !["die", "pool", "draw"].includes(item.kind)) fail("malformed_input", "randomness contains a duplicate or unsupported request"); ids.add(item.requestId);
+    if (item.visibility !== undefined && !["public", "gm", "private"].includes(item.visibility)) fail("malformed_input", "randomness visibility is invalid");
     if (!Number.isInteger(item.count) || item.count <= 0 || item.count > limits.maxRandomValues || !Array.isArray(item.values) || item.values.length !== item.count) fail("malformed_input", "randomness does not match its request");
     if (item.kind !== "draw" && (!Number.isInteger(item.sides) || item.sides < 2 || item.sides > 10000)) fail("malformed_input", "die and pool requests require bounded sides");
     if (item.kind === "draw" && item.sides !== undefined) fail("malformed_input", "draw requests cannot specify sides");
