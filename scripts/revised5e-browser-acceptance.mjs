@@ -161,7 +161,7 @@ try {
   await wait('playerA', `window.__v2Commands.some(item=>item.body.commandId==='example.revised5e.attack')`, 'Player A browser command receipt');
   const commandCapture = await evaluate('playerA', `window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.attack')`);
   assert.equal(commandCapture.body.input.actorId, 'player-a');
-  await wait('playerB', `document.querySelector('.v2-log')?.innerText.includes('Mira Vale attacks')`, 'Player B sees Player A combat result');
+  await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="critical"]'))`, 'Player B sees Player A combat result');
   await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('attack: d20')`, 'Player B sees host-supplied attack roll audit');
   const enemyHpBeforeRestart = await evaluate('playerB', `([...document.querySelectorAll('.v2-actor-card')].find(card=>card.querySelector('h2')?.textContent==='Mire Warden')?.querySelector('.v2-hp')?.textContent||'').trim()`);
   assert.match(enemyHpBeforeRestart, /^([0-9]|1[0-9]|2[01]) \/ 22 HP$/, `Player B sees committed HP loss: ${enemyHpBeforeRestart}`);
