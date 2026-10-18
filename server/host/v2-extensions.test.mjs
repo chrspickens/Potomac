@@ -13,15 +13,17 @@ const moduleRef = { id: 'example.starship.system', apiVersion: '1.0.0', implemen
 const allRefs = [moduleRef, ...Object.values(starshipRefs)];
 const lock = { lockVersion: 1, campaignId, entries: allRefs.map(ref => ({ ...ref, source: 'bundled', optional: false })), rootModule: { id: moduleRef.id, version: moduleRef.implementationVersion, digest: moduleRef.digest } };
 const data = () => ({ power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: [] });
-const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false, reactionContinuationResolver } = {}) => {
-  const path = join(mkdtempSync(join(tmpdir(), 'potomac-v2-extensions-')), 'host.sqlite');
-  const db = new DatabaseSync(path);
+const reactionIntent = { ordering: 'simultaneous', visibility: 'gm', audiences: [{ audience: 'entity-owner', priority: 2, actions: [{ actionId: 'narrative-interrupt', inputSchema: { type: 'object', properties: { choice: { type: 'string', enum: ['accept', 'decline'] } }, required: ['choice'], additionalProperties: false }, visibility: 'public' }] }] };
+const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false, reactionContinuationResolver, resume, randomOnReaction = false, intent = reactionIntent, resolveReactionEligibility, authorizeReactionResponder, reauthorizePendingActor, databasePath, database } = {}) => {
+  const path = databasePath || join(mkdtempSync(join(tmpdir(), 'potomac-v2-extensions-')), 'host.sqlite');
+  const db = database || new DatabaseSync(path);
   let time = '2026-10-17T12:00:00.000Z';
   let pinnedLock = currentLock;
   let lockReadHook;
   const roles = new Map([['gm-1', 'gm'], ['player-a', 'player'], ['player-b', 'player'], ['player-c', 'player']]);
   const effectHandlers = starshipEffectHandlers.map(handler => ({ ...handler, apply: context => { assert.equal(context.db, undefined); assert.equal(context.transaction, undefined); assert(Object.isFrozen(context.entity.data)); assert(Object.isFrozen(context.effect.payload)); return handler.apply(context); } }));
-  const resolvers = starshipResolvers.map(resolver => ({ ...resolver, resolve: input => { assert.equal(input.db, undefined); assert.equal(input.transaction, undefined); assert(Object.isFrozen(input)); assert(Object.isFrozen(input.state.data)); const output = resolver.resolve(input); return resolver.ref.id === reactionContinuationResolver ? { ...output, continuation: { continuationId: 'pending-reaction-1', state: { privateDetail: 'not projected' }, resumeOn: 'reaction', expiresAt: '2026-10-17T13:00:00.000Z', step: 1 } } : output; } }));
+  let randomDraws = 0;
+  const resolvers = starshipResolvers.map(resolver => ({ ...resolver, ...(resolver.ref.id === reactionContinuationResolver && randomOnReaction ? { randomRequests: ({ randomness }) => randomness.length ? [] : [{ requestId: 'narrative-host-die', kind: 'die', count: 1, sides: 20 }] } : {}), resolve: input => { assert.equal(input.db, undefined); assert.equal(input.transaction, undefined); assert(Object.isFrozen(input)); assert(Object.isFrozen(input.state.data)); const output = resolver.resolve(input); return resolver.ref.id === reactionContinuationResolver ? { ...output, effects: [], continuation: { continuationId: 'pending-reaction-1', state: { privateDetail: 'not projected' }, resumeOn: 'reaction', expiresAt: '2026-10-17T13:00:00.000Z', step: 1, reaction: intent } } : output; }, ...(resolver.ref.id === reactionContinuationResolver && resume ? { resume } : {}) }));
   const kernel = createV2ExtensionKernel({ db, entities: [starshipEntity], commands: starshipCommands, workflows: [starshipWorkflow], effectHandlers, resolvers,
     authenticate: principalId => roles.has(principalId) ? { principalId, role: roles.get(principalId) } : undefined,
     getCampaignLock: id => {
@@ -32,9 +34,12 @@ const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = fa
     },
     validateLock: (id, value) => { if (id !== campaignId || value.campaignId !== id || value.lockVersion !== 1) throw new Error('lock mismatch'); }, authorizeRead,
     authorizeOwner: ({ ownerPrincipalId }) => roles.has(ownerPrincipalId),
-    now: () => time, createId: () => 'continuation-1', failureAt
+    resolveReactionEligibility: resolveReactionEligibility || (({ intent, entity }) => intent.audiences.flatMap(audience => audience.audience === 'entity-owner' && entity.ownerPrincipalId ? [{ audience: audience.audience, principalId: entity.ownerPrincipalId, priority: audience.priority, actions: audience.actions }] : [])),
+    authorizeReactionResponder: authorizeReactionResponder || (({ principalId }) => roles.has(principalId)),
+    reauthorizePendingActor: reauthorizePendingActor || (({ principalId }) => roles.has(principalId) ? { principalId, role: roles.get(principalId) } : undefined),
+    drawRandom: min => { randomDraws++; return min; }, now: () => time, createId: () => 'continuation-1', failureAt
   });
-  return { db, path, kernel, setTime: value => { time = value; }, getTime: () => time, setLock: value => { pinnedLock = value; }, getLock: () => pinnedLock, setLockReadHook: value => { lockReadHook = value; }, roles };
+  return { db, path, kernel, setTime: value => { time = value; }, getTime: () => time, getRandomDrawCount: () => randomDraws, setLock: value => { pinnedLock = value; }, getLock: () => pinnedLock, setLockReadHook: value => { lockReadHook = value; }, roles };
 };
 const create = (kernel, overrides = {}) => kernel.createEntity({ operationId: 'create-reactor', campaignId, principalId: 'gm-1', entityId: 'reactor-1', typeId: starshipEntity.typeId, visibility: 'owner', ownerPrincipalId: 'player-a', data: data(), ...overrides });
 const powerRequest = (overrides = {}) => ({ operationId: 'route-1', campaignId, principalId: 'gm-1', commandId: 'example.starship.reactor.allocate-power', entityId: 'reactor-1', expectedRevision: 1, input: { subsystem: 'propulsion', amount: 7 }, ...overrides });
@@ -86,14 +91,150 @@ test('rejects stale revisions and changed-payload retries while exact retries re
   db.close();
 });
 
-test('rejects reaction continuations before effects because command suspension is not integrated', () => {
+test('durably suspends and resumes a generic narrative command exactly once after restart', () => {
   const command = starshipCommands.find(item => item.commandId === 'example.starship.reactor.allocate-power');
-  const context = make({ reactionContinuationResolver: command.resolver.id }); create(context.kernel);
-  assert.throws(() => context.kernel.executeCommand(powerRequest()), error => error.code === 'unsupported' && /reaction continuations are not integrated/.test(error.message));
+  const resume = input => ({
+    outcomes: [{ kind: 'narrative.interruption-recorded', data: { choice: input.reaction.decisions[0]?.input.choice ?? input.reaction.status }, visibility: 'public' }],
+    decisions: [],
+    effects: input.reaction.status === 'resolved' && input.reaction.decisions.some(item => item.decision === 'accept') ? [{ effectId: `${input.operationId}.narrative-effect`, handler: starshipRefs.allocateEffect.id, targetId: input.state.entityId, payload: { subsystem: 'propulsion', amount: 3 }, visibility: 'private' }] : []
+  });
+  const context = make({ reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true }); create(context.kernel);
+  const suspended = context.kernel.executeCommand(powerRequest());
+  assert.equal(suspended.status, 'pending');
+  assert.equal(context.kernel.executeCommand(powerRequest()).status, 'pending', 'exact initial retry returns pending without re-resolving');
+  assert.equal(context.getRandomDrawCount(), 1, 'exact pending retry does not draw again');
   assert.equal(context.kernel.read(campaignId, 'reactor-1', 'player-a').revision, 1, 'proposed effects remain unapplied');
-  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_receipts WHERE operation_id=?').get('route-1').count, 0, 'a rejected suspension creates no misleading command receipt');
-  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_events WHERE operation_id=?').get('route-1').count, 0, 'a rejected suspension creates no command event');
+  assert.equal(context.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'pending');
+  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_reaction_windows WHERE window_id=?').get(suspended.windowId).count, 1);
+  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 0);
+  const initialReceipt = JSON.parse(context.db.prepare('SELECT response FROM v2_extension_receipts WHERE operation_id=?').get('route-1').response);
+  assert.equal(initialReceipt.suspensionTranscript.randomness[0].values[0], 1, 'host draw is durable with the suspension transcript');
+  assert.equal(JSON.stringify(context.kernel.events(campaignId, 'player-a')).includes('not projected'), false, 'private continuation is absent from player events');
+  const path = context.path; context.db.close();
+  const db = new DatabaseSync(path);
+  const restored = make({ database: db, databasePath: path, reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true });
+  const result = restored.kernel.submitReaction({ operationId: 'narrative-reply-1', windowId: suspended.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' });
+  assert.equal(result.status, 'resolved');
+  assert.equal(restored.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'completed');
+  assert.equal(restored.kernel.read(campaignId, 'reactor-1', 'player-a').revision, 2);
+  assert.equal(restored.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 1);
+  assert.equal(restored.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_receipts WHERE operation_id=?').get('route-1').count, 1);
+  const completedReceipt = JSON.parse(restored.db.prepare('SELECT response FROM v2_extension_receipts WHERE operation_id=?').get('route-1').response);
+  assert.deepEqual(completedReceipt.resolutionTranscript.input.resume.reaction.decisions.map(item => item.principalId), ['player-a'], 'resume transcript digest input binds the exact ordered decision');
+  assert.equal(restored.getRandomDrawCount(), 1, 'resume draws independently under host control');
+  restored.db.close();
+  const completedDb = new DatabaseSync(path);
+  const afterCompletionRestart = make({ database: completedDb, databasePath: path, reactionContinuationResolver: command.resolver.id, resume, randomOnReaction: true });
+  assert.equal(afterCompletionRestart.kernel.executeCommand(powerRequest()).status, 'applied', 'post-completion restart returns the committed receipt');
+  assert.equal(afterCompletionRestart.getRandomDrawCount(), 0, 'completed retry does not reroll');
+  assert.equal(afterCompletionRestart.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 1, 'completed retry does not replay effects');
+  assert.throws(() => afterCompletionRestart.kernel.executeCommand(powerRequest({ input: { subsystem: 'propulsion', amount: 8 } })), error => error.code === 'idempotency_conflict');
+  assert.throws(() => afterCompletionRestart.kernel.submitReaction({ operationId: 'cross-player', windowId: suspended.windowId, principalId: 'player-b', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' }), error => error.code === 'conflict' || error.code === 'unauthorized');
+  afterCompletionRestart.db.close();
+});
+
+test('simultaneous reaction decisions reach resume in deterministic host order', () => {
+  const command = starshipCommands.find(item => item.commandId === 'example.starship.reactor.allocate-power');
+  const playerAudience = reactionIntent.audiences[0];
+  const gmAudience = { ...playerAudience, audience: 'campaign-gm', priority: 2 };
+  const intent = { ...reactionIntent, ordering: 'simultaneous', audiences: [playerAudience, gmAudience] };
+  let received;
+  const context = make({ reactionContinuationResolver: command.resolver.id, intent,
+    resolveReactionEligibility: ({ intent: declared }) => [
+      { audience: 'entity-owner', principalId: 'player-a', priority: 2, actions: declared.audiences[0].actions },
+      { audience: 'campaign-gm', principalId: 'gm-1', priority: 2, actions: declared.audiences[1].actions }
+    ],
+    resume: input => { received = input.reaction.decisions; return { outcomes: [], decisions: [], effects: [] }; }
+  }); create(context.kernel);
+  const pending = context.kernel.executeCommand(powerRequest());
+  assert.equal(context.kernel.submitReaction({ operationId: 'simultaneous-a', windowId: pending.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' }).status, 'pending');
+  assert.equal(context.kernel.submitReaction({ operationId: 'simultaneous-gm', windowId: pending.windowId, principalId: 'gm-1', actionId: 'narrative-interrupt', input: { choice: 'decline' }, decision: 'decline' }).status, 'resolved');
+  assert.deepEqual(received.map(item => item.principalId), ['player-a', 'gm-1']);
+  assert.deepEqual(received.map(item => item.decision), ['accept', 'decline']);
   context.db.close();
+});
+
+test('decline and expiry resume through the same pinned protocol without applying acceptance-only effects', () => {
+  const command = starshipCommands.find(item => item.commandId === 'example.starship.reactor.allocate-power');
+  const resume = input => ({ outcomes: [{ kind: 'narrative.interruption-closed', data: { status: input.reaction.status }, visibility: 'public' }], decisions: [], effects: input.reaction.status === 'resolved' ? [{ effectId: `${input.operationId}.narrative-effect`, handler: starshipRefs.allocateEffect.id, targetId: input.state.entityId, payload: { subsystem: 'propulsion', amount: 1 }, visibility: 'private' }] : [] });
+  for (const terminal of ['declined', 'expired']) {
+    const context = make({ reactionContinuationResolver: command.resolver.id, resume }); create(context.kernel);
+    const suspended = context.kernel.executeCommand(powerRequest());
+    if (terminal === 'declined') context.kernel.submitReaction({ operationId: 'narrative-decline', windowId: suspended.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'decline' }, decision: 'decline' });
+    else { context.setTime('2026-10-17T14:00:00.000Z'); context.kernel.expireReaction(suspended.windowId, 'gm-1'); }
+    assert.equal(context.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'completed');
+    assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 0);
+    context.db.close();
+  }
+});
+
+test('pending lifecycle failures roll back every parent, reaction, effect, event and receipt write', () => {
+  const command = starshipCommands.find(item => item.commandId === 'example.starship.reactor.allocate-power');
+  const resume = input => ({ outcomes: [], decisions: [], effects: [{ effectId: `${input.operationId}.narrative-effect`, handler: starshipRefs.allocateEffect.id, targetId: input.state.entityId, payload: { subsystem: 'propulsion', amount: 1 }, visibility: 'private' }] });
+  for (const failureAt of ['after-pending-window', 'after-pending-receipt']) {
+    const context = make({ failureAt, reactionContinuationResolver: command.resolver.id, resume }); create(context.kernel);
+    assert.throws(() => context.kernel.executeCommand(powerRequest()), /failure after pending/);
+    for (const table of ['v2_extension_pending_commands', 'v2_extension_receipts', 'v2_extension_events']) assert.equal(context.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE operation_id=?`).get('route-1').count, 0);
+    assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_reaction_windows WHERE parent_operation_id=?').get('route-1').count, 0);
+    assert.equal(context.kernel.read(campaignId, 'reactor-1', 'player-a').revision, 1);
+    context.db.close();
+  }
+  for (const failureAt of ['after-reaction-submission', 'after-resume-resolution', 'after-effect', 'after-resume-effects', 'after-final-receipt']) {
+    const context = make({ failureAt, reactionContinuationResolver: command.resolver.id, resume }); create(context.kernel);
+    const suspended = context.kernel.executeCommand(powerRequest());
+    assert.throws(() => context.kernel.submitReaction({ operationId: `fail-${failureAt}`, windowId: suspended.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' }), /failure after/);
+    assert.equal(context.db.isTransaction, false, 'trusted host wrapper rolls its whole transaction back');
+    assert.equal(context.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'pending');
+    assert.equal(context.db.prepare('SELECT status FROM v2_reaction_windows WHERE window_id=?').get(suspended.windowId).status, 'pending');
+    assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_reaction_submissions WHERE window_id=?').get(suspended.windowId).count, 0);
+    assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 0);
+    assert.equal(context.kernel.read(campaignId, 'reactor-1', 'player-a').revision, 1);
+    context.db.close();
+  }
+});
+
+test('suspension receipts and events keep continuation content private and revalidate the original actor', () => {
+  const command = starshipCommands.find(item => item.commandId === 'example.starship.reactor.allocate-power');
+  const resume = () => ({ outcomes: [], decisions: [], effects: [] });
+  const context = make({ reactionContinuationResolver: command.resolver.id, resume }); create(context.kernel);
+  const suspended = context.kernel.executeCommand(powerRequest());
+  const receipt = JSON.parse(context.db.prepare('SELECT response FROM v2_extension_receipts WHERE operation_id=?').get('route-1').response);
+  assert.equal(receipt.suspensionTranscript.continuation.state.privateDetail, 'not projected');
+  assert.equal(JSON.stringify(context.kernel.events(campaignId, 'player-a')).includes('not projected'), false);
+  context.roles.delete('gm-1');
+  context.kernel.submitReaction({ operationId: 'actor-revoked', windowId: suspended.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' });
+  assert.equal(context.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'conflicted');
+  assert.equal(context.kernel.read(campaignId, 'reactor-1', 'player-a').revision, 1);
+  context.db.close();
+});
+
+test('reaction authority revocation, stale lock and stale source revisions fail closed', () => {
+  const command = starshipCommands.find(item => item.commandId === 'example.starship.reactor.allocate-power');
+  const resume = () => ({ outcomes: [], decisions: [], effects: [] });
+  let responderAllowed = true;
+  const revoked = make({ reactionContinuationResolver: command.resolver.id, resume, authorizeReactionResponder: () => responderAllowed }); create(revoked.kernel);
+  const revokedWindow = revoked.kernel.executeCommand(powerRequest());
+  responderAllowed = false;
+  assert.throws(() => revoked.kernel.submitReaction({ operationId: 'revoked-responder', windowId: revokedWindow.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' }), error => error.code === 'unauthorized');
+  assert.equal(revoked.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'pending');
+  revoked.db.close();
+
+  const staleLock = make({ reactionContinuationResolver: command.resolver.id, resume }); create(staleLock.kernel);
+  const lockWindow = staleLock.kernel.executeCommand(powerRequest());
+  staleLock.setLock({ ...lock, entries: lock.entries.filter(entry => entry.id !== starshipRefs.workflow.id) });
+  assert.throws(() => staleLock.kernel.submitReaction({ operationId: 'stale-lock', windowId: lockWindow.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' }), error => error.code === 'unsupported');
+  assert.equal(staleLock.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'pending', 'a stale-lock player submission records no choice');
+  staleLock.kernel.adjudicateReaction(lockWindow.windowId, 'gm-1', 'decline');
+  assert.equal(staleLock.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'conflicted', 'host GM adjudication terminalizes the stale command without effects');
+  staleLock.db.close();
+
+  const staleRevision = make({ reactionContinuationResolver: command.resolver.id, resume }); create(staleRevision.kernel);
+  const revisionWindow = staleRevision.kernel.executeCommand(powerRequest());
+  staleRevision.db.prepare('UPDATE v2_effect_entities SET revision=revision+1 WHERE campaign_id=? AND entity_id=?').run(campaignId, 'reactor-1');
+  staleRevision.kernel.submitReaction({ operationId: 'stale-revision', windowId: revisionWindow.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' });
+  assert.equal(staleRevision.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'conflicted');
+  assert.equal(staleRevision.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get('route-1').count, 0);
+  staleRevision.db.close();
 });
 
 test('uses typed serialized workflow states, participant authorization, restart recovery and cancellation', () => {

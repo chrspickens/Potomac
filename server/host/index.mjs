@@ -275,6 +275,11 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     db, campaignId,
     drawRandom: v2RandomInt,
     writeGrantAudit: event => insertEvent(event),
+    reauthorizePrincipal(principalId) {
+      if (principalId === 'gm') return { principalId, role: 'gm', authorityToken: { kind: 'static-gm', credentialHash: createHash('sha256').update(gmToken).digest('hex') } };
+      const member = db.prepare('SELECT credential_hash FROM members WHERE id=? AND revoked_at IS NULL').get(principalId);
+      return member ? { principalId, role: 'player', authorityToken: { kind: 'member-session', memberId: principalId, credentialHash: member.credential_hash } } : undefined;
+    },
     authenticateBearer(principalId, proof) {
       if (!proof) return false;
       if (principalId === 'gm') return proof.kind === 'static-gm' && same(proof.credentialHash, createHash('sha256').update(gmToken).digest('hex'));

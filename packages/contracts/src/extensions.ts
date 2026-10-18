@@ -96,7 +96,7 @@ export type ExtensionCommandRequest = {
     transitionId: string;
   };
 };
-export type ExtensionCommandResult = {
+export type ExtensionCommandAppliedResult = {
   operationId: string;
   status: "applied";
   entityId: string;
@@ -104,6 +104,16 @@ export type ExtensionCommandResult = {
   outcomes: Array<{ kind: string; data: JsonValue; visibility: "public" | "gm" | "private" }>;
   workflow?: { workflowId: string; revision: number; state: string; continuationId: string; status: "active" | "completed" | "cancelled" };
 };
+export type ExtensionCommandPendingResult = {
+  operationId: string;
+  status: "pending";
+  entityId: string;
+  revision: number;
+  outcomes: Array<{ kind: string; data: JsonValue; visibility: "public" | "gm" | "private" }>;
+  windowId: string;
+};
+export type ExtensionCommandConflictedResult = { operationId: string; status: "conflicted"; entityId: string; windowId: string; reasonCode: string };
+export type ExtensionCommandResult = ExtensionCommandAppliedResult | ExtensionCommandPendingResult | ExtensionCommandConflictedResult;
 export type ExtensionWorkflowRecord = {
   workflowId: string;
   campaignId: string;
