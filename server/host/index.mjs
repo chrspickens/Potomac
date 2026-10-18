@@ -160,7 +160,7 @@ function applyRuleAction(action, state, parameters) {
 }
 
 // These fixed role tokens are development fixtures; authentication accepts them only on loopback listeners.
-export function createHost({ databasePath = './data/potomac.sqlite', gmToken = 'local-gm', playerToken = 'local-player', campaignId = 'foundation-demo', seedDemo = false, enableV2Api = false } = {}) {
+export function createHost({ databasePath = './data/potomac.sqlite', gmToken = 'local-gm', playerToken = 'local-player', campaignId = 'foundation-demo', seedDemo = false, enableV2Api = false, v2RandomInt = randomInt } = {}) {
   mkdirSync(dirname(resolve(databasePath)), { recursive: true });
   const assetDirectory = `${resolve(databasePath)}.assets`;
   mkdirSync(assetDirectory, { recursive: true });
@@ -273,6 +273,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   };
   const v2Api = enableV2Api ? createV2HostAdapter({
     db, campaignId,
+    drawRandom: v2RandomInt,
     writeGrantAudit: event => insertEvent(event),
     authenticateBearer(principalId, proof) {
       if (!proof) return false;
@@ -589,10 +590,18 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         try {
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'GET') return json(res, 200, v2Api.getLock(auth.principalId, proof));
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'PUT') {
-            const result = v2Api.pinLock(auth.principalId, proof);
+            const body = await readBody(req);
+            if (Object.keys(body).some(key => key !== 'moduleId') || body.moduleId !== undefined && typeof body.moduleId !== 'string') return json(res, 400, { error: 'Only a bundled module ID may be selected', reasonCode: 'invalid' });
+            const result = v2Api.pinLock(auth.principalId, proof, body.moduleId || 'example.starship.system');
             if (!result.alreadyPinned) notify();
             return json(res, result.alreadyPinned ? 200 : 201, result);
           }
+          if (req.method === 'GET' && url.pathname === '/api/v2/entities') {
+            if (typeof headerLockDigest !== 'string') return json(res, 428, { error: 'Current X-V2-Lock-Digest is required', reasonCode: 'unsupported' });
+            const typeId = url.searchParams.get('typeId');
+            return json(res, 200, v2Api.list(campaignId, typeId || undefined, auth.principalId, headerLockDigest, proof));
+          }
+          if (req.method === 'GET' && url.pathname === '/api/v2/events') return json(res, 200, v2Api.events(campaignId, auth.principalId, proof));
           if (req.method === 'POST' && url.pathname === '/api/v2/entities') {
             const body = await readBody(req);
             if ('principalId' in body || 'campaignId' in body || 'authorityToken' in body) return json(res, 400, { error: 'Principal and campaign identity are host-derived', reasonCode: 'invalid' });

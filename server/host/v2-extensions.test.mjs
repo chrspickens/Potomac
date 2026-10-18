@@ -31,6 +31,7 @@ const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = fa
       return pinnedLock;
     },
     validateLock: (id, value) => { if (id !== campaignId || value.campaignId !== id || value.lockVersion !== 1) throw new Error('lock mismatch'); }, authorizeRead,
+    authorizeOwner: ({ ownerPrincipalId }) => roles.has(ownerPrincipalId),
     now: () => time, createId: () => 'continuation-1', failureAt
   });
   return { db, path, kernel, setTime: value => { time = value; }, getTime: () => time, setLock: value => { pinnedLock = value; }, getLock: () => pinnedLock, setLockReadHook: value => { lockReadHook = value; }, roles };
@@ -354,7 +355,7 @@ test('campaign-visible effect targets require current source command authority a
   const kernel = createV2ExtensionKernel({
     db: context.db, entities: [actor, target], commands: [command], effectHandlers, resolvers,
     authenticate: id => context.roles.has(id) ? { principalId: id, role: context.roles.get(id) } : undefined,
-    getCampaignLock: () => lock, validateLock: () => undefined
+    getCampaignLock: () => lock, validateLock: () => undefined, authorizeOwner: ({ ownerPrincipalId }) => context.roles.has(ownerPrincipalId)
   });
   kernel.createEntity({ operationId: 'pilot-a-create', campaignId, principalId: 'gm-1', entityId: 'reactor-1', typeId: actor.typeId, visibility: 'owner', ownerPrincipalId: 'player-a', data: { ...data(), pilot: 'player-a' } });
   kernel.createEntity({ operationId: 'target-create', campaignId, principalId: 'gm-1', entityId: 'reactor-2', typeId: target.typeId, visibility: 'public', data: data() });

@@ -1,0 +1,19 @@
+{
+  "contractVersion": 1,
+  "contributionId": "example.revised5e.combat",
+  "contributionVersion": "1.0.0",
+  "kind": "panel",
+  "slots": [],
+  "workflows": [],
+  "nodes": [
+    {
+      "kind": "section",
+      "id": "example.revised5e.combat.controls",
+      "label": "Encounter actions",
+      "children": [
+        { "kind": "command", "id": "example.revised5e.combat.initialize", "commandId": "example.revised5e.initialize", "label": "Roll initiative and begin" },
+        { "kind": "form", "id": "example.revised5e.combat.attack", "commandId": "example.revised5e.attack", "label": "Attack" }
+      ]
+    }
+  ]
+}

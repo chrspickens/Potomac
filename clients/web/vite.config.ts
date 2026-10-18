@@ -3,5 +3,5 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { '/api': { target: 'http://127.0.0.1:4177', changeOrigin: false }, '/health': { target: 'http://127.0.0.1:4177', changeOrigin: false } } },
+  server: { proxy: { '/api': { target: process.env.POTOMAC_WEB_HOST || 'http://127.0.0.1:4177', changeOrigin: false }, '/health': { target: process.env.POTOMAC_WEB_HOST || 'http://127.0.0.1:4177', changeOrigin: false } } },
 })

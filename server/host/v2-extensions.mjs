@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt as cryptoRandomInt, randomUUID } from 'node:crypto';
 import { executeResolver } from '../../packages/rules-engine/src/resolver.ts';
 import { createV2EffectKernel, canonicalV2Json, hashV2Json, validateV2JsonSchema, validateV2SchemaDefinition } from './v2-effects.mjs';
 
@@ -66,10 +66,10 @@ function validateEntityDescriptor(descriptor) {
     if (!Array.isArray(descriptor.fieldVisibility)) fail('invalid', 'invalid field visibility rules');
     const paths = new Set();
     for (const rule of descriptor.fieldVisibility) {
-      if (!rule || typeof rule.path !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/.test(rule.path) || paths.has(rule.path) || !Array.isArray(rule.roles) || rule.roles.length === 0 || rule.roles.some(role => !['gm', 'player'].includes(role))) fail('invalid', 'invalid field visibility rule');
+      if (!rule || typeof rule.path !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*(?:(?:\.[A-Za-z][A-Za-z0-9_]*)|\.\*)*$/.test(rule.path) || paths.has(rule.path) || !Array.isArray(rule.roles) || rule.roles.length === 0 || rule.roles.some(role => !['gm', 'player'].includes(role))) fail('invalid', 'invalid field visibility rule');
       let schema = descriptor.schema;
       for (const part of rule.path.split('.')) {
-        schema = schema?.properties?.[part];
+        schema = part === '*' ? schema?.items : schema?.properties?.[part];
         if (!schema) fail('invalid', `field visibility path ${rule.path} is not declared by the entity schema`);
       }
       paths.add(rule.path);
@@ -96,7 +96,7 @@ function validateWorkflowDescriptor(workflow) {
   }
 }
 
-export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, authorizeEffect = () => true, authorizeRead = () => false, authorizeCommand = () => false, authorizeOwner = () => true, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
+export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, authorizeEffect = () => true, authorizeOwner = () => false, authorizeRead = () => false, authorizeCommand = () => false, authorizeCommandIntent = () => true, drawRandom = cryptoRandomInt, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
   if (!db || !Array.isArray(entities) || !Array.isArray(commands) || !Array.isArray(workflows) || !Array.isArray(effectHandlers) || !Array.isArray(resolvers) || typeof authenticate !== 'function' || typeof getCampaignLock !== 'function' || typeof validateLock !== 'function') fail('invalid', 'invalid extension kernel configuration');
   const entityTypes = new Map(); const commandTypes = new Map(); const workflowTypes = new Map(); const resolverMap = new Map(); const effectMap = new Map();
   for (const descriptor of entities) { validateEntityDescriptor(descriptor); if (entityTypes.has(descriptor.typeId)) fail('invalid', 'duplicate entity descriptor'); entityTypes.set(descriptor.typeId, clone(descriptor)); }
@@ -147,9 +147,14 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const projectRecord = (record, descriptor, member) => {
     const result = clone(record);
     for (const rule of descriptor.fieldVisibility || []) if (!rule.roles.includes(member.role)) {
-      const parts = rule.path.split('.'); let parent = result.data;
-      for (const part of parts.slice(0, -1)) parent = parent?.[part];
-      if (parent && typeof parent === 'object') delete parent[parts.at(-1)];
+      const parts = rule.path.split('.');
+      const redact = (value, index) => {
+        const part = parts[index];
+        if (part === '*') { if (Array.isArray(value)) value.forEach(item => redact(item, index + 1)); return; }
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+        if (index === parts.length - 1) delete value[part]; else redact(value[part], index + 1);
+      };
+      redact(result.data, 0);
     }
     if (member.role !== 'gm' && result.ownerPrincipalId !== member.principalId) delete result.ownerPrincipalId;
     return result;
@@ -225,7 +230,8 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const projectCommandReceipt = (request, payloadHash, member, entity) => {
     const stored = receipt(request, payloadHash); if (!stored) return undefined;
     if (!Array.isArray(stored.allOutcomes)) return stored;
-    const { allOutcomes, ...base } = stored;
+    const { allOutcomes, resolutionTranscript, ...base } = stored;
+    if (member.role === 'gm' && resolutionTranscript) base.resolutionTranscript = resolutionTranscript;
     return { ...base, outcomes: visibleOutcomes(allOutcomes, member, entity) };
   };
   const writeEvent = (request, entityId, kind, visibility, payload) => db.prepare('INSERT INTO v2_extension_events(event_id,operation_id,campaign_id,entity_id,kind,visibility,payload,created_at) VALUES(?,?,?,?,?,?,?,?)').run(`${request.operationId}:${kind}`, request.operationId, request.campaignId, entityId, kind, visibility, json(payload), now());
@@ -319,6 +325,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   };
   const executeCommand = request => {
     if (!request || !ID.test(request.operationId) || !ID.test(request.campaignId) || !ID.test(request.principalId) || !ID.test(request.commandId) || !ID.test(request.entityId) || !Number.isInteger(request.expectedRevision) || request.expectedRevision < 1) fail('invalid', 'malformed extension command');
+    if (Object.hasOwn(request, 'randomness')) fail('invalid', 'randomness is host supplied and cannot be included in a command');
     if (request.workflow && (!ID.test(request.workflow.workflowId) || !Number.isInteger(request.workflow.expectedRevision) || !ID.test(request.workflow.expectedContinuationId) || !ID.test(request.workflow.transitionId))) fail('invalid', 'malformed workflow continuation');
     const command = commandTypes.get(request.commandId); if (!command) fail('unsupported', 'command capability is unavailable');
     validateBoundedJson(request.input, command.inputSchema);
@@ -347,6 +354,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       const { record: currentRecord } = readRecord(request.campaignId, request.entityId, currentMember, lock, authorizedParticipants);
       if (currentRecord.typeId !== command.entityTypeId) fail('unsupported', 'command entity type is unavailable');
       if (!canCommand(currentMember, currentRecord, command.permission, authorizedParticipants)) fail('unauthorized', 'command is not permitted for this member and entity');
+      if (authorizeCommandIntent({ member: clone(currentMember), entity: clone(currentRecord), command: clone(command), request: clone(payload) }) !== true) fail('unauthorized', 'command actor is not authorized');
 
       // A receipt is returned only after re-authenticating and checking current
       // entity visibility/ownership and, for workflows, current participants.
@@ -369,7 +377,20 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       }
       const state = { entityId: currentRecord.entityId, entityType: currentRecord.typeId, revision: currentRecord.revision, data: currentRecord.data, ...(workflowCtx ? { workflow: { workflowId: workflowCtx.state.workflowId, state: workflowCtx.state.state, stateData: workflowCtx.state.stateData, continuationId: workflowCtx.state.continuationId } } : {}) };
       const immutableResolver = { ...resolver, resolve: input => resolver.resolve(freezeJson(input)) };
-      const result = executeResolver(immutableResolver, { operationId: request.operationId, campaignId: request.campaignId, principalId: request.principalId, logicalTime: now(), state, input: request.input, randomness: [] }, lock);
+      const randomness = [];
+      for (let step = 0; step < 4; step++) {
+        const requested = resolver.randomRequests?.({ principalId: currentMember.principalId, command: clone(command), state: clone(state), input: clone(request.input), randomness: clone(randomness) }) ?? [];
+        if (!Array.isArray(requested) || requested.length > 4) fail('invalid', 'resolver requested an invalid random transcript');
+        if (!requested.length) break;
+        const known = new Set(randomness.map(item => item.requestId));
+        for (const item of requested) {
+          if (!item || !ID.test(item.requestId) || known.has(item.requestId) || !['die', 'pool'].includes(item.kind) || !Number.isInteger(item.count) || item.count < 1 || item.count > 20 || !Number.isInteger(item.sides) || item.sides < 2 || item.sides > 100) fail('invalid', 'resolver random request exceeds host bounds');
+          known.add(item.requestId);
+          randomness.push({ ...clone(item), values: Array.from({ length: item.count }, () => drawRandom(1, item.sides + 1)), visibility: 'public' });
+        }
+      }
+      if (resolver.randomRequests?.({ principalId: currentMember.principalId, command: clone(command), state: clone(state), input: clone(request.input), randomness: clone(randomness) })?.length) fail('invalid', 'resolver random request budget was exhausted');
+      const result = executeResolver(immutableResolver, { operationId: request.operationId, campaignId: request.campaignId, principalId: request.principalId, logicalTime: now(), state, input: request.input, randomness }, lock);
       const output = result.transcript;
       for (const effect of output.effects) {
         const handler = effectHandlers.find(candidate => candidate.id === effect.handler && command.effects.some(ref => refKey(ref) === refKey(candidate)));
@@ -407,11 +428,11 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
         workflowResult = { workflowId: workflowCtx.state.workflowId, revision, state: nextState.stateId, continuationId, status };
       if (failureAt === 'after-workflow-transition' && workflowResult) fail('injected', 'failure after workflow transition');
       }
-      const outcomes = visibleOutcomes(resultData, currentMember, currentRecord); const response = { operationId: request.operationId, status: 'applied', entityId: request.entityId, revision: refreshed.row.revision, outcomes, ...(workflowResult ? { workflow: workflowResult } : {}) };
-      writeEvent(request, request.entityId, workflowResult ? 'command.workflow-transitioned' : 'command.applied', storedVisibility(currentRecord.visibility), { commandId: command.commandId, revision: response.revision, workflow: workflowResult ? { workflowId: workflowResult.workflowId, state: workflowResult.state, revision: workflowResult.revision } : undefined });
+      const outcomes = visibleOutcomes(resultData, currentMember, currentRecord); const response = { operationId: request.operationId, status: 'applied', entityId: request.entityId, revision: refreshed.row.revision, outcomes, ...(workflowResult ? { workflow: workflowResult } : {}), ...(currentMember.role === 'gm' ? { resolutionTranscript: output } : {}) };
+      writeEvent(request, request.entityId, workflowResult ? 'command.workflow-transitioned' : 'command.applied', storedVisibility(currentRecord.visibility), { commandId: command.commandId, revision: response.revision, workflow: workflowResult ? { workflowId: workflowResult.workflowId, state: workflowResult.state, revision: workflowResult.revision } : undefined, outcomes: resultData.filter(item => item.visibility === 'public'), transcriptDigest: output.digest, randomness: output.randomness, decisions: output.decisions.filter(item => item.visibility === 'public') });
       if (failureAt === 'after-command-event') fail('injected', 'failure after command event');
       if (failureAt === 'after-command-effects' && effectProposal) fail('injected', 'failure after command effects');
-      const storedResponse = { ...response, allOutcomes: resultData };
+      const storedResponse = { ...response, allOutcomes: resultData, resolutionTranscript: output };
       db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(storedResponse), now());
       assertCurrentLock(request.campaignId, lock);
       if (failureAt === 'after-command-receipt') fail('injected', 'failure after command receipt');

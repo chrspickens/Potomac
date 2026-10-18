@@ -61,6 +61,7 @@ function ContributionBody({ contribution, entity, host }: { contribution: UiCont
 
 function NodeView({ node, contribution, entity, host }: { node: UiNode; contribution: UiContribution; entity: UiEntityProjection; host: UiHostContext }): ReactNode {
   if (!uiNodeIsVisible(node, entity.data)) return null;
+  if ((node.kind === 'command' || node.kind === 'form') && !host.allowedCommandIds.includes(node.commandId)) return null;
   if ((node.kind === 'command' || node.kind === 'form') && node.visibleWhenWorkflowState && currentWorkflow(contribution, entity, host, node.workflowTypeId ?? '')?.state !== node.visibleWhenWorkflowState) return null;
   if (node.kind === 'group') return <div className="v2-ui-group">{node.children.map(child => <NodeView key={child.id} node={child} contribution={contribution} entity={entity} host={host} />)}</div>;
   if (node.kind === 'section') return <section className="v2-ui-section" aria-label={node.label}>{node.label && <h3>{node.label}</h3>}{node.children.map(child => <NodeView key={child.id} node={child} contribution={contribution} entity={entity} host={host} />)}</section>;
