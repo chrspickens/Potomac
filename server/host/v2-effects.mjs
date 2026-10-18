@@ -96,6 +96,8 @@ export function createV2EffectKernel({ db, handlers, authenticate, authorize, va
   const handlerMap = new Map();
   for (const handler of handlers) {
     if (!handler || handlerMap.has(handler.id) || !ID.test(handler.id) || !DIGEST.test(handler.digest) || handler.atomic !== true || handler.conflict !== 'reject-overlap' || !VISIBILITY.has(handler.targetVisibility || 'public') || !VISIBILITY.has(handler.eventVisibility) || typeof handler.eventKind !== 'string' || typeof handler.apply !== 'function') throw new Error('invalid_handler');
+    validateV2SchemaDefinition(handler.payloadSchema, `handler.${handler.id}.payloadSchema`);
+    validateV2SchemaDefinition(handler.eventSchema, `handler.${handler.id}.eventSchema`);
     handlerMap.set(handler.id, handler);
   }
   db.exec(V2_EFFECT_SCHEMA);
