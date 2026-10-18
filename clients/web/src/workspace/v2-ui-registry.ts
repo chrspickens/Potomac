@@ -6,7 +6,7 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const safeRef = (ref: UiCapabilityRef): boolean => Boolean(ref && NAMESPACED.test(ref.id) && SEMVER.test(ref.apiVersion) && SEMVER.test(ref.implementationVersion) && DIGEST.test(ref.digest));
 const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(value) ?? 'undefined';
 const sameRef = (left: UiCapabilityRef, right: UiCapabilityRef): boolean => left.id === right.id && left.apiVersion === right.apiVersion && left.implementationVersion === right.implementationVersion && left.digest === right.digest;
-const fail = (message: string): never => { throw new Error(`invalid_ui_contribution: ${message}`); };
+function fail(message: string): never { throw new Error(`invalid_ui_contribution: ${message}`); }
 type JsonObject = { [key: string]: JsonValue };
 const isJsonObject = (value: JsonValue): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
 
