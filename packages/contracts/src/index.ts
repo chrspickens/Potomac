@@ -4,7 +4,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 export type CapabilityId = string;
 export type SemVer = `${number}.${number}.${number}`;
 export type CapabilityDigest = `sha256:${string}`;
-export type CapabilityKind = "module" | "library" | "resolver" | "entity" | "ui";
+export type CapabilityKind = "module" | "library" | "resolver" | "entity" | "command" | "workflow" | "ui";
 export type CapabilityTrust = "bundled-trusted" | "declarative-untrusted" | "reviewed-handler";
 export type CapabilityContractRef = { id: CapabilityId; apiVersion: SemVer };
 export type CapabilityDependency = {
@@ -44,6 +44,7 @@ export type CapabilityLock = {
 export * from "./resolver.js";
 export * from "./effects.js";
 export * from "./reactions.js";
+export * from "./extensions.js";
 
 export type FieldDefinition = {
   path: string;

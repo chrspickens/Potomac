@@ -16,6 +16,13 @@ test("validates manifests, trust metadata and parallel implementations", () => {
   assert.throws(() => validateCapabilityManifest({ ...manifest("example.bad", "1.0.0"), trust: "unknown" }), /invalid_manifest/);
 });
 
+test("accepts separately typed entity, command and workflow capabilities", () => {
+  for (const kind of ["entity", "command", "workflow"]) {
+    const value = { ...manifest(`example.${kind}`, "1.0.0"), kind };
+    assert.equal(validateCapabilityManifest(value).kind, kind);
+  }
+});
+
 test("resolves deterministic exact locks and ignores missing optional dependencies", () => {
   const registry = new CapabilityRegistry();
   registry.register(manifest("example.root", "1.0.0", [{ id: "example.optional", apiRange: "^1.0.0", optional: true }]), verify);

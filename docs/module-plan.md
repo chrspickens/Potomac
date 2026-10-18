@@ -6,7 +6,7 @@
 
 ## Scope and guardrails
 
-This PR is documentation-only. Preserve V1 manifests/actions, exact campaign pins, host authorization and redaction, offline receipts/proposals, backup compatibility and historical archive QA. Do not add runtime behavior, GitHub issues, milestones or a new PR. V2 proposals must not execute untrusted module code; a Node worker is not a security sandbox.
+This plan tracks the V2 extension platform. Preserve V1 manifests/actions, exact campaign pins, host authorization and redaction, offline receipts/proposals, backup compatibility and historical archive QA. V2 proposals must not execute untrusted module code; a Node worker is not a security sandbox.
 
 ## Review result
 
@@ -27,7 +27,7 @@ Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md
 | ADR drafts | **Added in this review** | ADR-0019 through ADR-0021 record proposed exact locks, host execution boundary and authorized extension contributions. |
 | Registry implementation | Not started | Small PR 1 criteria in RFC: resolver/lock/conflict/digest/V1 tests. |
 | Resolver/host kernel | **Isolated evidence complete; production implementation not started** | PR #130 commit `f06307b` passes 9 focused tests for SQLite atomicity, rollback, hashes, action eligibility and continuation recovery. Production adapters and policies remain required. |
-| Extension data/UI plane | Not started | Small PRs 5–6: entities, commands, workflows, migrations, apps/sheets/bricks. |
+| Extension data plane (issue #136 slice) | Implemented in draft; production integration deferred | Versioned generic entity/command/workflow contracts, host SQLite kernel, atomic V2 effects/receipts/events, serialized continuation, starship proof and focused tests. UI, routes, migrations and archive wiring remain deferred. |
 | System probes and QA | Not started | Revised 5e-shaped, dice-pool Testbed, starship and third-module fixtures; historical archive/device QA remains separate. |
 
 ## Recommended implementation order
@@ -145,3 +145,13 @@ The reaction contract adds versioned window identity, parent operation, campaign
 The generic ordering policy is `priorityThenSubmission` (priority descending, then transaction sequence, then principal ID) or `simultaneous` (all eligible responders, or an explicit decline, before completion). No Revised 5e rule is encoded in Core. Focused tests demonstrate a defensive d20-shaped reaction and a contrasting dice-pool/narrative interruption using the same contract, plus restart restoration, multiple responders, ties, decline, expiry, unauthorized responder/GM, idempotent changed-payload retry rejection, hidden views and injected rollback. Production HTTP/offline/backup wiring, durable effect-kernel adapter registration, reaction scheduling, publisher signing, UI, and third-party executable isolation remain deferred.
 
 Hardening evidence: projection requests require an authenticated principal and host authorization; callers cannot select a role string. Simultaneous decline records only that responder and leaves other required responders pending. A responder may submit only one decision; a different operation ID for the same responder is rejected, while an exact retry returns the same projection. Expiry is an authorized, host-clock operation and is idempotent after restart. Completion receives decisions only; the host-only effect adapter is the sole persistence/transaction callback and is invoked inside the existing transaction boundary, with no nested transaction or module database handle. The remaining production gate is wiring this adapter to real resolver/effect dispatch and host routes without changing V1/offline/archive behavior.
+
+## Issue #136 versioned extension data plane
+
+This implementation slice adds generic, namespaced and versioned descriptors for extension entities, commands and workflows in `packages/contracts/src/extensions.ts`, plus a host-owned SQLite kernel in `server/host/v2-extensions.mjs`. Every stored entity records its schema version, migration identity, exact capability reference/digest, owner and visibility, and host-managed revision. A missing or changed capability fails closed. Schemas are validated on create, reads and effect updates.
+
+Commands require an authenticated campaign principal, declared role/ownership permission and expected revisions. The host validates typed input, invokes the registered V2 resolver with cloned state/input and host-supplied context, validates deterministic outcomes and proposals, then uses the existing V2 semantic effect kernel. Effect target authorization and schema/revision validation are rechecked inside the same `BEGIN IMMEDIATE` transaction as state changes, audit events and idempotent receipts. The resolver and effect handler receive no database or transaction handle. Workflow states and transitions are declared and versioned; continuation IDs are host-validated; participant permissions, expiry and cancellation are explicit. Transition state, accompanying effects/events and receipt share one transaction. A serialized snapshot API demonstrates backup-relevant data shape but does not alter the V1 archive format.
+
+`examples/example.starship/v2/extensions.mjs` demonstrates a reactor entity, power-allocation command and multi-step engineering workflow using those generic APIs; Core contains no game-specific behavior. The example is deliberately outside the V1 `modules/` loader. Focused evidence is in `server/host/v2-extensions.test.mjs`, alongside V2 resolver/effect/reaction/registry regression suites. This is a trusted, local implementation proof only, not an executable third-party sandbox.
+
+**Not completed by this issue slice:** production campaign-lock persistence and install lifecycle; migration execution/rollback; V1 HTTP or offline route integration; V1 backup/archive format changes or production V2 restore; UI contributions; publisher signing/trust roots; arbitrary module SQL; third-party code isolation; power-loss/filesystem and multi-process durability guarantees. Existing V1 routes, offline behavior and archive formats are intentionally unchanged. Keep the production-readiness gates above open until these are separately designed and tested.

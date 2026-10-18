@@ -66,7 +66,7 @@ export function validateCapabilityManifest(value: unknown): CapabilityManifest {
       !manifest.api || manifest.api.id !== manifest.id || !SEMVER.test(manifest.api.apiVersion) ||
       typeof manifest.implementationVersion !== "string" || !SEMVER.test(manifest.implementationVersion) ||
       typeof manifest.digest !== "string" || !DIGEST.test(manifest.digest) ||
-      !["module", "library", "resolver", "entity", "ui"].includes(manifest.kind ?? "") ||
+      !["module", "library", "resolver", "entity", "command", "workflow", "ui"].includes(manifest.kind ?? "") ||
       !["bundled-trusted", "declarative-untrusted", "reviewed-handler"].includes(manifest.trust ?? "") ||
       !Array.isArray(manifest.provides) || !Array.isArray(manifest.requires)) throw new Error("invalid_manifest");
   const providedIds = new Set<string>();
