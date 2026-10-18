@@ -1,0 +1,15 @@
+{
+  "contractVersion": 1,
+  "contributionId": "example.starter.scene-view",
+  "contributionVersion": "1.0.0",
+  "kind": "panel",
+  "entityTypeId": "example.starter.scene",
+  "entitySchemaVersion": 1,
+  "capability": { "id": "example.starter", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:db2e0fe0e7fd845d8da8e0cc343e108873951204041c07b9f15c0216c85f5bc6" },
+  "entityCapability": { "id": "example.starter.scene", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:db2e0fe0e7fd845d8da8e0cc343e108873951204041c07b9f15c0216c85f5bc6" },
+  "entitySchema": { "type": "object", "properties": { "progress": { "type": "integer", "minimum": 0, "maximum": 3 } }, "required": ["progress"], "additionalProperties": false },
+  "commands": [{ "commandId": "example.starter.advance", "capability": { "id": "example.starter.advance", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:db2e0fe0e7fd845d8da8e0cc343e108873951204041c07b9f15c0216c85f5bc6" }, "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } }],
+  "workflows": [],
+  "slots": [],
+  "nodes": [{ "kind": "section", "id": "example.starter.progress-section", "label": "Scene progress", "children": [{ "kind": "display", "id": "example.starter.progress", "path": "progress", "label": "Progress" }, { "kind": "command", "id": "example.starter.advance-control", "commandId": "example.starter.advance", "label": "Advance scene" }] }]
+}

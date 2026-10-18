@@ -594,11 +594,12 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         };
         try {
           if (req.method === 'GET' && url.pathname === '/api/v2/session') return json(res, 200, { principalId: auth.principalId, role: auth.role });
+          if (req.method === 'GET' && url.pathname === '/api/v2/modules') return json(res, 200, { modules: v2Api.listModules(auth.principalId, proof) });
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'GET') return json(res, 200, v2Api.getLock(auth.principalId, proof));
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'PUT') {
             const body = await readBody(req);
-            if (Object.keys(body).some(key => key !== 'moduleId') || body.moduleId !== undefined && typeof body.moduleId !== 'string') return json(res, 400, { error: 'Only a bundled module ID may be selected', reasonCode: 'invalid' });
-            const result = v2Api.pinLock(auth.principalId, proof, body.moduleId || 'example.starship.system');
+            if (Object.keys(body).some(key => key !== 'moduleId') || typeof body.moduleId !== 'string' || !body.moduleId) return json(res, 400, { error: 'Select an available trusted module ID', reasonCode: 'invalid' });
+            const result = v2Api.pinLock(auth.principalId, proof, body.moduleId);
             if (!result.alreadyPinned) notify();
             return json(res, result.alreadyPinned ? 200 : 201, result);
           }
@@ -606,6 +607,11 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
             if (typeof headerLockDigest !== 'string') return json(res, 428, { error: 'Current X-V2-Lock-Digest is required', reasonCode: 'unsupported' });
             const typeId = url.searchParams.get('typeId');
             return json(res, 200, v2Api.list(campaignId, typeId || undefined, auth.principalId, headerLockDigest, proof));
+          }
+          const commandAccessMatch = url.pathname.match(/^\/api\/v2\/entities\/([^/]+)\/commands$/);
+          if (req.method === 'GET' && commandAccessMatch) {
+            if (typeof headerLockDigest !== 'string') return json(res, 428, { error: 'Current X-V2-Lock-Digest is required', reasonCode: 'unsupported' });
+            return json(res, 200, { commandIds: v2Api.availableCommands(campaignId, decodeURIComponent(commandAccessMatch[1]), auth.principalId, headerLockDigest, proof) });
           }
           if (req.method === 'GET' && url.pathname === '/api/v2/events') return json(res, 200, v2Api.events(campaignId, auth.principalId, proof));
           const reactionPath = url.pathname.match(/^\/api\/v2\/reactions(?:\/([^/]+)(?:\/(decisions|decline|expire|adjudicate))?)?$/);

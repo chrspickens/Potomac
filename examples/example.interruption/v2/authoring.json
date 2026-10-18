@@ -1,0 +1,9 @@
+{
+  "digestFiles": ["manifest.json", "capabilities.json", "extensions.mjs"],
+  "contentDigest": "sha256:5e837d4681379f65edf0d68c82b86715d2ddc99de23670a8979ff874b9f9d4dd",
+  "capabilitiesFile": "capabilities.json",
+  "legacyBundledReferences": true,
+  "hostDigestFiles": ["extensions.mjs"],
+  "hostDigest": "sha256:94035283c385ce865c4ad15e20018646a64c0df635b8d3f2db884799df96a338",
+  "uiFiles": []
+}

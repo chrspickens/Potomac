@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "modules": [
+    { "id": "example.starship.system", "version": "1.0.0", "source": "../../examples/example.starship/v2", "entry": "extensions.mjs", "authoring": true },
+    { "id": "example.revised5e", "version": "1.1.0", "source": "../../examples/example.revised5e/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "revised5eAuthorizeIntent" },
+    { "id": "example.interruption", "version": "1.0.0", "source": "../../examples/example.interruption/v2", "entry": "extensions.mjs", "authoring": true },
+    { "id": "example.dicepool", "version": "1.0.0", "source": "../../examples/example.dicepool/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "dicepoolAuthorizeIntent", "reactionPrincipalExport": "dicepoolReactionPrincipal" },
+    { "id": "example.starter", "version": "1.0.0", "source": "../../examples/module-starter/v2", "entry": "extensions.mjs", "authoring": true }
+  ]
+}
