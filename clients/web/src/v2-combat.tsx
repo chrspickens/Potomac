@@ -13,8 +13,10 @@ const ENROLLMENT_KEY = 'potomac.v2.revised5e.enrollment';
 type Enrollment = { playerA?: { memberId: string; credential: string }; playerB?: { memberId: string; credential: string } };
 type V2Lock = { lock: CapabilityLock; digest: string };
 type V2Event = { eventId: string; operationId: string; entityId: string; kind: string; visibility: string; payload: Record<string, unknown> };
-type Actor = { id: string; name: string; kind: string; abilityModifiers: Record<string, number>; proficiencyBonus: number; armorClass: number; maximumHitPoints: number; currentHitPoints: number; initiativeModifier: number; weapon: { name: string; damageDie: number; damageType: string; proficient: boolean } };
-type Encounter = UiEntityProjection & { revision: number; data: { title: string; status: string; actors: Actor[]; initiativeOrder: string[]; initiativeRolls: number[]; currentTurnIndex: number; round: number; combatLog: Array<Record<string, unknown>> } };
+type Position = { x: number; y: number };
+type Actor = { id: string; name: string; kind: string; position: Position; speed: number; movementRemaining: number; meleeReach: number; reactionAvailable: boolean; disengaged: boolean; abilityModifiers: Record<string, number>; proficiencyBonus: number; armorClass: number; maximumHitPoints: number; currentHitPoints: number; initiativeModifier: number; weapon: { name: string; damageDie: number; damageType: string; proficient: boolean } };
+type V2Reaction = { windowId: string; expiresAt: string; availableActions: Array<{ actionId: string }>; permissions: { submit: boolean; expire: boolean; adjudicate: boolean } };
+type Encounter = UiEntityProjection & { revision: number; data: { title: string; status: string; grid: { width: number; height: number; squareFeet: number; blocked: Position[] }; actors: Actor[]; initiativeOrder: string[]; initiativeRolls: number[]; currentTurnIndex: number; round: number; actionsUsed: string[]; combatLog: Array<Record<string, unknown>>; movementLog: Array<Record<string, unknown>> } };
 function makeContribution(): UiContribution {
   const source = contributionSource as unknown as { contractVersion: 1; contributionId: string; contributionVersion: '1.0.0'; kind: UiContribution['kind']; slots: string[]; workflows: []; nodes: UiContribution['nodes'] };
   return {
@@ -24,14 +26,17 @@ function makeContribution(): UiContribution {
     entityCapability: revised5eEncounter.capability,
     entitySchemaVersion: revised5eEncounter.schemaVersion,
     entitySchema: revised5eEncounter.schema,
-    commands: revised5eCommands.map(command => ({ commandId: command.commandId, capability: revised5eRefs.commands, inputSchema: command.inputSchema })),
+    commands: revised5eCommands.filter(command => command.commandId !== 'example.revised5e.move').map(command => ({ commandId: command.commandId, capability: revised5eRefs.commands, inputSchema: command.inputSchema })),
   };
 }
 
 const contribution = makeContribution();
+// Movement's array-of-grid-cells input is collected by the module's tactical-grid control below,
+// not by the generic scalar form renderer. Keep every scalar contribution command declarative.
+const declarativeCommands = revised5eCommands.filter(command => command.commandId !== 'example.revised5e.move');
 const catalog: UiDescriptorCatalog = {
   entities: [{ typeId: revised5eEncounter.typeId, schemaVersion: revised5eEncounter.schemaVersion, capability: revised5eEncounter.capability, schema: revised5eEncounter.schema }],
-  commands: revised5eCommands.map((command: ExtensionCommandDescriptor) => ({ commandId: command.commandId, entityTypeId: command.entityTypeId, capability: command.capability, inputSchema: command.inputSchema })),
+  commands: declarativeCommands.map((command: ExtensionCommandDescriptor) => ({ commandId: command.commandId, entityTypeId: command.entityTypeId, capability: command.capability, inputSchema: command.inputSchema })),
   workflows: [],
 };
 
@@ -42,6 +47,8 @@ export function V2CombatApp() {
   const [lock, setLock] = useState<V2Lock>();
   const [encounter, setEncounter] = useState<Encounter>();
   const [events, setEvents] = useState<V2Event[]>([]);
+  const [reactions, setReactions] = useState<V2Reaction[]>([]);
+  const [selectedPath, setSelectedPath] = useState<Position[]>([]);
   const [enrollment, setEnrollment] = useState<Enrollment>(() => { try { return JSON.parse(sessionStorage.getItem(ENROLLMENT_KEY) ?? '{}') as Enrollment; } catch { return {}; } });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -67,13 +74,15 @@ export function V2CombatApp() {
   const refresh = useCallback(async () => {
     if (!connected || !lock || lock.lock.rootModule.id !== MODULE_ID) return;
     try {
-      const [entities, eventRows] = await Promise.all([
+      const [entities, eventRows, reactionRows] = await Promise.all([
         request(`/api/v2/entities?typeId=${encodeURIComponent(revised5eEncounter.typeId)}`),
         request('/api/v2/events'),
+        request('/api/v2/reactions'),
       ]);
       const found = (entities as unknown as ExtensionEntityRecord[]).find(item => item.entityId === ENCOUNTER_ID);
       setEncounter(found as Encounter | undefined);
       setEvents((eventRows as unknown as V2Event[]).filter(item => item.entityId === ENCOUNTER_ID));
+      setReactions(reactionRows as unknown as V2Reaction[]);
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not refresh the authorized encounter.'); }
   }, [connected, lock, request]);
 
@@ -122,21 +131,55 @@ export function V2CombatApp() {
     setBusy(true); setMessage('');
     try {
       const actors = [
-        { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: enrollment.playerA.memberId, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
-        { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: enrollment.playerB.memberId, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
-        { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+        { id: 'player-a', name: 'Mira Vale', kind: 'player', ownerPrincipalId: enrollment.playerA.memberId, position: { x: 2, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 3, dexterity: 1 }, proficiencyBonus: 2, armorClass: 14, maximumHitPoints: 12, currentHitPoints: 12, initiativeModifier: 1, weapon: { name: 'Shortsword', damageDie: 6, damageType: 'piercing', attackAbility: 'strength', proficient: true } },
+        { id: 'player-b', name: 'Oren Pike', kind: 'player', ownerPrincipalId: enrollment.playerB.memberId, position: { x: 1, y: 4 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 1, dexterity: 2 }, proficiencyBonus: 2, armorClass: 15, maximumHitPoints: 10, currentHitPoints: 10, initiativeModifier: 2, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
+        { id: 'enemy', name: 'Mire Warden', kind: 'enemy', ownerPrincipalId: 'gm', position: { x: 3, y: 2 }, speed: 30, movementRemaining: 30, meleeReach: 5, reactionAvailable: true, disengaged: false, abilityModifiers: { strength: 2, dexterity: 0 }, proficiencyBonus: 2, armorClass: 12, maximumHitPoints: 22, currentHitPoints: 22, initiativeModifier: 0, weapon: { name: 'Club', damageDie: 4, damageType: 'bludgeoning', attackAbility: 'strength', proficient: true } },
       ];
-      await request('/api/v2/entities', { method: 'POST', body: JSON.stringify({ operationId: 'revised5e-setup-create-v1', entityId: ENCOUNTER_ID, typeId: revised5eEncounter.typeId, visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [] } }) });
+      await request('/api/v2/entities', { method: 'POST', body: JSON.stringify({ operationId: 'revised5e-setup-create-v1', entityId: ENCOUNTER_ID, typeId: revised5eEncounter.typeId, visibility: 'public', data: { title: 'Mire Crossing', status: 'setup', grid: { width: 8, height: 5, squareFeet: 5, blocked: [{ x: 4, y: 1 }, { x: 4, y: 2 }, { x: 4, y: 3 }] }, actors, initiativeOrder: [], initiativeRolls: [], currentTurnIndex: 0, round: 0, actionsUsed: [], combatLog: [], movementLog: [] } }) });
       for (const member of [enrollment.playerA, enrollment.playerB]) await request(`/api/v2/entities/${ENCOUNTER_ID}/grants`, { method: 'POST', body: JSON.stringify({ memberId: member.memberId, permissions: ['act'] }) });
       await refresh(); setMessage('Encounter created and both players received read and act grants. GM: roll initiative from the module contribution below.');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Encounter setup failed.'); }
     finally { setBusy(false); }
   };
 
+  const currentActor = encounter ? encounter.data.actors.find(actor => actor.id === encounter.data.initiativeOrder[encounter.data.currentTurnIndex]) : undefined;
+  const appendSquare = (square: Position) => {
+    if (!currentActor || !encounter || busy) return;
+    const from = selectedPath.at(-1) || currentActor.position;
+    if (Math.abs(square.x - from.x) + Math.abs(square.y - from.y) !== 1) { setMessage('Choose one orthogonally adjacent square at a time.'); return; }
+    setSelectedPath(path => path.length >= 8 ? path : [...path, square]);
+  };
+  const submitMove = async () => {
+    if (!currentActor || !encounter || !selectedPath.length) return;
+    setBusy(true); setMessage('Submitting movement path to the host…');
+    try {
+      const operationId = crypto.randomUUID(); setLastOperation(operationId);
+      const result = await request('/api/v2/commands', { method: 'POST', body: JSON.stringify({ operationId, commandId: 'example.revised5e.move', entityId: encounter.entityId, expectedRevision: encounter.revision, input: { actorId: currentActor.id, path: selectedPath } }) });
+      setSelectedPath([]); setMessage(result.status === 'pending' ? 'Movement paused at the opportunity-attack trigger; waiting for the authorized reaction.' : 'Movement committed by the host.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'The host rejected this path.'); }
+    finally { setBusy(false); await refresh(); }
+  };
+  const react = async (reaction: V2Reaction, decision: 'attack' | 'decline') => {
+    if (busy) return;
+    const actionId = reaction.availableActions[0]?.actionId;
+    if (decision === 'attack' && !actionId) { setMessage('No authorized opportunity attack action is available.'); return; }
+    const key = `v2-reaction:${reaction.windowId}:${decision}`;
+    let operationId = sessionStorage.getItem(key);
+    if (!operationId) { operationId = crypto.randomUUID(); sessionStorage.setItem(key, operationId); }
+    setBusy(true); setMessage(decision === 'attack' ? 'Resolving opportunity attack on the host…' : 'Declining opportunity attack…');
+    try {
+      const route = decision === 'attack' ? 'decisions' : 'decline';
+      const body = { operationId, actionId: actionId || 'example.revised5e.opportunity-attack', input: {}, ...(decision === 'attack' ? { decision: 'accept' } : {}) };
+      const result = await request(`/api/v2/reactions/${encodeURIComponent(reaction.windowId)}/${route}`, { method: 'POST', body: JSON.stringify(body) });
+      sessionStorage.removeItem(key); setMessage(`Host completed the reaction: ${String(result.status)}.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'The host rejected the reaction.'); }
+    finally { setBusy(false); await refresh(); }
+  };
+
   const host: UiHostContext | undefined = lock && encounter ? {
     lock: lock.lock,
     principalId: 'authenticated-browser-session',
-    allowedCommandIds: isGm ? revised5eCommands.map(command => command.commandId) : ['example.revised5e.attack'],
+    allowedCommandIds: isGm ? revised5eCommands.map(command => command.commandId) : ['example.revised5e.attack', 'example.revised5e.disengage', 'example.revised5e.end-turn'],
     submitCommand: async input => {
       setBusy(true); setMessage(''); setLastOperation(input.operationId);
       try {
@@ -163,9 +206,15 @@ export function V2CombatApp() {
     </section>}
     {encounter && registry && host && <>
       <section className="v2-turn-card"><span className={`v2-status v2-status-${encounter.data.status}`}>{encounter.data.status}</span><div><strong>{encounter.data.status === 'active' ? `Round ${encounter.data.round} · ${encounter.data.actors.find(actor => actor.id === encounter.data.initiativeOrder[encounter.data.currentTurnIndex])?.name ?? 'Turn pending'}` : encounter.data.status === 'setup' ? 'Initiative has not been rolled' : 'Encounter complete'}</strong><small>{encounter.data.initiativeOrder.map((id, index) => `${index + 1}. ${encounter.data.actors.find(actor => actor.id === id)?.name}`).join('  ·  ')}</small></div></section>
-      <section className="v2-actor-grid" aria-label="Authorized combatants">{encounter.data.actors.map(actor => <article className={`v2-actor-card ${encounter.data.initiativeOrder[encounter.data.currentTurnIndex] === actor.id && encounter.data.status === 'active' ? 'is-current' : ''}`} key={actor.id}><div><span>{actor.kind === 'enemy' ? 'ENEMY' : 'PLAYER CHARACTER'}</span><h2>{actor.name}</h2></div><p className="v2-hp">{actor.currentHitPoints} <small>/ {actor.maximumHitPoints} HP</small></p><dl><div><dt>AC</dt><dd>{actor.armorClass}</dd></div><div><dt>Initiative</dt><dd>{actor.initiativeModifier >= 0 ? '+' : ''}{actor.initiativeModifier}</dd></div><div><dt>Proficiency</dt><dd>+{actor.proficiencyBonus}</dd></div><div><dt>Weapon</dt><dd>{actor.weapon.name} · 1d{actor.weapon.damageDie} {actor.weapon.damageType}</dd></div></dl>{actor.currentHitPoints === 0 && <strong className="v2-defeated">Defeated</strong>}</article>)}</section>
+      <section className="v2-actor-grid" aria-label="Authorized combatants">{encounter.data.actors.map(actor => <article data-actor-id={actor.id} className={`v2-actor-card ${encounter.data.initiativeOrder[encounter.data.currentTurnIndex] === actor.id && encounter.data.status === 'active' ? 'is-current' : ''}`} key={actor.id}><div><span>{actor.kind === 'enemy' ? 'ENEMY' : 'PLAYER CHARACTER'}</span><h2>{actor.name}</h2></div><p className="v2-hp">{actor.currentHitPoints} <small>/ {actor.maximumHitPoints} HP</small></p><dl><div><dt>AC</dt><dd>{actor.armorClass}</dd></div><div><dt>Initiative</dt><dd>{actor.initiativeModifier >= 0 ? '+' : ''}{actor.initiativeModifier}</dd></div><div><dt>Proficiency</dt><dd>+{actor.proficiencyBonus}</dd></div><div><dt>Weapon</dt><dd>{actor.weapon.name} · 1d{actor.weapon.damageDie} {actor.weapon.damageType}</dd></div><div><dt>Position</dt><dd>{actor.position.x}, {actor.position.y}</dd></div><div><dt>Speed left</dt><dd>{actor.movementRemaining} ft</dd></div></dl>{actor.currentHitPoints === 0 && <strong className="v2-defeated">Defeated</strong>}</article>)}</section>
+      <section className="v2-tactical" aria-labelledby="v2-grid-title"><h2 id="v2-grid-title">Tactical grid</h2><p>Each square is 5 feet. Select one orthogonal square at a time; the host validates every segment, occupancy and movement remaining.</p><p>Current mover: <strong>{currentActor?.name || 'None'}</strong> · {currentActor?.movementRemaining ?? 0} feet remaining · {currentActor?.disengaged ? 'Disengaged' : 'Opportunity attacks may apply'}</p>
+        <div className="v2-grid" role="group" aria-label="Encounter movement grid" style={{ gridTemplateColumns: `repeat(${encounter.data.grid.width}, minmax(38px, 1fr))` }}>{Array.from({ length: encounter.data.grid.width * encounter.data.grid.height }, (_, index) => { const square = { x: index % encounter.data.grid.width, y: Math.floor(index / encounter.data.grid.width) }; const occupant = encounter.data.actors.find(actor => actor.position.x === square.x && actor.position.y === square.y && actor.currentHitPoints > 0); const blocked = encounter.data.grid.blocked.some(item => item.x === square.x && item.y === square.y); const selected = selectedPath.some(item => item.x === square.x && item.y === square.y); return <button key={`${square.x},${square.y}`} className={`v2-grid-cell${blocked ? ' is-blocked' : ''}${occupant ? ' is-occupied' : ''}${selected ? ' is-selected' : ''}`} type="button" disabled={busy || blocked || Boolean(occupant) || !currentActor || currentActor.movementRemaining < 5 || encounter.data.status !== 'active'} aria-label={`Square ${square.x}, ${square.y}${blocked ? ', blocked' : occupant ? `, occupied by ${occupant.name}` : ''}`} onClick={() => appendSquare(square)}>{blocked ? '■' : occupant ? occupant.name.split(' ').map(word => word[0]).join('') : selected ? '·' : `${square.x},${square.y}`}</button>; })}</div>
+        <p>Selected path: <output aria-live="polite">{selectedPath.map(item => `(${item.x},${item.y})`).join(' → ') || 'none'}</output></p><div className="v2-grid-actions"><button type="button" disabled={busy || !selectedPath.length || !currentActor} onClick={() => void submitMove()}>Move along selected path</button><button type="button" disabled={busy || !selectedPath.length} onClick={() => setSelectedPath([])}>Clear path</button></div>
+      </section>
+      {isGm && reactions.length > 0 && <section className="v2-reactions" aria-labelledby="v2-reactions-title"><h2 id="v2-reactions-title">Pending opportunity attacks</h2>{reactions.map(reaction => <article key={reaction.windowId} aria-label={`Pending reaction ${reaction.windowId}`}><p>Movement is suspended at the reach boundary until this reaction is resolved. Expires {new Date(reaction.expiresAt).toLocaleString()}.</p><div className="v2-grid-actions"><button type="button" disabled={busy || !reaction.permissions.submit && !reaction.permissions.adjudicate} onClick={() => void react(reaction, 'attack')}>Opportunity Attack</button><button type="button" disabled={busy || !reaction.permissions.submit && !reaction.permissions.adjudicate} onClick={() => void react(reaction, 'decline')}>Decline opportunity attack</button></div></article>)}</section>}
       <section className="v2-commands"><h2>Module actions</h2><V2UiContributionView experimentalEnabled registry={registry} contributionId={contribution.contributionId} entity={encounter} host={host} /></section>
-      <section className="v2-log"><h2>Combat log</h2>{encounter.data.combatLog.length ? <ol>{encounter.data.combatLog.slice().reverse().map((entry, index) => <li key={`${String(entry.actorId)}-${String(entry.round)}-${index}`}><strong>{String(entry.kind).replaceAll('.', ' ')}</strong><span>Round {String(entry.round)} · {String(entry.actorName)} {entry.kind === 'initiative' ? 'initiative' : 'attacks'}{entry.kind === 'initiative' ? '' : ` ${String(entry.targetName)}`}</span>{entry.kind === 'initiative' ? <small>d20 {String(entry.d20)} + modifier = {String(entry.attackTotal)}</small> : <small>d20 {String(entry.d20)} + attack modifier = {String(entry.attackTotal)} vs AC {String(entry.armorClass)}{Number(entry.damage) > 0 ? ` · damage ${Array.isArray(entry.damageRolls) ? entry.damageRolls.join(' + ') : ''} + ${String(entry.damageModifier)} = ${String(entry.damage)} · ${String(entry.remainingHitPoints)} HP remains` : ` · ${String(entry.damage ?? 0)} damage`}{entry.defeated ? ' · defeated' : ''}</small>}</li>)}</ol> : <p>No committed actions yet.</p>}</section>
+      {encounter.data.movementLog.length > 0 && <section className="v2-log"><h2>Movement log</h2><ol>{encounter.data.movementLog.slice().reverse().map((entry, index) => <li key={`${String(entry.actorId)}-${index}`}><strong>{String(entry.actorName)} moved</strong><span>({String((entry.from as Position).x)},{String((entry.from as Position).y)}) → ({String((entry.to as Position).x)},{String((entry.to as Position).y)}) · spent {String(entry.feetSpent)} ft · {String(entry.remaining)} ft remains{entry.stoppedByDefeat ? ' · stopped by defeat' : ''}</span></li>)}</ol></section>}
+      <section className="v2-log"><h2>Combat log</h2>{encounter.data.combatLog.length ? <ol>{encounter.data.combatLog.slice().reverse().map((entry, index) => <li key={`${String(entry.actorId)}-${String(entry.round)}-${index}`} data-combat-log-kind={String(entry.kind)}><strong>{String(entry.kind).replaceAll('.', ' ')}</strong><span>Round {String(entry.round)} · {String(entry.actorName)} {entry.kind === 'initiative' ? 'initiative' : 'attacks'}{entry.kind === 'initiative' ? '' : ` ${String(entry.targetName)}`}</span>{entry.kind === 'initiative' ? <small>d20 {String(entry.d20)} + modifier = {String(entry.attackTotal)}</small> : <small>d20 {String(entry.d20)} + attack modifier = {String(entry.attackTotal)} vs AC {String(entry.armorClass)}{Number(entry.damage) > 0 ? ` · damage ${Array.isArray(entry.damageRolls) ? entry.damageRolls.join(' + ') : ''} + ${String(entry.damageModifier)} = ${String(entry.damage)} · ${String(entry.remainingHitPoints)} HP remains` : ` · ${String(entry.damage ?? 0)} damage`}{entry.defeated ? ' · defeated' : ''}</small>}</li>)}</ol> : <p>No committed actions yet.</p>}</section>
       <section className="v2-audit"><h2>Host random audit</h2>{events.filter(event => Array.isArray(event.payload.randomness) && event.payload.randomness.length > 0).map(event => <article key={event.eventId}><small>Operation {event.operationId} · transcript {String(event.payload.transcriptDigest)}</small><div>{(event.payload.randomness as Array<{ requestId: string; sides: number; values: number[] }>).map(item => <span key={item.requestId}>{item.requestId}: d{item.sides} [{item.values.join(', ')}]</span>)}</div></article>)}{!events.some(event => Array.isArray(event.payload.randomness) && event.payload.randomness.length > 0) && <p>Host-supplied rolls will appear here after initiative or an attack.</p>}</section>
       {isGm && <details className="v2-gm-setup"><summary>GM setup credentials</summary><div>{(['playerA', 'playerB'] as const).map(slot => enrollment[slot] && <p key={slot}>{slot}: <output>{enrollment[slot]!.credential}</output></p>)}</div></details>}
       <output className="v2-last-operation" data-last-operation-id={lastOperation} aria-live="polite">{lastOperation ? `Last operation ${lastOperation}` : ''}</output>

@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createHost } from '../server/host/index.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const chromePath = [process.env.POTOMAC_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean).find(existsSync);
@@ -14,6 +15,9 @@ const scratch = await mkdtemp(join(tmpdir(), 'potomac-revised5e-browser-'));
 const hostPort = await freePort(), webPort = await freePort(), debugPort = await freePort();
 const children = [];
 let socket, sequence = 0;
+let hostInstance;
+const testDice = [20, 1, 1, 20, 4, 4, 20, 6, 6];
+let diceIndex = 0;
 const pending = new Map(), sessions = {};
 async function freePort() {
   const server = createServer();
@@ -43,11 +47,15 @@ async function evaluate(name, expression) {
 async function wait(name, expression, label, timeout = 20000) {
   const until = Date.now() + timeout;
   while (Date.now() < until) { if (await evaluate(name, expression)) return; await delay(100); }
-  throw new Error(`Timed out waiting for ${label}: ${await evaluate(name, 'document.body.innerText.slice(0,1200)')}`);
+  throw new Error(`Timed out waiting for ${label}: ${await evaluate(name, 'JSON.stringify({url:location.href,text:document.body.innerText.slice(0,1200),html:document.body.innerHTML.slice(0,1600),errors:window.__browserErrors||[]})')}`);
 }
 async function click(name, label) {
   const found = await evaluate(name, `(() => { const node=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===${JSON.stringify(label)}); if(!node)return false; node.click(); return true; })()`);
   assert.equal(found, true, `button ${label} is present`);
+}
+async function clickSquare(name, label) {
+  const found = await evaluate(name, `(() => { const node=[...document.querySelectorAll('.v2-grid-cell')].find(item=>item.getAttribute('aria-label')===${JSON.stringify(label)}); if(!node||node.disabled)return false; node.click(); return true; })()`);
+  assert.equal(found, true, `grid cell ${label} is selectable`);
 }
 async function setInput(name, selector, value) {
   const result = await evaluate(name, `(() => { const el=document.querySelector(${JSON.stringify(selector)}); if(!el)return false; const setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),'value')?.set; setter?.call(el,${JSON.stringify(value)}); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
@@ -64,7 +72,7 @@ async function page(name) {
   const { targetId } = await call('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId });
   const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true }); sessions[name] = sessionId;
   await call('Page.enable', {}, sessionId); await call('Runtime.enable', {}, sessionId);
-  await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__v2Commands=[]; const original=window.fetch.bind(window); window.fetch=async (input,init={})=>{const response=await original(input,init); if(String(input).includes('/api/v2/commands')){let body;try{body=JSON.parse(init.body)}catch{};window.__v2Commands.push({body,response:await response.clone().json()})} return response}` }, sessionId);
+  await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__v2Commands=[];window.__browserErrors=[];window.addEventListener('error',event=>window.__browserErrors.push(String(event.error?.stack||event.message)));window.addEventListener('unhandledrejection',event=>window.__browserErrors.push(String(event.reason?.stack||event.reason)));const original=window.fetch.bind(window);window.fetch=async (input,init={})=>{const response=await original(input,init);if(String(input).includes('/api/v2/commands')){let body;try{body=JSON.parse(init.body)}catch{};window.__v2Commands.push({body,response:await response.clone().json()})}return response}` }, sessionId);
   await call('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-combat` }, sessionId);
   await wait(name, `Boolean(document.querySelector('#v2-credential'))`, `${name} login page`);
   return context.browserContextId;
@@ -78,12 +86,18 @@ async function hostReady() {
   while (Date.now() < until) { try { if ((await fetch(`http://127.0.0.1:${hostPort}/health`)).ok) return; } catch {} await delay(100); }
   throw new Error(`host failed to start: ${children.map(item => item.output).join('\n')}`);
 }
-function startHost() {
-  return start(process.execPath, [join(root, 'server/host/index.mjs')], { env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: join(scratch, 'encounter.sqlite'), POTOMAC_ENABLE_EXPERIMENTAL_V2: '1' } });
+async function startHost() {
+  hostInstance = createHost({ databasePath: join(scratch, 'encounter.sqlite'), campaignId: 'foundation-demo', enableV2Api: true, v2RandomInt: (min, max) => {
+    const value = testDice[diceIndex++];
+    if (!Number.isInteger(value) || value < min || value > max) throw new Error(`No deterministic test die available in ${min}..${max}`);
+    return value;
+  } });
+  await hostInstance.listen(hostPort);
+  return hostInstance;
 }
 
 try {
-  let host = startHost();
+  let host = await startHost();
   start(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(webPort), '--strictPort'], { cwd: join(root, 'clients/web'), env: { ...process.env, POTOMAC_WEB_HOST: `http://127.0.0.1:${hostPort}` } });
   await hostReady();
   for (let attempt = 0; attempt < 200; attempt++) { try { if ((await fetch(`http://127.0.0.1:${webPort}/v2-combat`)).ok) break; } catch {} await delay(100); }
@@ -109,6 +123,27 @@ try {
   await click('gm', 'Roll initiative and begin');
   await wait('gm', `document.querySelector('.v2-turn-card')?.textContent.includes('Round 1')`, 'initiative committed');
 
+  await wait('playerA', `document.querySelector('.v2-turn-card strong')?.textContent.includes('Mira Vale')`, 'Player A first turn');
+  await clickSquare('playerA', 'Square 1, 2');
+  await click('playerA', 'Move along selected path');
+  await wait('playerA', `document.querySelector('.v2-message')?.textContent.includes('paused at the opportunity-attack trigger')`, 'movement suspension receipt');
+  await wait('gm', `Boolean(document.querySelector('.v2-reactions button'))`, 'GM opportunity-attack decision controls');
+  const pendingWindowId = await evaluate('gm', `(async()=>{const credential=sessionStorage.getItem('potomac.v2.revised5e.credential');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+credential}}).then(r=>r.json());const result=await fetch('/api/v2/reactions',{headers:{authorization:'Bearer '+credential,'x-v2-lock-digest':lock.digest}}).then(r=>r.json());return result.reactions?.[0]?.windowId||result[0]?.windowId})()`);
+  assert.ok(pendingWindowId, 'host has a durable pending opportunity-attack window');
+  const positionBeforeReaction = await evaluate('playerA', `document.querySelectorAll('.v2-actor-card')[0]?.textContent.includes('Position') && document.querySelectorAll('.v2-actor-card')[0]?.innerText.includes('2, 2')`);
+  assert.ok(positionBeforeReaction, 'suspended movement has not applied the final position');
+  host.close(); await delay(300); host = await startHost(); await hostReady();
+  await click('gm', 'Refresh host state');
+  await wait('gm', `Boolean(document.querySelector('.v2-reactions button'))`, 'pending reaction recovered after host restart');
+  const unauthorizedReaction = await evaluate('playerB', `(async()=>{const credential=sessionStorage.getItem('potomac.v2.revised5e.credential');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+credential}}).then(r=>r.json());const response=await fetch('/api/v2/reactions/${pendingWindowId}/decisions',{method:'POST',headers:{authorization:'Bearer '+credential,'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify({operationId:'browser-forged-reaction',actionId:'example.revised5e.opportunity-attack',decision:'accept',input:{}})});return response.status})()`);
+  assert.ok([403,404].includes(unauthorizedReaction), `ineligible Player B is denied reaction submission (${unauthorizedReaction})`);
+  await click('gm', 'Opportunity Attack');
+  await wait('playerA', `Boolean(document.querySelector('[data-combat-log-kind="opportunity-critical"]'))`, 'Player A sees the resolved opportunity attack');
+  await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="opportunity-critical"]'))`, 'Player B sees the public opportunity-attack result');
+  await wait('playerB', `document.querySelector('.v2-actor-card')?.innerText.includes('2 / 12 HP')`, 'Player B sees host-rolled damage to Mira');
+  await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.textContent.includes('1, 2')`, 'movement resumes after the reaction');
+  await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('opportunity-d20: d20 [20]')`, 'public host dice audit is visible');
+
   let playerAAttacked = false;
   for (let turn = 0; turn < 3; turn++) {
     const current = await evaluate('gm', `document.querySelector('.v2-turn-card strong')?.textContent || ''`);
@@ -123,10 +158,10 @@ try {
   }
   assert.equal(playerAAttacked, true, 'initiative reaches Player A and its browser form submits the attack');
   // The loop above submits when the actor is A; wait for the host receipt and projected update.
-  await wait('playerA', `window.__v2Commands.length===1`, 'Player A browser command receipt');
-  const commandCapture = await evaluate('playerA', `window.__v2Commands[0]`);
+  await wait('playerA', `window.__v2Commands.some(item=>item.body.commandId==='example.revised5e.attack')`, 'Player A browser command receipt');
+  const commandCapture = await evaluate('playerA', `window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.attack')`);
   assert.equal(commandCapture.body.input.actorId, 'player-a');
-  await wait('playerB', `document.querySelector('.v2-log')?.innerText.includes('Mira Vale attacks')`, 'Player B sees Player A combat result');
+  await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="critical"]'))`, 'Player B sees Player A combat result');
   await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('attack: d20')`, 'Player B sees host-supplied attack roll audit');
   const enemyHpBeforeRestart = await evaluate('playerB', `([...document.querySelectorAll('.v2-actor-card')].find(card=>card.querySelector('h2')?.textContent==='Mire Warden')?.querySelector('.v2-hp')?.textContent||'').trim()`);
   assert.match(enemyHpBeforeRestart, /^([0-9]|1[0-9]|2[01]) \/ 22 HP$/, `Player B sees committed HP loss: ${enemyHpBeforeRestart}`);
@@ -134,23 +169,24 @@ try {
   const forbidden = await evaluate('playerB', `(async()=>{const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const entity=await fetch('/api/v2/entities/revised5e-demo-encounter',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'x-v2-lock-digest':lock.digest}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify({operationId:'browser-cross-player',commandId:'example.revised5e.attack',entityId:'revised5e-demo-encounter',expectedRevision:entity.revision,input:{actorId:'player-a',targetId:'enemy'}})});return response.status})()`);
   assert.equal(forbidden, 403, 'Player B cannot submit an attack as Player A');
   const beforeEvents = await evaluate('playerB', `(async()=>{const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());return fetch('/api/v2/events',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'x-v2-lock-digest':lock.digest}}).then(r=>r.json())})()`);
-  host.kill(); await delay(500); host = startHost(); await hostReady();
+  host.close(); await delay(300); host = await startHost(); await hostReady();
   await click('playerB', 'Refresh host state');
-  await wait('playerB', `document.querySelector('.v2-log')?.innerText.includes('Mira Vale attacks')`, 'recovered combat result');
+  await wait('playerB', `Boolean(document.querySelector('[data-combat-log-kind="critical"]'))`, 'recovered combat result');
   const enemyHpAfterRestart = await evaluate('playerB', `([...document.querySelectorAll('.v2-actor-card')].find(card=>card.querySelector('h2')?.textContent==='Mire Warden')?.querySelector('.v2-hp')?.textContent||'').trim()`);
   assert.equal(enemyHpAfterRestart, enemyHpBeforeRestart, 'enemy HP is unchanged after host restart');
-  const retry = await evaluate('playerA', `(async()=>{const capture=window.__v2Commands[0];const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(capture.body)});return {status:response.status,body:await response.json()}})()`);
+  const retry = await evaluate('playerA', `(async()=>{const capture=window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.attack');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());const response=await fetch('/api/v2/commands',{method:'POST',headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify(capture.body)});return {status:response.status,body:await response.json()}})()`);
   assert.equal(retry.status, 200, 'exact browser command retry succeeds after restart');
   assert.deepEqual(retry.body, commandCapture.response, 'restart retry returns the same committed receipt');
   const afterEvents = await evaluate('playerB', `(async()=>{const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential')}}).then(r=>r.json());return fetch('/api/v2/events',{headers:{authorization:'Bearer '+sessionStorage.getItem('potomac.v2.revised5e.credential'),'x-v2-lock-digest':lock.digest}}).then(r=>r.json())})()`);
-  assert.equal(afterEvents.filter(event => event.operationId === commandCapture.body.operationId).length, 1, 'one command event persisted exactly once');
+  assert.equal(afterEvents.filter(event => event.operationId === commandCapture.body.operationId).length, 1, 'one attack event persisted exactly once');
   assert.equal(beforeEvents.filter(event => event.operationId === commandCapture.body.operationId).length, 1);
-  console.log('Revised 5e real-host browser acceptance passed: independent GM/Player A/Player B contexts, authenticated setup and grants, initiative and Player A UI attack, Player B refreshed log/projection, cross-player denial, restart recovery and exact retry.');
+  console.log('Revised 5e real-host browser acceptance passed: independent GM/Player A/Player B contexts; deterministic test dice; suspended movement, restart, unauthorized reaction denial, GM opportunity attack, public audit/result and resumed position; attack loop, cross-player denial, restart recovery and exact retry.');
   await call('Target.disposeBrowserContext', { browserContextId: playerAContext });
   await call('Target.disposeBrowserContext', { browserContextId: playerBContext });
   await call('Target.disposeBrowserContext', { browserContextId: gmContext });
 } finally {
   try { if (socket?.readyState === WebSocket.OPEN) socket.close(); } catch {}
+  try { hostInstance?.close(); } catch {}
   for (const { child } of children) if (!child.killed) child.kill();
   await delay(200); await rm(scratch, { recursive: true, force: true });
 }

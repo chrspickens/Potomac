@@ -18,8 +18,9 @@ export type ReactionDecision = { principalId: string; actionId: string; input: J
 export type ReactionResumeContext = { continuation: ContinuationRequest; reaction: { status: "resolved" | "declined" | "expired"; decisions: ReactionDecision[] } };
 export type ResolutionInput = { operationId: string; campaignId: string; principalId: string; logicalTime: string; state: JsonValue; input: JsonValue; randomness: RandomInput[]; resume?: ReactionResumeContext };
 export type ResolverResumeInput = ResolutionInput & ReactionResumeContext;
+export type RandomRequestPlannerInput = Pick<ResolutionInput, "principalId" | "state" | "input" | "randomness"> & { command: JsonValue; resume?: ReactionResumeContext };
 export type ResolverOutput = { outcomes: SemanticOutcome[]; effects: ProposedEffect[]; decisions: ResolverDecision[]; continuation?: ContinuationRequest };
-export type Resolver = { ref: ResolverRef; resolve: (input: Readonly<ResolutionInput>) => ResolverOutput; resume?: (input: Readonly<ResolverResumeInput>) => ResolverOutput };
+export type Resolver = { ref: ResolverRef; randomRequests?: (input: Readonly<RandomRequestPlannerInput>) => RandomRequest[]; resolve: (input: Readonly<ResolutionInput>) => ResolverOutput; resume?: (input: Readonly<ResolverResumeInput>) => ResolverOutput };
 export type ResolutionTranscript = { transcriptVersion: 1; resolver: ResolverRef; input: { operationId: string; campaignId: string; principalId: string; logicalTime: string; state: JsonValue; input: JsonValue; resume?: ReactionResumeContext }; randomness: RandomInput[]; decisions: ResolverDecision[]; outcomes: SemanticOutcome[]; effects: ProposedEffect[]; continuation?: ContinuationRequest; digest: CapabilityDigest };
 export type PublicTranscript = Omit<ResolutionTranscript, "input" | "randomness" | "decisions" | "outcomes" | "effects" | "continuation"> & { input: { operationId: string; campaignId: string; logicalTime: string }; randomness: RandomInput[]; decisions: ResolverDecision[]; outcomes: SemanticOutcome[]; effects: ProposedEffect[]; continuation?: ContinuationRequest };
 export type TranscriptProjection = { role: "public" | "gm"; transcript: PublicTranscript };
