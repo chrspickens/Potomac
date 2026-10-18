@@ -97,7 +97,7 @@ try {
 
   const gmContext = await page('gm'); await connect('gm', 'local-gm');
   if (await evaluate('gm', `Boolean(document.querySelector('.v2-setup-card button')?.textContent.includes('Pin Revised'))`)) await click('gm', 'Pin Revised 5e V2 module');
-  await wait('gm', `Boolean(document.querySelector('.v2-setup-card'))`, 'GM setup card');
+  await wait('gm', `[...document.querySelectorAll('button')].some(item=>item.textContent.trim()==='Enroll Player A')`, 'GM enrollment controls');
   await click('gm', 'Enroll Player A'); await wait('gm', `Boolean(document.querySelector('[data-player-credential="playerA"]'))`, 'Player A enrollment');
   const playerACredential = await evaluate('gm', `document.querySelector('[data-player-credential="playerA"]').textContent`);
   await click('gm', 'Enroll Player B'); await wait('gm', `Boolean(document.querySelector('[data-player-credential="playerB"]'))`, 'Player B enrollment');
