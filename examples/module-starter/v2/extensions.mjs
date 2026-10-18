@@ -1,5 +1,5 @@
 // Minimal trusted-bundled authoring shape. This file is executed by the validator.
-const digest = 'sha256:32b30d763422e8c141b7a4c4a1d9d293fe7c708a5c64ba27009685ff817ec127';
+const digest = 'sha256:db2e0fe0e7fd845d8da8e0cc343e108873951204041c07b9f15c0216c85f5bc6';
 const ref = id => ({ id, apiVersion: '1.0.0', implementationVersion: '1.0.0', digest });
 export const refs = {
   root: ref('example.starter'), entity: ref('example.starter.scene'), command: ref('example.starter.advance'), resolver: ref('example.starter.advance-resolver'), handler: ref('example.starter.scene-state')
@@ -12,7 +12,7 @@ export const scene = {
 };
 export const resolver = {
   ref: refs.resolver,
-  resolve: ({ state }) => ({ outcomes: [{ kind: 'advanced', data: { progress: state.progress + 1 }, visibility: 'public' }], decisions: [], effects: [{ effectId: 'advance-scene', handler: refs.handler.id, targetId: 'scene', payload: { progress: state.progress + 1 }, visibility: 'public' }] })
+  resolve: ({ state }) => ({ outcomes: [{ kind: 'advanced', data: { progress: state.data.progress + 1 }, visibility: 'public' }], decisions: [], effects: [{ effectId: 'advance-scene', handler: refs.handler.id, targetId: state.entityId, payload: { progress: state.data.progress + 1 }, visibility: 'public' }] })
 };
 export const resolvers = [resolver];
 export const handler = {
@@ -25,6 +25,6 @@ export const handler = {
 export const effectHandlers = [handler];
 export const commands = [{
   descriptorVersion: 1, commandId: refs.command.id, capability: refs.command, entityTypeId: refs.entity.id,
-  inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultSchema: { type: 'object', properties: {}, additionalProperties: true },
-  permission: { roles: ['gm'], ownership: 'gm' }, resolver: refs.resolver, effects: [refs.handler]
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultSchema: { type: 'array', maxItems: 4, items: { type: 'object', properties: { kind: { type: 'string', minLength: 1, maxLength: 80 }, data: { type: 'object', properties: {}, additionalProperties: true }, visibility: { type: 'string', enum: ['public', 'gm', 'private'] } }, required: ['kind', 'data', 'visibility'], additionalProperties: false } },
+  permission: { roles: ['gm', 'player'], ownership: 'owner-or-participant' }, resolver: refs.resolver, effects: [refs.handler]
 }];

@@ -16,6 +16,19 @@ type Props = {
   composition?: Record<string, Record<string, string[]>>;
 };
 
+function stableOperationId(entity: UiEntityProjection, commandId: string): string {
+  const key = `potomac.v2.ui.operation.${entity.campaignId}:${entity.entityId}:${commandId}:${entity.revision}`;
+  const existing = sessionStorage.getItem(key);
+  if (existing) return existing;
+  const value = `v2-ui-${crypto.randomUUID()}`;
+  sessionStorage.setItem(key, value);
+  return value;
+}
+
+function clearOperationId(entity: UiEntityProjection, commandId: string): void {
+  sessionStorage.removeItem(`potomac.v2.ui.operation.${entity.campaignId}:${entity.entityId}:${commandId}:${entity.revision}`);
+}
+
 export function V2UiContributionView(props: Props) {
   if (!props.experimentalEnabled) return <p role="status">Experimental V2 extension views are disabled; production host integration is not available.</p>;
   if (props.status === 'loading') return <p role="status" aria-live="polite">Loading extension view…</p>;
@@ -91,7 +104,8 @@ function CommandButton({ node, contribution, entity, host }: { node: Extract<UiN
   const submit = async () => {
     setPending(true); setError('');
     try {
-      await host.submitCommand({ operationId: crypto.randomUUID(), campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: entity.revision, input: {}, ...(workflow ? { workflow: { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } } : {}) });
+      await host.submitCommand({ operationId: stableOperationId(entity, node.commandId), campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: entity.revision, input: {}, ...(workflow ? { workflow: { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } } : {}) });
+      clearOperationId(entity, node.commandId);
     } catch {
       setError('The command was not accepted. Check access and connection, then retry.');
     } finally { setPending(false); }
@@ -153,7 +167,8 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
     if (parsed.error) { setMessage(parsed.error); return; }
     setPending(true); setMessage('');
     try {
-      await host.submitCommand({ operationId: crypto.randomUUID(), campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: entity.revision, input: parsed.input!, ...(workflow ? { workflow: { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } } : {}) });
+      await host.submitCommand({ operationId: stableOperationId(entity, node.commandId), campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: entity.revision, input: parsed.input!, ...(workflow ? { workflow: { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } } : {}) });
+      clearOperationId(entity, node.commandId);
       form.reset();
       setMessage('Command accepted by the host.');
     } catch {

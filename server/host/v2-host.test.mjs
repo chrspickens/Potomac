@@ -35,12 +35,12 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     const playerA = await enrolledAResponse.json();
     const playerB = await enrolledBResponse.json();
 
-    assert.equal((await jsonRequest('/api/v2/campaign/lock', {}, 'local-gm', 'PUT')).status, 201);
+    assert.equal((await jsonRequest('/api/v2/campaign/lock', { moduleId: 'example.starship.system' }, 'local-gm', 'PUT')).status, 201);
     const lockResponse = await request('/api/v2/campaign/lock', playerA.credential);
     assert.equal(lockResponse.status, 200);
     const { digest } = await lockResponse.json();
     assert.match(digest, /^sha256:[0-9a-f]{64}$/);
-    assert.equal((await jsonRequest('/api/v2/campaign/lock', {}, 'local-gm', 'PUT')).status, 200, 'same lock pin is idempotent');
+    assert.equal((await jsonRequest('/api/v2/campaign/lock', { moduleId: 'example.starship.system' }, 'local-gm', 'PUT')).status, 200, 'same lock pin is idempotent');
     assert.throws(() => host.db.prepare('UPDATE v2_campaign_locks SET lock_version=2 WHERE campaign_id=?').run('campaign-v2-http'), /immutable/);
 
     const data = { power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: ['GM-only diagnostic detail'] };

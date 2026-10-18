@@ -383,6 +383,12 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     const { record, descriptor } = readRecord(campaignId, entityId, member, lock);
     return projectRecord(record, descriptor, member);
   }, 'DEFERRED');
+  const availableCommands = (campaignId, entityId, principalId, expectedLockDigest, authorityToken) => transaction(() => {
+    const member = principal(principalId, campaignId, authorityToken); const lock = lockFor(campaignId);
+    if (expectedLockDigest !== undefined && hashV2Json(lock) !== expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
+    const { record } = readRecord(campaignId, entityId, member, lock);
+    return [...commandTypes.values()].filter(command => command.entityTypeId === record.typeId && canCommand(member, record, command.permission)).map(command => command.commandId);
+  }, 'DEFERRED');
   const list = (campaignId, typeId, principalId, expectedLockDigest, authorityToken) => transaction(() => {
     const member = principal(principalId, campaignId, authorityToken); const lock = lockFor(campaignId); const descriptor = entityTypes.get(typeId);
     if (!descriptor) fail('unsupported', 'entity capability is unavailable'); assertTypePinned(campaignId, lock, descriptor);
@@ -663,5 +669,5 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     for (const row of data.v2_extension_workflows) { const descriptor = workflowTypes.get(row.workflow_type); if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(decodeWorkflow(row), descriptor); requireCapability(lock, descriptor.capability, campaignId); }
     return clone({ format: 'potomac.v2-extension-snapshot', version: 1, campaignId, lock, data });
   };
-  return { createEntity, read, list, events, executeCommand, listReactions, viewReaction, submitReaction, declineReaction, expireReaction, adjudicateReaction, startWorkflow, readWorkflow, expireWorkflow, snapshot };
+  return { createEntity, read, list, availableCommands, events, executeCommand, listReactions, viewReaction, submitReaction, declineReaction, expireReaction, adjudicateReaction, startWorkflow, readWorkflow, expireWorkflow, snapshot };
 }
