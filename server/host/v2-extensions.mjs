@@ -65,7 +65,7 @@ function validateEntityDescriptor(descriptor) {
 }
 
 function validateCommandDescriptor(command) {
-  if (!command || command.descriptorVersion !== 1 || !NAMESPACED.test(command.commandId) || !NAMESPACED.test(command.entityTypeId) || !Array.isArray(command.permission?.roles) || command.permission.roles.length === 0 || command.permission.roles.some(role => !['gm', 'player'].includes(role)) || !['any', 'owner', 'gm', 'owner-or-participant'].includes(command.permission.ownership) || command.workflowOnly !== undefined && typeof command.workflowOnly !== 'boolean' || !Array.isArray(command.effects)) fail('invalid', 'invalid command descriptor');
+  if (!command || command.descriptorVersion !== 1 || !NAMESPACED.test(command.commandId) || !NAMESPACED.test(command.entityTypeId) || !Array.isArray(command.permission?.roles) || command.permission.roles.length === 0 || command.permission.roles.some(role => !['gm', 'player'].includes(role)) || !['any', 'owner', 'gm', 'owner-or-participant'].includes(command.permission.ownership) || command.permission.effectTargetPolicy !== undefined && !['source-entity', 'campaign-visible'].includes(command.permission.effectTargetPolicy) || command.workflowOnly !== undefined && typeof command.workflowOnly !== 'boolean' || !Array.isArray(command.effects)) fail('invalid', 'invalid command descriptor');
   validateCapabilityRef(command.capability); validateCapabilityRef(command.resolver); validateV2SchemaDefinition(command.inputSchema); validateV2SchemaDefinition(command.resultSchema);
   for (const ref of command.effects) validateCapabilityRef(ref);
 }
@@ -151,7 +151,16 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       try { currentDescriptor(record, lock); } catch { return false; }
       const member = principal(context.principalId, context.campaignId); const command = commandTypes.get(context.commandId);
       const targetParticipants = context.effect.target.entityId === context.workflowEntityId ? context.authorizedParticipants || [] : [];
-      return Boolean(command && canRead(member, record, targetParticipants) && canCommand(member, record, command.permission, targetParticipants) && authorizeEffect({ ...context, principal: member, command: clone(command), entity: clone(record) }));
+      if (!command || !canRead(member, record, targetParticipants)) return false;
+      let sourceRecord = record;
+      if (command.permission.effectTargetPolicy === 'campaign-visible') {
+        const source = entityRows(context.campaignId, context.commandEntityId);
+        if (!source) return false;
+        sourceRecord = decodeEntity(context.campaignId, source.row, source.metadata);
+        try { currentDescriptor(sourceRecord, lock); } catch { return false; }
+        if (sourceRecord.typeId !== command.entityTypeId || !canRead(member, sourceRecord, context.authorizedParticipants || []) || !canCommand(member, sourceRecord, command.permission, context.authorizedParticipants || [])) return false;
+      } else if (!canCommand(member, record, command.permission, targetParticipants)) return false;
+      return Boolean(authorizeEffect({ ...context, principal: member, command: clone(command), entity: clone(record), sourceEntity: clone(sourceRecord) }));
     },
     validateEntity: validateStoredEntity, now, failureAt
   });
@@ -332,7 +341,11 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
         const target = entityRows(request.campaignId, effect.targetId); const targetRecord = decodeEntity(request.campaignId, target.row, target.metadata);
         return { effectId: effect.effectId, handler: { id: handler.id, apiVersion: handler.apiVersion, implementationVersion: handler.implementationVersion, digest: handler.digest }, target: { entityId: effect.targetId, expectedRevision: effect.targetId === request.entityId ? request.expectedRevision : request.expectedRevisions[effect.targetId], visibility: effect.visibility }, payload: effect.payload, visibility: effect.visibility };
       }) } : undefined;
-      if (effectProposal) effects.applyInTransaction(effectProposal);
+      if (effectProposal) {
+        effectProposal.commandEntityId = request.entityId;
+        effectProposal.effectTargetPolicy = command.permission.effectTargetPolicy || 'source-entity';
+        effects.applyInTransaction(effectProposal);
+      }
       for (const effect of output.effects) {
         const target = entityRows(request.campaignId, effect.targetId); validateStoredEntity({ campaignId: request.campaignId, entityId: effect.targetId, entityType: target.row.entity_type, data: JSON.parse(target.row.data) });
       }

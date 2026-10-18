@@ -15,6 +15,8 @@ export type ExtensionOwnership =
 export type ExtensionPermission = {
   roles: Array<"gm" | "player">;
   ownership: "any" | "owner" | "gm" | "owner-or-participant";
+  /** Where declared effects may target. Campaign-visible still requires source authorization and target read access. */
+  effectTargetPolicy?: "source-entity" | "campaign-visible";
 };
 export type MigrationIdentity = {
   migrationId: CapabilityId;
