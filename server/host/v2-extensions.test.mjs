@@ -315,3 +315,40 @@ test('expires workflow with host time and preserves private serialized state', (
   assert.throws(() => context.kernel.readWorkflow('recovery-1', 'player-c'), error => error.code === 'unavailable');
   context.db.close();
 });
+
+test('campaign-visible effect targets require current source command authority and a visible target', () => {
+  const context = make();
+  const entity = {
+    ...starshipEntity,
+    ownership: { kind: 'campaign' },
+    visibility: ['public'],
+    schema: { ...starshipEntity.schema, properties: { ...starshipEntity.schema.properties, pilot: { type: 'string', minLength: 1 } }, required: [...starshipEntity.schema.required, 'pilot'] }
+  };
+  const command = {
+    ...starshipCommands[0],
+    permission: { roles: ['player'], ownership: 'any', effectTargetPolicy: 'campaign-visible' },
+    inputSchema: { ...starshipCommands[0].inputSchema, properties: { ...starshipCommands[0].inputSchema.properties, targetId: { type: 'string', minLength: 1 } }, required: [...starshipCommands[0].inputSchema.required, 'targetId'] }
+  };
+  const effectHandlers = starshipEffectHandlers.map(handler => {
+    if (handler.id !== starshipRefs.allocateEffect.id) return handler;
+    return { ...handler, targetVisibility: 'public', eventVisibility: 'public', apply: context => { const result = handler.apply(context); return { ...result, event: { ...result.event, visibility: 'public' } }; } };
+  });
+  const resolvers = starshipResolvers.map(item => item.ref.id === starshipRefs.powerResolver.id ? {
+    ...item,
+    resolve: input => ({ outcomes: [], decisions: [], effects: [{ effectId: `${input.operationId}.allocate`, handler: starshipRefs.allocateEffect.id, targetId: input.input.targetId, payload: { subsystem: input.input.subsystem, amount: input.input.amount }, visibility: 'public' }] })
+  } : item);
+  const kernel = createV2ExtensionKernel({
+    db: context.db, entities: [entity], commands: [command], effectHandlers, resolvers,
+    authenticate: id => context.roles.has(id) ? { principalId: id, role: context.roles.get(id) } : undefined,
+    getCampaignLock: () => lock, validateLock: () => undefined,
+    authorizeEffect: ({ principal, sourceEntity }) => sourceEntity.data.pilot === principal.principalId
+  });
+  kernel.createEntity({ operationId: 'pilot-a-create', campaignId, principalId: 'gm-1', entityId: 'reactor-1', typeId: entity.typeId, visibility: 'public', data: { ...data(), pilot: 'player-a' } });
+  kernel.createEntity({ operationId: 'target-create', campaignId, principalId: 'gm-1', entityId: 'reactor-2', typeId: entity.typeId, visibility: 'public', data: { ...data(), pilot: 'player-b' } });
+  const request = { operationId: 'pilot-a-route', campaignId, principalId: 'player-a', commandId: command.commandId, entityId: 'reactor-1', expectedRevision: 1, expectedRevisions: { 'reactor-2': 1 }, input: { subsystem: 'propulsion', amount: 3, targetId: 'reactor-2' } };
+  assert.equal(kernel.executeCommand(request).status, 'applied');
+  assert.equal(kernel.read(campaignId, 'reactor-2', 'player-b').data.allocations.propulsion, 3);
+  assert.throws(() => kernel.executeCommand({ ...request, operationId: 'pilot-b-route', principalId: 'player-b', expectedRevisions: { 'reactor-2': 2 } }), error => error.code === 'unauthorized');
+  assert.equal(kernel.read(campaignId, 'reactor-2', 'player-b').revision, 2);
+  context.db.close();
+});

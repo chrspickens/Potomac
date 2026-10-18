@@ -102,7 +102,7 @@ export function createV2EffectKernel({ db, handlers, authenticate, authorize, va
   const readReceipt = operationId => db.prepare('SELECT response, payload_hash, campaign_id, principal_id FROM v2_effect_receipts WHERE operation_id=?').get(operationId);
   const publicEvents = (campaignId, operationId) => db.prepare("SELECT event_id AS eventId, operation_id AS operationId, effect_id AS effectId, entity_id AS entityId, kind, payload FROM v2_effect_events WHERE campaign_id=? AND operation_id=? AND visibility='public' ORDER BY event_id").all(campaignId, operationId).map(row => ({ ...row, payload: JSON.parse(row.payload) }));
   const apply = (proposal, inTransaction = false) => {
-    if (!proposal || !ID.test(proposal.operationId) || !ID.test(proposal.campaignId) || !ID.test(proposal.principalId) || !ID.test(proposal.moduleId) || !Array.isArray(proposal.effects) || proposal.effects.length === 0) fail('invalid', 'malformed effect proposal');
+    if (!proposal || !ID.test(proposal.operationId) || !ID.test(proposal.campaignId) || !ID.test(proposal.principalId) || !ID.test(proposal.moduleId) || !Array.isArray(proposal.effects) || proposal.effects.length === 0 || proposal.effectTargetPolicy !== undefined && (!['source-entity', 'campaign-visible'].includes(proposal.effectTargetPolicy) || !ID.test(proposal.commandEntityId || ''))) fail('invalid', 'malformed effect proposal');
     if (inTransaction && !db.isTransaction) fail('invalid', 'applyInTransaction requires an active host transaction');
     const payloadHash = hashV2Json(proposal);
     if (!authenticate(proposal.principalId, proposal)) fail('unauthorized', 'unauthenticated principal');
@@ -125,7 +125,7 @@ export function createV2EffectKernel({ db, handlers, authenticate, authorize, va
         const entity = db.prepare('SELECT entity_type, revision, visibility, data FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(proposal.campaignId, effect.target.entityId);
         if (!entity || entity.entity_type !== handler.targetType || entity.revision !== effect.target.expectedRevision || (entity.visibility !== 'public' && effect.target.visibility === 'public')) fail('stale', 'target type, revision or visibility changed');
         const entitySnapshot = freezeJson({ entityType: entity.entity_type, revision: entity.revision, visibility: entity.visibility, data: structuredClone(JSON.parse(entity.data)) });
-        if (!authorize({ principalId: proposal.principalId, campaignId: proposal.campaignId, moduleId: proposal.moduleId, commandId: proposal.commandId, authorizedParticipants: proposal.authorizedParticipants, workflowEntityId: proposal.workflowEntityId, effect, handler, entity: entitySnapshot })) fail('unauthorized', 'unauthorized principal or target');
+        if (!authorize({ principalId: proposal.principalId, campaignId: proposal.campaignId, moduleId: proposal.moduleId, commandId: proposal.commandId, commandEntityId: proposal.commandEntityId, effectTargetPolicy: proposal.effectTargetPolicy, authorizedParticipants: proposal.authorizedParticipants, workflowEntityId: proposal.workflowEntityId, effect, handler, entity: entitySnapshot })) fail('unauthorized', 'unauthorized principal or target');
         const next = handler.apply(freezeJson({ entity: entitySnapshot, effect: structuredClone(effect) }));
         if (!next || typeof next.data !== 'object' || !Number.isInteger(next.revision) || next.revision !== entity.revision + 1) fail('invalid', 'handler did not return the next entity revision');
         canonicalV2Json(next.data);
