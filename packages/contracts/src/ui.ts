@@ -6,7 +6,8 @@ export type UiCapabilityRef = { id: string; apiVersion: SemVer; implementationVe
 export type UiContributionKind = "sheet" | "panel" | "action-control" | "form" | "display" | "resource" | "brick";
 export type UiVisibilityCondition = { path: string; equals: JsonValue };
 export type UiNode =
-  | { kind: "group" | "section"; id: string; label?: string; children: UiNode[]; visibleWhen?: UiVisibilityCondition }
+  | { kind: "group"; id: string; label?: string; children: UiNode[]; visibleWhen?: UiVisibilityCondition }
+  | { kind: "section"; id: string; label?: string; children: UiNode[]; visibleWhen?: UiVisibilityCondition }
   | { kind: "slot"; id: string; slotId: string }
   | { kind: "display"; id: string; path: string; label: string; visibleWhen?: UiVisibilityCondition }
   | { kind: "resource"; id: string; label: string; currentPath: string; maximumPath: string; visibleWhen?: UiVisibilityCondition }

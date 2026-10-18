@@ -7,6 +7,8 @@ const safeRef = (ref: UiCapabilityRef): boolean => Boolean(ref && NAMESPACED.tes
 const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(value) ?? 'undefined';
 const sameRef = (left: UiCapabilityRef, right: UiCapabilityRef): boolean => left.id === right.id && left.apiVersion === right.apiVersion && left.implementationVersion === right.implementationVersion && left.digest === right.digest;
 const fail = (message: string): never => { throw new Error(`invalid_ui_contribution: ${message}`); };
+type JsonObject = { [key: string]: JsonValue };
+const isJsonObject = (value: JsonValue): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 export function requirePinnedUiCapability(lock: CapabilityLock, campaignId: string, ref: UiCapabilityRef): void {
   if (!safeRef(ref) || lock.campaignId !== campaignId) fail('invalid campaign or capability identity');
@@ -18,27 +20,28 @@ function pathSchema(schema: JsonValue, path: string): JsonValue | undefined {
   const parts = path.split('.');
   let current: JsonValue | undefined = schema;
   for (const part of parts) {
-    if (!part || !current || typeof current !== 'object' || Array.isArray(current)) return undefined;
-    const properties = current.properties;
-    if (!properties || typeof properties !== 'object' || Array.isArray(properties) || !Object.hasOwn(properties, part)) return undefined;
+    if (!part || !current || !isJsonObject(current)) return undefined;
+    const properties: JsonValue | undefined = current.properties;
+    if (!properties || !isJsonObject(properties) || !Object.hasOwn(properties, part)) return undefined;
     current = properties[part];
   }
   return current;
 }
 
 function validateSchema(schema: JsonValue, path: string): void {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object' || !schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) fail(`${path} must be an object schema`);
+  if (!schema || !isJsonObject(schema) || schema.type !== 'object' || !schema.properties || !isJsonObject(schema.properties)) fail(`${path} must be an object schema`);
   const allowed = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'minItems', 'maxItems', 'title', 'description', 'minLength', 'maxLength', 'minimum', 'maximum', 'enum', 'default']);
   const walk = (value: JsonValue, at: string): void => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${at} is not a schema`);
+    if (!isJsonObject(value)) fail(`${at} is not a schema`);
     for (const key of Object.keys(value)) if (!allowed.has(key)) fail(`${at} uses unsupported schema keyword ${key}`);
     if (value.type === 'object') {
-      if (!value.properties || typeof value.properties !== 'object' || Array.isArray(value.properties)) fail(`${at}.properties is required`);
+      if (!value.properties || !isJsonObject(value.properties)) fail(`${at}.properties is required`);
+      const properties: JsonObject = value.properties;
       if (value.additionalProperties !== undefined && typeof value.additionalProperties !== 'boolean') fail(`${at}.additionalProperties must be boolean`);
-      if (Object.keys(value.properties).some(key => ['__proto__', 'prototype', 'constructor'].includes(key))) fail(`${at} contains an unsafe field name`);
+      if (Object.keys(properties).some(key => ['__proto__', 'prototype', 'constructor'].includes(key))) fail(`${at} contains an unsafe field name`);
       const required = value.required ?? [];
-      if (!Array.isArray(required) || new Set(required).size !== required.length || required.some(key => typeof key !== 'string' || !Object.hasOwn(value.properties as object, key))) fail(`${at}.required is invalid`);
-      for (const [key, child] of Object.entries(value.properties)) walk(child, `${at}.${key}`);
+      if (!Array.isArray(required) || new Set(required).size !== required.length || required.some(key => typeof key !== 'string' || !Object.hasOwn(properties, key))) fail(`${at}.required is invalid`);
+      for (const [key, child] of Object.entries(properties)) walk(child, `${at}.${key}`);
       return;
     }
     if (value.type === 'array') {
@@ -63,7 +66,7 @@ function validateNodes(nodes: UiNode[], contribution: UiContribution, commandIds
   for (const node of nodes) {
     if (!node || typeof node !== 'object' || !NAMESPACED.test(node.id) || nodeIds.has(node.id)) fail(`${path} contains an invalid or duplicate node id`);
     nodeIds.add(node.id);
-    if (node.visibleWhen && (!node.visibleWhen.path || !pathSchema(contribution.entitySchema, node.visibleWhen.path))) fail(`${node.id} visibility references an undeclared field`);
+    if ('visibleWhen' in node && node.visibleWhen && (!node.visibleWhen.path || !pathSchema(contribution.entitySchema, node.visibleWhen.path))) fail(`${node.id} visibility references an undeclared field`);
     if (node.kind === 'group' || node.kind === 'section') validateNodes(node.children, contribution, commandIds, `${path}.${node.id}`);
     else if (node.kind === 'slot') {
       if (!NAMESPACED.test(node.slotId) || !contribution.slots.includes(node.slotId)) fail(`${node.id} references an undeclared slot`);
@@ -72,7 +75,7 @@ function validateNodes(nodes: UiNode[], contribution: UiContribution, commandIds
     } else if (node.kind === 'resource') {
       const current = pathSchema(contribution.entitySchema, node.currentPath);
       const maximum = pathSchema(contribution.entitySchema, node.maximumPath);
-      if (!current || !maximum || typeof current !== 'object' || typeof maximum !== 'object' || current.type !== 'integer' && current.type !== 'number' || maximum.type !== 'integer' && maximum.type !== 'number') fail(`${node.id} references invalid resource fields`);
+      if (!current || !maximum || !isJsonObject(current) || !isJsonObject(maximum) || current.type !== 'integer' && current.type !== 'number' || maximum.type !== 'integer' && maximum.type !== 'number') fail(`${node.id} references invalid resource fields`);
     } else if (node.kind === 'workflow-status') {
       if (!contribution.workflows.some(workflow => workflow.workflowTypeId === node.workflowTypeId)) fail(`${node.id} references an undeclared workflow`);
     } else if (node.kind === 'command' || node.kind === 'form') {
@@ -148,8 +151,9 @@ export class UiContributionRegistry {
   compose(contributionId: string, assignments: Record<string, Record<string, string[]>> = {}): UiContribution {
     const expand = (id: string, ancestry: Set<string>, depth: number): UiContribution => {
       if (depth > 16 || ancestry.has(id)) fail('slot composition contains a cycle or exceeds its depth limit');
-      const contribution = this.get(id);
-      if (!contribution) fail(`missing composed contribution ${id}`);
+      const found = this.get(id);
+      if (!found) fail(`missing composed contribution ${id}`);
+      const contribution: UiContribution = found;
       const nextAncestry = new Set(ancestry).add(id);
       const placement = assignments[id] ?? {};
       if (Object.keys(placement).some(slot => !contribution.slots.includes(slot))) fail(`${id} assigns an undeclared slot`);
@@ -182,6 +186,6 @@ export function readUiPath(data: JsonValue, path: string): JsonValue | undefined
 }
 
 export function uiNodeIsVisible(node: UiNode, data: JsonValue): boolean {
-  if (!node.visibleWhen) return true;
+  if (!('visibleWhen' in node) || !node.visibleWhen) return true;
   return JSON.stringify(readUiPath(data, node.visibleWhen.path)) === JSON.stringify(node.visibleWhen.equals);
 }

@@ -22,12 +22,13 @@ export function V2UiContributionView(props: Props) {
   if (props.status === 'unavailable' || !props.entity) return <p role="status">This extension content is unavailable to your current host authorization.</p>;
   if (props.status === 'error') return <p role="alert">{props.errorMessage || 'The extension view could not be loaded.'}</p>;
 
-  let contribution: UiContribution | undefined;
+  let contribution: UiContribution;
   try {
-    contribution = props.composition ? props.registry.compose(props.contributionId, props.composition) : props.registry.get(props.contributionId);
-    if (!contribution) return <p role="status">This extension view is unavailable or no longer installed.</p>;
-    props.registry.validate(contribution, props.host.lock, props.entity.campaignId);
-    if (contribution.entityTypeId !== props.entity.typeId || contribution.entitySchemaVersion !== props.entity.schemaVersion || props.entity.capability.id !== contribution.entityCapability.id || props.entity.capability.apiVersion !== contribution.entityCapability.apiVersion || props.entity.capability.implementationVersion !== contribution.entityCapability.implementationVersion || props.entity.capability.digest !== contribution.entityCapability.digest) return <p role="status">This extension view is incompatible with the current entity version.</p>;
+    const candidate = props.composition ? props.registry.compose(props.contributionId, props.composition) : props.registry.get(props.contributionId);
+    if (!candidate) return <p role="status">This extension view is unavailable or no longer installed.</p>;
+    props.registry.validate(candidate, props.host.lock, props.entity.campaignId);
+    if (candidate.entityTypeId !== props.entity.typeId || candidate.entitySchemaVersion !== props.entity.schemaVersion || props.entity.capability.id !== candidate.entityCapability.id || props.entity.capability.apiVersion !== candidate.entityCapability.apiVersion || props.entity.capability.implementationVersion !== candidate.entityCapability.implementationVersion || props.entity.capability.digest !== candidate.entityCapability.digest) return <p role="status">This extension view is incompatible with the current entity version.</p>;
+    contribution = candidate;
   } catch {
     return <p role="status">This extension view is unavailable because its exact module capability is not pinned.</p>;
   }

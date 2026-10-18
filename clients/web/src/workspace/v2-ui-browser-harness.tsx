@@ -1,4 +1,3 @@
-import React from 'react';
 import { createRoot } from 'react-dom/client';
 import type { UiEntityProjection, UiHostContext } from '@potomac/contracts';
 import { V2UiContributionView } from './v2-ui-renderer.tsx';
