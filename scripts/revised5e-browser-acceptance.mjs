@@ -138,8 +138,8 @@ try {
   const unauthorizedReaction = await evaluate('playerB', `(async()=>{const credential=sessionStorage.getItem('potomac.v2.revised5e.credential');const lock=await fetch('/api/v2/campaign/lock',{headers:{authorization:'Bearer '+credential}}).then(r=>r.json());const response=await fetch('/api/v2/reactions/${pendingWindowId}/decisions',{method:'POST',headers:{authorization:'Bearer '+credential,'content-type':'application/json','x-v2-lock-digest':lock.digest},body:JSON.stringify({operationId:'browser-forged-reaction',actionId:'example.revised5e.opportunity-attack',decision:'accept',input:{}})});return response.status})()`);
   assert.ok([403,404].includes(unauthorizedReaction), `ineligible Player B is denied reaction submission (${unauthorizedReaction})`);
   await click('gm', 'Opportunity Attack');
-  await wait('playerA', `document.querySelector('.v2-log')?.innerText.includes('opportunity-critical')`, 'Player A sees the resolved opportunity attack');
-  await wait('playerB', `document.querySelector('.v2-log')?.innerText.includes('opportunity-critical')`, 'Player B sees the public opportunity-attack result');
+  await wait('playerA', `[...document.querySelectorAll('.v2-log')].some(section=>section.innerText.includes('opportunity-critical'))`, 'Player A sees the resolved opportunity attack');
+  await wait('playerB', `[...document.querySelectorAll('.v2-log')].some(section=>section.innerText.includes('opportunity-critical'))`, 'Player B sees the public opportunity-attack result');
   await wait('playerB', `document.querySelector('.v2-actor-card')?.innerText.includes('2 / 12 HP')`, 'Player B sees host-rolled damage to Mira');
   await wait('playerB', `document.querySelector('.v2-actor-card')?.innerText.includes('Position') && document.body.innerText.includes('1, 2')`, 'movement resumes after the reaction');
   await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('opportunity-d20: d20 [20]')`, 'public host dice audit is visible');
