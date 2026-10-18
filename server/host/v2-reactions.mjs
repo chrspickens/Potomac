@@ -11,6 +11,10 @@ const canonical = value => {
   return `{${Object.keys(value).sort().map(key => { if (['__proto__', 'prototype', 'constructor'].includes(key) || value[key] === undefined) fail('invalid', 'unsafe value'); return `${JSON.stringify(key)}:${canonical(value[key])}`; }).join(',')}}`;
 };
 const hash = value => `sha256:${createHash('sha256').update(canonical(value)).digest('hex')}`;
+const requireOwnedTransaction = db => {
+  if (db.isTransaction) fail('invalid', 'reaction operation cannot be nested in another transaction');
+  db.exec('BEGIN IMMEDIATE;');
+};
 
 export const V2_REACTION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS v2_reaction_windows (
@@ -62,7 +66,7 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
   const submit = submission => {
     if (!submission || !ID.test(submission.operationId) || !ID.test(submission.windowId) || !ID.test(submission.principalId) || !ID.test(submission.actionId) || !['accept', 'decline'].includes(submission.decision)) fail('invalid', 'malformed reaction submission');
     if (!authenticate(submission.principalId, submission)) fail('unauthorized', 'unauthenticated responder');
-    db.exec('BEGIN IMMEDIATE;');
+    requireOwnedTransaction(db);
     try {
       const stored = row(submission.windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); validateLock(window.campaignId, window.lock, window.resolver);
       if (stored.status !== 'pending') { const prior = db.prepare('SELECT request_hash FROM v2_reaction_submissions WHERE operation_id=?').get(submission.operationId); if (prior) { if (prior.request_hash !== hash(submission)) fail('idempotency_conflict', 'operation ID is bound to another submission'); db.exec('COMMIT;'); return view(submission.windowId, submission.principalId); } fail('conflict', 'reaction window is terminal'); }
@@ -81,9 +85,9 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
   };
   const expire = (windowId, principalId) => {
     const stored = row(windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); if (!authenticate(principalId, { windowId, campaignId: window.campaignId }) || !authorizeExpiry({ principalId, window })) fail('unauthorized', 'unauthorized reaction expiry');
-    db.exec('BEGIN IMMEDIATE;'); try { const current = row(windowId); const currentWindow = decode(current); if (current.status !== 'pending') { db.exec('COMMIT;'); return view(windowId, principalId); } if (Date.parse(currentWindow.expiresAt) > Date.parse(now())) fail('conflict', 'reaction window has not expired'); const result = transition(currentWindow, 'expired', principalId, { decision: 'decline' }); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
+    requireOwnedTransaction(db); try { const current = row(windowId); const currentWindow = decode(current); if (current.status !== 'pending') { db.exec('COMMIT;'); return view(windowId, principalId); } if (Date.parse(currentWindow.expiresAt) > Date.parse(now())) fail('conflict', 'reaction window has not expired'); const result = transition(currentWindow, 'expired', principalId, { decision: 'decline' }); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const adjudicate = (windowId, principalId, decision = 'accept') => {
-    if (!authenticate(principalId, { windowId }) || !authorizeGm({ principalId, windowId })) fail('unauthorized', 'unauthorized GM adjudication'); db.exec('BEGIN IMMEDIATE;'); try { const stored = row(windowId); if (!stored || stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); const result = transition(decode(stored), decision === 'decline' ? 'declined' : 'resolved', principalId, { decision }); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; } };
+    if (!authenticate(principalId, { windowId }) || !authorizeGm({ principalId, windowId })) fail('unauthorized', 'unauthorized GM adjudication'); requireOwnedTransaction(db); try { const stored = row(windowId); if (!stored || stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); const result = transition(decode(stored), decision === 'decline' ? 'declined' : 'resolved', principalId, { decision }); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; } };
   return { open, submit, expire, adjudicate, view };
 }

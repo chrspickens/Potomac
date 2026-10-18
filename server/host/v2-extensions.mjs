@@ -392,6 +392,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       if (resolver.randomRequests?.({ principalId: currentMember.principalId, command: clone(command), state: clone(state), input: clone(request.input), randomness: clone(randomness) })?.length) fail('invalid', 'resolver random request budget was exhausted');
       const result = executeResolver(immutableResolver, { operationId: request.operationId, campaignId: request.campaignId, principalId: request.principalId, logicalTime: now(), state, input: request.input, randomness }, lock);
       const output = result.transcript;
+      if (output.continuation?.resumeOn === 'reaction') fail('unsupported', 'reaction continuations are not integrated with extension command execution');
       for (const effect of output.effects) {
         const handler = effectHandlers.find(candidate => candidate.id === effect.handler && command.effects.some(ref => refKey(ref) === refKey(candidate)));
         if (!handler) fail('unsupported', 'command proposed an undeclared effect handler');
