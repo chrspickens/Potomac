@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dicepoolCommands, dicepoolResolvers, dicepoolScene } from './extensions.mjs';
+import { dicepoolCommands, dicepoolReactionPrincipal, dicepoolResolvers, dicepoolScene } from './extensions.mjs';
 
 const state = { entityId: 'scene-1', data: { title: 'The Bell Beneath Lowwater', status: 'ready', obstacle: 'Flooded bell tower', gmNote: 'private clue', characters: [{ id: 'player-a', name: 'Mira Vale', ownerPrincipalId: 'player-a', pool: 3, stress: 0, push: 1, role: 'scout' }, { id: 'player-b', name: 'Oren Pike', ownerPrincipalId: 'player-b', pool: 2, stress: 0, push: 1, role: 'keeper' }], log: [] } };
 const input = (operationId, principalId, value, randomness) => ({ operationId, campaignId: 'campaign-1', principalId, logicalTime: '2026-10-18T12:00:00.000Z', state, input: value, randomness });
@@ -23,4 +23,10 @@ test('contested resolver suspends for a durable brace reaction and resumes once'
   const result = resolver.resume({ ...input('contest-1', 'player-a', { actorId: 'player-a', defenderId: 'player-b', push: false }, [{ requestId: 'contest', kind: 'pool', count: 5, sides: 6, values: [6, 2, 5, 1, 2], visibility: 'public' }]), continuation: pending.continuation, reaction: { status: 'resolved', decisions: [{ principalId: 'player-b', actionId: 'example.dicepool.brace', input: {}, decision: 'accept' }] } });
   assert.equal(result.outcomes[0].kind, 'dicepool.contest.resolved');
   assert.equal(result.effects[0].payload.state.log.at(-1).accepted, true);
+});
+
+test('module audience policy resolves the defender controller from trusted scene state, not scene owner', () => {
+  assert.equal(dicepoolReactionPrincipal({ audience: { audience: 'entity-owner' }, entity: state, input: { defenderId: 'player-b' } }), 'player-b');
+  assert.equal(dicepoolReactionPrincipal({ audience: { audience: 'entity-owner' }, entity: state, input: { defenderId: 'missing' } }), undefined);
+  assert.equal(dicepoolReactionPrincipal({ audience: { audience: 'campaign-gm' }, entity: state, input: { defenderId: 'player-b' } }), undefined);
 });

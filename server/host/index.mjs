@@ -593,6 +593,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           return json(res, status, { error: status === 500 ? 'V2 host request failed' : error.message, reasonCode: error?.code || 'internal_error' });
         };
         try {
+          if (req.method === 'GET' && url.pathname === '/api/v2/session') return json(res, 200, { principalId: auth.principalId, role: auth.role });
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'GET') return json(res, 200, v2Api.getLock(auth.principalId, proof));
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'PUT') {
             const body = await readBody(req);
