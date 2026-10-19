@@ -98,6 +98,12 @@ Pin a campaign to a compatible system module version. Persist schema/rule versio
 
 Use a modular monolith first. A web client and host run separately in development. Desktop wrapper starts an isolated host process; the host must never depend on Electron APIs. Avoid Redis, orchestration, account cloud, peer-to-peer authority, and a public plugin marketplace in the experiment.
 
+## Current V2 campaign setup boundary
+
+The normal Campaign Home setup flow can list the host's bundled trusted V2 catalog on loopback, show its reviewed module versions and digests, and create a fresh campaign by asking the host to pin the selected exact lock. The browser does not assemble module provenance or capability closure. Once pinned, a Rules navigation item opens the generic declarative V2 workspace; GM enrollment, player credentials, entity schemas, grants, commands, reactions, and authorized projections continue through the existing host contracts. Players use the same normal app navigation after authenticating with their enrolled credential. The V2 route is explicitly experimental and remains default-off.
+
+This is an onboarding integration, not general V2 multi-campaign support. The current local host still supports one configured campaign. The UI therefore permits V2 creation only on a fresh host and refuses to replace V1 data or an existing V1/V2 ruleset. Supporting multiple normal campaigns requires a durable campaign registry and selection/routing, campaign-scoped membership and authority, isolation of every query/event/asset/backup path, and explicit lifecycle/restore semantics. Until that host work is implemented, separate host data directories remain the supported boundary. Offline V2 command queues, remote exposure, and module upgrades are unsupported.
+
 ## Open engineering risks
 
 - Browser offline reopening and secure origins for remote/localhost use.

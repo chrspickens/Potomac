@@ -26,7 +26,7 @@ async function startHost() { host = createHost({ databasePath: join(scratch, 'ho
 async function startWeb() {
   for (let attempt = 1; attempt <= 6; attempt++) {
     webPort = await freePort();
-    const proc = child(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(webPort), '--strictPort'], { cwd: join(root, 'clients/web'), env: { ...process.env, POTOMAC_WEB_HOST: `http://127.0.0.1:${hostPort}` } });
+    const proc = child(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(webPort), '--strictPort'], { cwd: join(root, 'clients/web'), env: { ...process.env, POTOMAC_WEB_HOST: `http://127.0.0.1:${hostPort}`, VITE_POTOMAC_HOST: `http://127.0.0.1:${hostPort}` } });
     for (let i = 0; i < 100; i++) {
       if (proc.exitCode !== null) break;
       try {

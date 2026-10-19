@@ -29,6 +29,15 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     const disabledResponse = await fetch(`http://127.0.0.1:${disabledAddress.port}/api/v2/campaign/lock`, { headers: { authorization: 'Bearer local-gm' } });
     assert.equal(disabledResponse.status, 404, 'V2 API must remain off unless explicitly enabled');
     disabled.close();
+    assert.equal((await request('/api/v2/campaign/lock')).status, 404, 'fresh host reports the distinct unpinned state');
+
+    const legacyPath = join(directory, 'legacy-v1.sqlite');
+    const legacyHost = createHost({ databasePath: legacyPath, campaignId: 'legacy-v1-campaign', enableV2Api: true });
+    const legacyAddress = await legacyHost.listen(0);
+    legacyHost.db.prepare('UPDATE campaign SET system_module_id=?,system_module_version=? WHERE id=?').run('example.system-a', '0.1.0', 'legacy-v1-campaign');
+    const v2AgainstV1 = await fetch(`http://127.0.0.1:${legacyAddress.port}/api/v2/campaign/lock`, { method: 'PUT', headers: { authorization: 'Bearer local-gm', 'content-type': 'application/json' }, body: JSON.stringify({ moduleId: 'example.starter' }) });
+    assert.equal(v2AgainstV1.status, 409, 'V2 rules cannot be added to an already pinned V1 campaign');
+    legacyHost.close();
 
     const enrolledAResponse = await jsonRequest('/api/members/enroll', { displayName: 'Player A' });
     const enrolledBResponse = await jsonRequest('/api/members/enroll', { displayName: 'Player B' });
@@ -38,6 +47,8 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     const playerB = await enrolledBResponse.json();
 
     assert.equal((await jsonRequest('/api/v2/campaign/lock', { moduleId: 'example.starship.system' }, 'local-gm', 'PUT')).status, 201);
+    const v1AgainstV2 = await request('/api/campaign', 'local-gm', { method: 'PUT', body: JSON.stringify({ name: 'Locked V2', systemModuleId: 'example.system-a', systemModuleVersion: '0.1.0', baseRevision: 1 }) });
+    assert.equal(v1AgainstV2.status, 409, 'V1 rules cannot be pinned after the immutable V2 campaign lock');
     const lockResponse = await request('/api/v2/campaign/lock', playerA.credential);
     assert.equal(lockResponse.status, 200);
     const { digest } = await lockResponse.json();

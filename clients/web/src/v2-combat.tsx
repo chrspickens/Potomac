@@ -99,7 +99,7 @@ export function V2CombatApp() {
       sessionStorage.setItem(TOKEN_KEY, credential);
       setLock(next); setIsGm(credential === 'local-gm'); setConnected(true); setMessage('Connected to the authenticated V2 host.');
     } catch (error) {
-      if (credential === 'local-gm' && (error as { status?: number }).status === 409) {
+      if (credential === 'local-gm' && [404, 409].includes((error as { status?: number }).status ?? 0)) {
         setLock(undefined); setIsGm(true); setConnected(true); sessionStorage.setItem(TOKEN_KEY, credential); setMessage('No V2 module is pinned yet. Select the trusted Revised 5e example to continue.');
       } else { setConnected(false); setMessage(error instanceof Error ? error.message : 'Authentication failed.'); }
     } finally { setBusy(false); }

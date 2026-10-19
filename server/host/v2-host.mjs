@@ -146,7 +146,7 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
       return begin(db, 'DEFERRED', () => {
         if (!authenticate(principalId, { campaignId, authorityToken })) throw Object.assign(new Error('authenticated campaign member required'), { code: 'unauthorized' });
         const lock = getCampaignLock(campaignId);
-        if (!lock) throw Object.assign(new Error('campaign capability lock is not pinned'), { code: 'unsupported' });
+        if (!lock) throw Object.assign(new Error('campaign capability lock is not pinned'), { code: 'unavailable' });
         validateLock(campaignId, lock);
         return { lock, digest: hashV2Json(lock) };
       });
@@ -156,6 +156,9 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
         const member = authenticate(principalId, { campaignId, authorityToken });
         if (!member) throw Object.assign(new Error('authenticated campaign member required'), { code: 'unauthorized' });
         if (member.role !== 'gm') throw Object.assign(new Error('GM authority required'), { code: 'forbidden' });
+        const legacyCampaign = db.prepare('SELECT system_module_id FROM campaign WHERE id=?').get(campaignId);
+        const legacyState = db.prepare('SELECT 1 FROM actors UNION ALL SELECT 1 FROM encounters UNION ALL SELECT 1 FROM sessions UNION ALL SELECT 1 FROM lore_entries UNION ALL SELECT 1 FROM map_scenes LIMIT 1').get();
+        if (legacyCampaign?.system_module_id || legacyState) throw Object.assign(new Error('this host already contains a V1 ruleset or campaign records; create a fresh host campaign for experimental V2'), { code: 'conflict' });
         const lock = buildLock(campaignId, moduleId), serialized = JSON.stringify(lock), digest = hashV2Json(lock);
         const existing = db.prepare('SELECT lock_digest,lock_json FROM v2_campaign_locks WHERE campaign_id=?').get(campaignId);
         if (existing) {

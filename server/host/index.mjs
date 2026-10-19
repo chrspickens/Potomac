@@ -1295,6 +1295,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!body || Object.keys(body).some(key => !['name', 'systemModuleId', 'systemModuleVersion', 'baseRevision'].includes(key)) || typeof body.name !== 'string' || !body.name.trim() || body.name.length > 160 || !Number.isInteger(body.baseRevision) || body.baseRevision < 1 || (body.systemModuleId === null) !== (body.systemModuleVersion === null) || body.systemModuleId !== null && (typeof body.systemModuleId !== 'string' || typeof body.systemModuleVersion !== 'string' || !moduleRow.get(body.systemModuleId, body.systemModuleVersion))) return json(res, 400, { error: 'Campaign name, registered module pin, and positive baseRevision are required' });
         const current = campaignJson();
         if (body.baseRevision !== current.revision) return json(res, 409, { error: 'Campaign revision conflict', reasonCode: 'revision_conflict', currentRevision: current.revision });
+        if (v2Api && body.systemModuleId && db.prepare('SELECT 1 FROM v2_campaign_locks WHERE campaign_id=?').get(campaignId)) return json(res, 409, { error: 'An experimental V2 ruleset is already pinned; changing campaign rules requires an explicit migration', reasonCode: 'campaign_module_locked' });
         if (current.systemModuleId && (body.systemModuleId !== current.systemModuleId || body.systemModuleVersion !== current.systemModuleVersion))
           return json(res, 409, { error: 'Pinned campaign module requires an explicit migration' });
         transaction(() => {

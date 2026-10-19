@@ -28,3 +28,7 @@ The approach limits deep links to one campaign and one explicit target hop. A fu
 ## Follow-up / validation
 
 Validate with the two-system GM + Player A + Player B fixture: open every app from Campaign Home, a Workspace brick, a map/Lore relationship and search; confirm only the GM can transition session state, neither player changes shared context, inaccessible targets reveal no metadata, SSE reconnect converges by cursor/snapshot, and v5 backup/restore preserves session/encounter IDs without storing local navigation state.
+
+## Usability note: experimental V2 campaign entry
+
+Campaign Home now exposes the bundled trusted V2 catalog to a GM on a fresh loopback host, labels the choice experimental, and opens the generic Rules workspace after host-side exact pinning. Enrolled players authenticate with their issued credentials and reach the same Rules workspace from ordinary app navigation. Existing V1 setup/navigation remains unchanged. Because the host still has only one configured campaign, this is a one-campaign local onboarding path, not a campaign picker or multi-campaign deployment; see [ADR-0014](0014-normal-ui-trusted-v2-onboarding.md) for the boundary and required host work.
