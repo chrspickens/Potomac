@@ -1,8 +1,11 @@
 # Issue #110 — automated browser evidence (2026-10-19)
 
-**Run type:** automated Chromium UI walkthrough only. No human usability session was performed.  
-**Baseline:** post-#165 `main`, `7e86b66b6a3ca5fe464ebf5836097aa9c5e2f7c6`.  
-**Browser:** Google Chrome `155.0.8059.85`, headless Chromium; CDP-created isolated browser contexts for GM, Player A, Player B.  
+**Run type:** automated Chromium UI walkthrough only. No human usability session was performed.
+
+**Baseline:** post-#165 `main`, `7e86b66b6a3ca5fe464ebf5836097aa9c5e2f7c6`.
+
+**Browser:** Google Chrome `155.0.8059.85`, headless Chromium; CDP-created isolated browser contexts for GM, Player A, Player B.
+
 **App/host:** Vite `http://127.0.0.1:5173/`; experimental host `http://127.0.0.1:4177`; fresh SQLite DB under `.playtest-issue110-20261019/revised5e.sqlite`; V2 enabled only for this loopback process. Temporary databases and browser profile are disposable and must not be committed.
 
 ## Reproduction
