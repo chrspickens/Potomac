@@ -14,7 +14,7 @@ Keep the existing `potomac.campaign-backup` JSON envelope and add schema v6 only
 
 Restore remains empty-destination only. It validates before staging, creates the V2 schemas in a staged database, inserts rows in one transaction, and initializes authority triggers before publishing the staged database and assets. If staging or publication fails, the existing restore rollback path removes staged files and restores prior paths.
 
-Member credential hashes are included because they are required to reconnect the same authenticated principals; plaintext bearer credentials are never stored or exported. Credential hashes are sensitive authentication material, so archives must be handled as private files. The checksum detects accidental corruption, not malicious rewriting; v6 is neither encrypted nor signed. Player-facing queries continue to use normal host authentication and visibility filtering after restore.
+Member credential hashes are included because they are required to reconnect the same authenticated principals; plaintext bearer credentials are never stored or exported. Credential hashes are sensitive authentication material, so archives must be handled as private files. The checksum detects accidental corruption, not malicious rewriting: an archive creator can recompute it after changing records. V6 is neither encrypted nor signed, and semantic validation is not a signature. Player-facing queries continue to use normal host authentication and visibility filtering after restore; credential hashes are never included in projections.
 
 ## Consequences and limits
 
@@ -22,4 +22,4 @@ Supported restore requires the same reviewed trusted module source and exact cap
 
 ## Validation status
 
-The focused backup tests cover V1 v2/v3/v4/v5 archive layouts and a V2 export/restore of a trusted module lock, authority epoch, owner, and command receipts. Expanded mutation/tamper, pending-reaction restart, browser, and historical-source evidence remains required under #139.
+Focused backup tests cover V1 v2/v3/v4/v5 archive layouts, recomputed-checksum V2 lock/closure/ownership/campaign/epoch/receipt/event tampering, corrupted checksums, missing or digest-mismatched trusted catalog entries, and deterministic failures at validation/import/asset/final-publication boundaries with no published partial state. Three isolated Chromium contexts exercise pending V2 reaction export/restore, responder authorization, exact lock/epoch, one-time continuation, retry behavior, filtering, and second-restart persistence. These generated tests do not establish genuine historical archive provenance or manual device/accessibility evidence; those remain open under #139.
