@@ -26,6 +26,7 @@ The current localhost 0.3 experiment uses SSE rather than the proposed WebSocket
 | Lore article storage | Generic campaign-owned SQLite records with fixed built-in types and safe Markdown; no filesystem document source of truth | Accepted for 0.6 requirements; see [ADR-0011](adr/0011-lore-records-and-markdown.md) |
 | Lore sharing and revocation | GM-only/shared article boundary, deliberate host-audited publish/revoke, filtering before every response; cached copies cannot be remotely erased | Accepted for 0.6 requirements; see [ADR-0012](adr/0012-lore-sharing-and-revocation.md) |
 | Lore assets and portable archive | SQLite metadata plus host-managed bytes; backup carries bytes and integrity data; next archive imports supported v2/v3 without merging or overwriting | Accepted for 0.6 requirements; see [ADR-0013](adr/0013-managed-assets-and-portable-backup.md) |
+| Normal UI entry for trusted V2 | Experimental loopback-only selection from the host trusted catalog on a fresh single-campaign host; immutable host-pinned lock opens the generic module workspace | Implemented as a first onboarding increment; see [ADR-0014](adr/0014-normal-ui-trusted-v2-onboarding.md) |
 
 ## Questions to answer through experiments
 
@@ -53,6 +54,7 @@ Record consequential new implementation decisions as small ADRs under `docs/adr/
 - [ADR 0011 — Lore records and safe Markdown](adr/0011-lore-records-and-markdown.md)
 - [ADR 0012 — Lore sharing and revocation](adr/0012-lore-sharing-and-revocation.md)
 - [ADR 0013 — Managed Lore assets and portable backup](adr/0013-managed-assets-and-portable-backup.md)
+- [ADR 0014 — Normal UI entry for trusted V2 campaigns](adr/0014-normal-ui-trusted-v2-onboarding.md)
 - [ADR 0004 — One campaign per host and exact system pin](adr/0004-single-campaign-and-system-pin.md)
 - [ADR 0005 — Host authorization and entity visibility](adr/0005-host-authorization-and-entity-visibility.md)
 - [ADR 0006 — Encounter lifecycle and session activation](adr/0006-encounter-lifecycle.md)

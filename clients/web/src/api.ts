@@ -168,6 +168,8 @@ function tokenFor(role: Role) {
   return role === 'gm' ? (import.meta.env.VITE_POTOMAC_GM_TOKEN || 'local-gm') : (baseUrl && loadRememberedIdentity(baseUrl)?.credential || import.meta.env.VITE_POTOMAC_PLAYER_TOKEN || 'local-player')
 }
 
+export function credentialForRole(role: Role) { return tokenFor(role) }
+
 export async function connectPlayerCredential(credential: string): Promise<Snapshot> {
   if (!baseUrl || !credential) throw new Error('A local host and player credential are required')
   const response = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${credential}` } })
