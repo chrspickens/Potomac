@@ -14,17 +14,17 @@ const allRefs = [moduleRef, ...Object.values(starshipRefs)];
 const lock = { lockVersion: 1, campaignId, entries: allRefs.map(ref => ({ ...ref, source: 'bundled', optional: false })), rootModule: { id: moduleRef.id, version: moduleRef.implementationVersion, digest: moduleRef.digest } };
 const data = () => ({ power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: [] });
 const reactionIntent = { ordering: 'simultaneous', visibility: 'gm', audiences: [{ audience: 'entity-owner', priority: 2, actions: [{ actionId: 'narrative-interrupt', inputSchema: { type: 'object', properties: { choice: { type: 'string', enum: ['accept', 'decline'] } }, required: ['choice'], additionalProperties: false }, visibility: 'public' }] }] };
-const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false, reactionContinuationResolver, resume, randomOnReaction = false, randomResolverId = reactionContinuationResolver, randomVisibility = 'public', intent = reactionIntent, resolveReactionEligibility, authorizeReactionResponder, reauthorizePendingActor, databasePath, database } = {}) => {
+const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = false, authorizeRead = () => false, authorizeCommand = () => false, authorizeCommandIntent = () => true, beforeEffectApply = () => undefined, commands = starshipCommands, reactionContinuationResolver, resume, randomOnReaction = false, randomResolverId = reactionContinuationResolver, randomVisibility = 'public', intent = reactionIntent, resolveReactionEligibility, authorizeReactionResponder, reauthorizePendingActor, databasePath, database } = {}) => {
   const path = databasePath || join(mkdtempSync(join(tmpdir(), 'potomac-v2-extensions-')), 'host.sqlite');
   const db = database || new DatabaseSync(path);
   let time = '2026-10-17T12:00:00.000Z';
   let pinnedLock = currentLock;
   let lockReadHook;
   const roles = new Map([['gm-1', 'gm'], ['player-a', 'player'], ['player-b', 'player'], ['player-c', 'player']]);
-  const effectHandlers = starshipEffectHandlers.map(handler => ({ ...handler, apply: context => { assert.equal(context.db, undefined); assert.equal(context.transaction, undefined); assert(Object.isFrozen(context.entity.data)); assert(Object.isFrozen(context.effect.payload)); return handler.apply(context); } }));
+  const effectHandlers = starshipEffectHandlers.map(handler => ({ ...handler, apply: context => { assert.equal(context.db, undefined); assert.equal(context.transaction, undefined); assert(Object.isFrozen(context.entity.data)); assert(Object.isFrozen(context.effect.payload)); beforeEffectApply(context); return handler.apply(context); } }));
   let randomDraws = 0;
   const resolvers = starshipResolvers.map(resolver => ({ ...resolver, ...(resolver.ref.id === randomResolverId && randomOnReaction ? { randomRequests: ({ randomness }) => randomness.length ? [] : [{ requestId: 'narrative-host-die', kind: 'die', count: 1, sides: 20, visibility: randomVisibility }] } : {}), resolve: input => { assert.equal(input.db, undefined); assert.equal(input.transaction, undefined); assert(Object.isFrozen(input)); assert(Object.isFrozen(input.state.data)); const output = resolver.resolve(input); return resolver.ref.id === reactionContinuationResolver ? { ...output, effects: [], continuation: { continuationId: 'pending-reaction-1', state: { privateDetail: 'not projected' }, resumeOn: 'reaction', expiresAt: '2026-10-17T13:00:00.000Z', step: 1, reaction: intent } } : output; }, ...(resolver.ref.id === reactionContinuationResolver && resume ? { resume } : {}) }));
-  const kernel = createV2ExtensionKernel({ db, entities: [starshipEntity], commands: starshipCommands, workflows: [starshipWorkflow], effectHandlers, resolvers,
+  const kernel = createV2ExtensionKernel({ db, entities: [starshipEntity], commands, workflows: [starshipWorkflow], effectHandlers, resolvers,
     authenticate: principalId => roles.has(principalId) ? { principalId, role: roles.get(principalId) } : undefined,
     getCampaignLock: id => {
       if (id !== campaignId) return undefined;
@@ -32,7 +32,7 @@ const make = ({ failureAt, currentLock = lock, requireTransactionalLockRead = fa
       lockReadHook?.(db);
       return pinnedLock;
     },
-    validateLock: (id, value) => { if (id !== campaignId || value.campaignId !== id || value.lockVersion !== 1) throw new Error('lock mismatch'); }, authorizeRead,
+    validateLock: (id, value) => { if (id !== campaignId || value.campaignId !== id || value.lockVersion !== 1) throw new Error('lock mismatch'); }, authorizeRead, authorizeCommand, authorizeCommandIntent,
     authorizeOwner: ({ ownerPrincipalId }) => roles.has(ownerPrincipalId),
     resolveReactionEligibility: resolveReactionEligibility || (({ intent, entity }) => intent.audiences.flatMap(audience => audience.audience === 'entity-owner' && entity.ownerPrincipalId ? [{ audience: audience.audience, principalId: entity.ownerPrincipalId, priority: audience.priority, actions: audience.actions }] : [])),
     authorizeReactionResponder: authorizeReactionResponder || (({ principalId }) => roles.has(principalId)),
@@ -100,6 +100,49 @@ test('rejects stale revisions and changed-payload retries while exact retries re
   assert.throws(() => kernel.executeCommand(powerRequest({ input: { subsystem: 'propulsion', amount: 8 } })), error => error.code === 'idempotency_conflict');
   assert.throws(() => kernel.executeCommand(powerRequest({ operationId: 'route-2' })), error => error.code === 'stale');
   db.close();
+});
+
+test('revalidates principal and grant authority at the commit boundary and rolls back the whole command', () => {
+  const ownerCommand = starshipCommands.map(command => command.commandId === 'example.starship.reactor.allocate-power'
+    ? { ...command, permission: { roles: ['player'], ownership: 'owner' } }
+    : command);
+  let canAct = true;
+  let context;
+  context = make({
+    commands: ownerCommand,
+    authorizeRead: ({ member }) => member.principalId === 'player-c',
+    authorizeCommand: ({ member }) => member.principalId === 'player-c' && canAct,
+    beforeEffectApply: () => { canAct = false; context.db.prepare('UPDATE actor_grants SET can_act=0 WHERE actor_id=? AND member_id=?').run(`v2:${campaignId}:reactor-1`, 'player-c'); }
+  });
+  create(context.kernel);
+  context.db.exec(`CREATE TABLE actor_grants(actor_id TEXT NOT NULL, member_id TEXT NOT NULL, can_read INTEGER NOT NULL, can_act INTEGER NOT NULL, PRIMARY KEY(actor_id,member_id));`);
+  context.db.prepare('INSERT INTO actor_grants VALUES(?,?,1,1)').run(`v2:${campaignId}:reactor-1`, 'player-c');
+  context.db.prepare('INSERT OR IGNORE INTO v2_authority_versions(campaign_id,version) VALUES(?,0)').run(campaignId);
+  context.db.exec(`CREATE TRIGGER authority_test_grant_update AFTER UPDATE OF can_read,can_act ON actor_grants BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id='${campaignId}'; END;`);
+  const version = context.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version;
+  const request = powerRequest({ principalId: 'player-c', expectedRevision: 1 });
+  assert.throws(() => context.kernel.executeCommand(request), error => error.code === 'unauthorized');
+  assert.equal(context.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'reactor-1').revision, 1);
+  assert.equal(context.db.prepare('SELECT data FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'reactor-1').data, JSON.stringify(data()));
+  for (const table of ['v2_effect_receipts', 'v2_extension_receipts', 'v2_extension_events']) assert.equal(context.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE operation_id=?`).get(request.operationId).count, 0, `${table} rolls back`);
+  assert.equal(context.db.prepare('SELECT can_act FROM actor_grants WHERE actor_id=? AND member_id=?').get(`v2:${campaignId}:reactor-1`, 'player-c').can_act, 1, 'the in-transaction revocation is rolled back with the failed command');
+  assert.equal(context.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version, version, 'authority version and receipt/effect writes share the rollback boundary');
+  context.db.close();
+});
+
+test('revoking a member after initial authorization but before commit leaves no command artifacts', () => {
+  const commands = starshipCommands.map(command => command.commandId === 'example.starship.reactor.allocate-power'
+    ? { ...command, permission: { roles: ['player'], ownership: 'owner' } }
+    : command);
+  let context; let revokeOnIntent = true;
+  context = make({ commands, authorizeRead: ({ member }) => member.principalId === 'player-c', authorizeCommand: ({ member }) => member.principalId === 'player-c',
+    authorizeCommandIntent: () => { if (revokeOnIntent) { revokeOnIntent = false; context.roles.delete('player-c'); } return true; } });
+  create(context.kernel);
+  const request = powerRequest({ principalId: 'player-c' });
+  assert.throws(() => context.kernel.executeCommand(request), error => error.code === 'unauthorized');
+  assert.equal(context.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'reactor-1').revision, 1);
+  for (const table of ['v2_effect_receipts', 'v2_extension_receipts', 'v2_extension_events']) assert.equal(context.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE operation_id=?`).get(request.operationId).count, 0);
+  context.db.close();
 });
 
 test('durably suspends and resumes a generic narrative command exactly once after restart', () => {

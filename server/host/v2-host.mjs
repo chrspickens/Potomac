@@ -1,4 +1,4 @@
-import { randomInt as cryptoRandomInt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomInt as cryptoRandomInt, timingSafeEqual } from 'node:crypto';
 import { createV2ExtensionKernel } from './v2-extensions.mjs';
 import { hashV2Json } from './v2-effects.mjs';
 import { loadTrustedV2Catalog, lockForTrustedModule } from './v2-catalog.mjs';
@@ -19,6 +19,44 @@ const secureEqual = (left, right) => {
   if (typeof left !== 'string' || typeof right !== 'string') return false;
   const a = Buffer.from(left), b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+};
+const installAuthorityVersionTriggers = (db, campaignId) => {
+  const campaign = `'${campaignId.replaceAll("'", "''")}'`;
+  const prefix = `v2_authority_${createHash('sha256').update(campaignId).digest('hex').slice(0, 16)}`;
+  db.prepare('INSERT OR IGNORE INTO v2_authority_versions(campaign_id,version) VALUES(?,0)').run(campaignId);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_lock_insert AFTER INSERT ON v2_campaign_locks
+      WHEN NEW.campaign_id=${campaign}
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_member_insert AFTER INSERT ON members
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_member_update AFTER UPDATE OF credential_hash,revoked_at ON members
+      WHEN OLD.credential_hash IS NOT NEW.credential_hash OR OLD.revoked_at IS NOT NEW.revoked_at
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_member_delete AFTER DELETE ON members
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_grant_insert AFTER INSERT ON actor_grants
+      WHEN substr(NEW.actor_id,1,length('v2:'||${campaign}||':'))='v2:'||${campaign}||':'
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_grant_update AFTER UPDATE OF actor_id,member_id,can_read,can_act ON actor_grants
+      WHEN substr(OLD.actor_id,1,length('v2:'||${campaign}||':'))='v2:'||${campaign}||':' OR substr(NEW.actor_id,1,length('v2:'||${campaign}||':'))='v2:'||${campaign}||':'
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_grant_delete AFTER DELETE ON actor_grants
+      WHEN substr(OLD.actor_id,1,length('v2:'||${campaign}||':'))='v2:'||${campaign}||':'
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_extension_owner_update AFTER UPDATE OF owner_principal_id,descriptor_id,schema_version,migration_id,capability ON v2_extension_entities
+      WHEN OLD.campaign_id=${campaign} AND (OLD.owner_principal_id IS NOT NEW.owner_principal_id OR OLD.descriptor_id IS NOT NEW.descriptor_id OR OLD.schema_version IS NOT NEW.schema_version OR OLD.migration_id IS NOT NEW.migration_id OR OLD.capability IS NOT NEW.capability)
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_extension_owner_delete AFTER DELETE ON v2_extension_entities
+      WHEN OLD.campaign_id=${campaign}
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_entity_visibility_update AFTER UPDATE OF campaign_id,entity_type,visibility ON v2_effect_entities
+      WHEN OLD.campaign_id=${campaign} AND (OLD.campaign_id IS NOT NEW.campaign_id OR OLD.entity_type IS NOT NEW.entity_type OR OLD.visibility IS NOT NEW.visibility)
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+    CREATE TRIGGER IF NOT EXISTS ${prefix}_entity_delete AFTER DELETE ON v2_effect_entities
+      WHEN OLD.campaign_id=${campaign}
+      BEGIN UPDATE v2_authority_versions SET version=version+1 WHERE campaign_id=${campaign}; END;
+  `);
 };
 const begin = (db, mode, work) => {
   if (db.isTransaction) throw Object.assign(new Error('nested V2 host transaction is not supported'), { code: 'invalid' });
@@ -95,6 +133,7 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
       return expectedPrincipal === principalId;
     }
   });
+  installAuthorityVersionTriggers(db, campaignId);
 
   return {
     listModules(principalId, authorityToken) {
