@@ -1,0 +1,33 @@
+{
+  "contractVersion": 1,
+  "contributionId": "example.generic-entity-setup.entity-panel",
+  "contributionVersion": "1.0.0",
+  "kind": "panel",
+  "entityTypeId": "example.generic-entity-setup.entity",
+  "entitySchemaVersion": 1,
+  "capability": { "id": "example.generic-entity-setup", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:f8e987b3dd4c191aca10709165eea94afef87263ff1df040bbbd635efcf46d4e" },
+  "entityCapability": { "id": "example.generic-entity-setup.entity", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:f8e987b3dd4c191aca10709165eea94afef87263ff1df040bbbd635efcf46d4e" },
+  "entitySchema": { "type": "object", "properties": {
+    "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "role": { "type": "string", "enum": ["navigator", "keeper"] },
+    "resources": { "type": "object", "properties": {
+      "calm": { "type": "integer", "minimum": 0, "maximum": 3 },
+      "omen": { "type": "integer", "minimum": 0, "maximum": 2 }
+    }, "required": ["calm", "omen"], "additionalProperties": false },
+    "tags": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 24 }, "minItems": 1, "maxItems": 3 },
+    "progress": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "lastChoice": { "type": "string", "enum": ["none", "observe", "bargain"] }
+  }, "required": ["title", "role", "resources", "tags", "progress", "lastChoice"], "additionalProperties": false },
+  "commands": [{ "commandId": "example.generic-entity-setup.command", "capability": { "id": "example.generic-entity-setup.command", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:f8e987b3dd4c191aca10709165eea94afef87263ff1df040bbbd635efcf46d4e" }, "inputSchema": { "type": "object", "properties": { "choice": { "type": "string", "enum": ["observe", "bargain"] } }, "required": ["choice"], "additionalProperties": false } }],
+  "workflows": [],
+  "slots": [],
+  "nodes": [
+    { "kind": "section", "id": "example.generic-entity-setup.details", "label": "Decision details", "children": [
+      { "kind": "display", "id": "example.generic-entity-setup.role", "path": "role", "label": "Role" },
+      { "kind": "display", "id": "example.generic-entity-setup.title", "path": "title", "label": "Scene" },
+      { "kind": "display", "id": "example.generic-entity-setup.progress", "path": "progress", "label": "Progress" },
+      { "kind": "display", "id": "example.generic-entity-setup.last-choice", "path": "lastChoice", "label": "Last choice" },
+      { "kind": "form", "id": "example.generic-entity-setup.make-choice", "commandId": "example.generic-entity-setup.command", "label": "Record choice" }
+    ] }
+  ]
+}

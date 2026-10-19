@@ -1,6 +1,6 @@
 # Third-module authoring quickstart (current V2 status)
 
-This is a status-aware guide, not a promise of a supported third-party plugin API. The V2 contracts and two bundled examples exist, but there is no general loader, installer, or contribution-to-browser mounting path. A third rules proof currently requires reviewed repository changes to trusted host registration and a UI route.
+This is a status-aware guide, not a promise of a supported third-party plugin API. V2 now has a static trusted catalog and a generic declarative browser workspace for the published UI/entity/command subset. A module still requires an explicit repository-local trusted allowlist entry and reviewed executable source; there is no public installer or sandbox.
 
 ## Public contracts to start with
 
@@ -12,7 +12,7 @@ Follow [the V2 authoring specification](v2-module-authoring.md) and copy [the st
 
 Run `pnpm v2:module digest <module-directory>`, update the module-owned refs/manifests and `authoring.json` using the printed digest, then run `pnpm v2:module validate <module-directory>`. The validator checks the root digest, capability closure, resolver/effect/entity references, and schemas. It imports `extensions.mjs`; use only with source you trust. `pnpm v2:module:test` runs focused contract tests.
 
-This validates a source package; it does not pin or alter a campaign. The campaign lock is exact and immutable after pinning. Existing host bootstrap still imports modules explicitly and uses dedicated browser routes. See [V2 integration boundaries](v2-module-integration-boundaries.md) and the historical findings in [the challenge report](third-module-authoring-report.md).
+This validates a source package; it does not pin or alter a campaign. The supported CLI commands are `pnpm v2:module digest <module-directory>`, `pnpm v2:module validate <module-directory>`, and `pnpm v2:module:test`; there is no `v2:module build` command. After review, a trusted module is added to the repository-local catalog, where host startup revalidates its source and exact digest. The campaign lock is exact and immutable after pinning. Use `/v2-modules` for the generic entity setup and declarative contribution path; it supports only the documented JSON Schema subset. See [V2 integration boundaries](v2-module-integration-boundaries.md) and the historical findings in [the challenge report](third-module-authoring-report.md).
 
 ## Acceptance claims
 

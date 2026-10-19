@@ -6,9 +6,9 @@ import test from 'node:test';
 import { loadTrustedV2Catalog, lockForTrustedModule } from '../server/host/v2-catalog.mjs';
 import { validateModule } from './v2-module.mjs';
 
-test('catalog and authoring validator agree on all five bundled modules and exact roots', async () => {
+test('catalog and authoring validator agree on all six bundled modules and exact roots', async () => {
   const catalog = await loadTrustedV2Catalog();
-  for (const directory of ['example.starship/v2', 'example.revised5e/v2', 'example.interruption/v2', 'example.dicepool/v2', 'module-starter/v2']) {
+  for (const directory of ['example.starship/v2', 'example.revised5e/v2', 'example.interruption/v2', 'example.dicepool/v2', 'module-starter/v2', 'example.generic-entity-setup/v2']) {
     const validated = await validateModule(join(dirname(fileURLToPath(import.meta.url)), '..', 'examples', directory));
     const registered = catalog.byId.get(validated.id);
     assert.ok(registered, `${validated.id} is in the trusted catalog`);
@@ -16,7 +16,7 @@ test('catalog and authoring validator agree on all five bundled modules and exac
     assert.equal(registered.digest, validated.rootDigest);
     assert.deepEqual(lockForTrustedModule(catalog, 'campaign-contract', validated.id).entries.map(item => `${item.id}@${item.implementationVersion}:${item.digest}`).sort(), validated.lock.entries.map(item => `${item.id}@${item.implementationVersion}:${item.digest}`).sort());
   }
-  assert.deepEqual(new Set(catalog.providers.map(item => item.id)), new Set(['example.starship.system', 'example.revised5e', 'example.interruption', 'example.dicepool', 'example.starter']));
+  assert.deepEqual(new Set(catalog.providers.map(item => item.id)), new Set(['example.starship.system', 'example.revised5e', 'example.interruption', 'example.dicepool', 'example.starter', 'example.generic-entity-setup']));
 });
 
 test('catalog rejects duplicate identities, conflicting versions, missing local source and unlisted pins with actionable errors', async () => {

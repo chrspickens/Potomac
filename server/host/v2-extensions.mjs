@@ -424,6 +424,8 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, descriptor);
       if (request.expectedLockDigest !== undefined && hashV2Json(currentLock) !== request.expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
       if (!descriptor.creationRoles.includes(currentMember.role)) fail('unauthorized', 'entity creation is not permitted');
+      if (descriptor.ownership.kind === 'principal' && currentMember.role !== 'gm' && Object.hasOwn(request, 'ownerPrincipalId')) fail('unauthorized', 'only the GM may assign a principal-owned entity');
+      if (descriptor.ownership.kind === 'campaign' && Object.hasOwn(request, 'ownerPrincipalId')) fail('invalid', 'campaign-owned entities cannot be assigned a principal owner');
       const owner = descriptor.ownership.kind === 'principal' ? (currentMember.role === 'gm' ? request.ownerPrincipalId ?? request.principalId : request.principalId) : null;
       if (descriptor.ownership.kind === 'principal' && (!ID.test(owner ?? '') || request.visibility !== 'owner')) fail('invalid', 'principal-owned entities require an owner and owner visibility');
       if (descriptor.ownership.kind === 'campaign' && (owner || request.visibility === 'owner')) fail('invalid', 'campaign-owned entities cannot have an owner visibility');

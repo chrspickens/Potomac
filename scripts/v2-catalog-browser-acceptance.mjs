@@ -35,7 +35,7 @@ try {
   socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.id && pending.has(message.id)) { const done = pending.get(message.id); pending.delete(message.id); done(message); } });
   await openPage('gm'); await input('gm', '#v2-catalog-credential', 'local-gm'); await click('gm', 'Connect'); await wait('gm', `Boolean(document.querySelector('#v2-module-picker'))`, 'authenticated module catalog');
   const catalogResponse = await api('/api/v2/modules'); assert.equal(catalogResponse.status, 200); const { modules } = await catalogResponse.json();
-  assert.deepEqual(new Set(modules.map(item => item.id)), new Set(['example.starship.system', 'example.revised5e', 'example.interruption', 'example.dicepool', 'example.starter']));
+  assert.deepEqual(new Set(modules.map(item => item.id)), new Set(['example.starship.system', 'example.revised5e', 'example.interruption', 'example.dicepool', 'example.starter', 'example.generic-entity-setup']));
   const starter = modules.find(item => item.id === 'example.starter'); assert.equal(starter.digest, cli.rootDigest); assert.deepEqual(new Set(starter.capabilities.map(item => item.id)), new Set(cli.lock.entries.map(item => item.id)));
   await input('gm', '#v2-module-picker', 'example.starter'); await click('gm', 'Pin exact module lock'); await wait('gm', `document.body.innerText.includes('Immutable campaign module')`, 'starter pin');
   const pin = await api('/api/v2/campaign/lock'); assert.equal(pin.status, 200); const { lock, digest } = await pin.json(); assert.equal(lock.rootModule.digest, cli.rootDigest); assert.deepEqual(lock.entries.map(({ id, apiVersion, implementationVersion, digest, source, optional }) => ({ id, apiVersion, implementationVersion, digest, source, optional })).sort((a, b) => a.id.localeCompare(b.id)), cli.lock.entries.map(({ id, apiVersion, implementationVersion, digest, source, optional }) => ({ id, apiVersion, implementationVersion, digest, source, optional })).sort((a, b) => a.id.localeCompare(b.id)));
@@ -43,7 +43,9 @@ try {
   await click('gm', 'Enroll a player'); await wait('gm', `Boolean(document.querySelector('output')?.textContent.includes(':'))`, 'player enrollment credential');
   const enrollment = await evaluate('gm', `(()=>{const text=document.querySelector('output').textContent;const marker=': ';return {displayName:text.split(marker)[0],credential:text.slice(text.indexOf(marker)+marker.length)}})()`);
   const secondEnrollment = await api('/api/members/enroll', 'local-gm', { method: 'POST', body: JSON.stringify({ displayName: 'Unprivileged' }) }); assert.equal(secondEnrollment.status, 201); const unauthorizedMember = await secondEnrollment.json();
-  await click('gm', `Grant ${enrollment.displayName} read/act`); await wait('gm', `document.body.innerText.includes('Read and act grants committed')`, 'scene grant');
+  const enrollmentPrincipal = await (await api('/api/v2/session', enrollment.credential)).json();
+  await evaluate('gm', `(()=>{const s=document.querySelector('#v2-grant-member');if(!s)return false;const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(s,${JSON.stringify(enrollmentPrincipal.principalId)});s.dispatchEvent(new Event('input',{bubbles:true}));s.dispatchEvent(new Event('change',{bubbles:true}));return true})()`);
+  await click('gm', 'Grant selected player read/act'); await wait('gm', `document.body.innerText.includes('Read and act grant committed')`, 'scene grant');
   const scene = await (await api('/api/v2/entities?typeId=example.starter.scene', 'local-gm', { headers: { 'x-v2-lock-digest': digest } })).json(); const entity = (scene.entities ?? scene)[0];
   await openPage('player'); await input('player', '#v2-catalog-credential', enrollment.credential); await click('player', 'Connect'); await wait('player', `Boolean(document.querySelector('.v2-ui-contribution'))`, 'player generic view'); await wait('player', `document.body.innerText.includes('Advance scene')`, 'authorized player command');
   await evaluate('player', `(()=>{window.__v2Commands=[];const f=window.fetch.bind(window);window.fetch=async(i,o={})=>{const r=await f(i,o);if(String(i).endsWith('/api/v2/commands'))window.__v2Commands.push({body:JSON.parse(o.body),response:await r.clone().json()});return r}})()`);
@@ -71,8 +73,9 @@ try {
 } finally {
   try { host?.close(); } catch {}
   for (const context of contexts) try { await call('Target.disposeBrowserContext', { browserContextId: context }); } catch {}
+  try { await call('Browser.close'); } catch {}
   try { socket?.close(); } catch {}
   for (const item of children) try { if (item.child.exitCode === null) item.child.kill(); } catch {}
   await Promise.all(children.map(item => item.child.exitCode !== null ? Promise.resolve() : new Promise(resolveExit => { item.child.once('exit', resolveExit); setTimeout(resolveExit, 1500); })));
-  await rm(scratch, { recursive: true, force: true });
+  await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
