@@ -40,6 +40,8 @@ try {
   await click('gm', 'Enroll Player B'); await wait('gm', `Boolean(document.querySelector('[data-player-credential="playerB"]'))`, 'B enrollment'); const bCredential = await evaluate('gm', `document.querySelector('[data-player-credential="playerB"]').textContent`);
   await click('gm', 'Create scene and grant access'); await wait('gm', `Boolean(document.querySelector('.v2-actor-grid'))`, 'scene setup complete');
   await page('a'); await connect('a', aCredential); await page('b'); await connect('b', bCredential);
+  await wait('a', `document.querySelector('select option:checked')?.textContent==='Mira Vale'`, 'Player A character projection');
+  await wait('b', `document.querySelector('select option:checked')?.textContent==='Oren Pike'`, 'Player B character projection');
   assert.equal(await evaluate('a', `document.querySelector('select option:checked')?.textContent`), 'Mira Vale'); assert.equal(await evaluate('b', `document.querySelector('select option:checked')?.textContent`), 'Oren Pike');
   const lock = await (await api('/api/v2/campaign/lock', 'local-gm')).json(); const digest = lock.digest;
   assert.equal(await evaluate('a', `document.querySelector('main').innerText.includes('undertow remembers')`), false, 'GM-only scene note not projected to Player A');
