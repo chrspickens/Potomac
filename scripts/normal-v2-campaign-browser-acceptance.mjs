@@ -36,9 +36,10 @@ try {
   await fill('gm', 'select[aria-label="Reviewed V2 module"]', 'example.generic-entity-setup');
   await click('gm', 'Create fresh experimental V2 campaign');
   await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.body.innerText.includes('Immutable campaign module')`, 'normal setup exact host pin and Rules workspace');
+  await waitFor('gm', `(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Enroll a player');return Boolean(b&&!b.disabled)})()`, 'GM enrollment control ready');
   await click('gm', 'Enroll a player'); await waitFor('gm', `document.querySelectorAll('output').length>=1`, 'first enrollment');
   const creds = await ev('gm', `(()=>[...document.querySelectorAll('output')].map(o=>{const t=o.textContent,m=': ';return {name:t.split(m)[0],credential:t.slice(t.indexOf(m)+m.length)}}))()`);
-  const a = creds.at(-1); await click('gm', 'Enroll a player'); await waitFor('gm', `document.querySelectorAll('output').length>=2`, 'second enrollment');
+  const a = creds.at(-1); await waitFor('gm', `(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Enroll a player');return Boolean(b&&!b.disabled)})()`, 'second enrollment control ready'); await click('gm', 'Enroll a player'); await waitFor('gm', `document.querySelectorAll('output').length>=2`, 'second enrollment');
   const twoCreds = await ev('gm', `(()=>[...document.querySelectorAll('output')].map(o=>{const t=o.textContent,m=': ';return {name:t.split(m)[0],credential:t.slice(t.indexOf(m)+m.length)}}))()`); const b = twoCreds.at(-1);
   for (const player of [a, b]) player.memberId = (await (await api('/api/v2/session', player.credential)).json()).principalId;
   const typeId = 'example.generic-entity-setup.entity';
