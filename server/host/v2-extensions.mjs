@@ -44,8 +44,11 @@ CREATE TABLE IF NOT EXISTS v2_extension_pending_commands (
   operation_id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, principal_id TEXT NOT NULL,
   command_id TEXT NOT NULL, entity_id TEXT NOT NULL, resolver TEXT NOT NULL, command_capability TEXT NOT NULL,
   lock TEXT NOT NULL, lock_digest TEXT NOT NULL, request TEXT NOT NULL, payload_hash TEXT NOT NULL, expected_revisions TEXT NOT NULL,
-  continuation TEXT NOT NULL, suspension_transcript TEXT NOT NULL, window_id TEXT NOT NULL UNIQUE,
+  continuation TEXT NOT NULL, suspension_transcript TEXT NOT NULL, window_id TEXT NOT NULL UNIQUE, authority_version INTEGER NOT NULL DEFAULT -1,
   status TEXT NOT NULL, response TEXT, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v2_authority_versions (
+  campaign_id TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version >= 0)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS v2_extension_continuation_identity ON v2_extension_workflows(continuation_id);`;
 
@@ -123,6 +126,8 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   for (const command of commandTypes.values()) for (const ref of command.effects) if (!effectMap.has(refKey(ref))) fail('invalid', `command ${command.commandId} declares an unavailable effect handler`);
 
   db.exec(V2_EXTENSION_SCHEMA);
+  const pendingColumns = new Set(db.prepare('PRAGMA table_info(v2_extension_pending_commands)').all().map(column => column.name));
+  if (!pendingColumns.has('authority_version')) db.exec('ALTER TABLE v2_extension_pending_commands ADD COLUMN authority_version INTEGER NOT NULL DEFAULT -1');
   const principal = (principalId, campaignId, authorityToken) => {
     const result = authenticate(principalId, { campaignId, authorityToken });
     if (!result || result.principalId !== principalId || !['gm', 'player'].includes(result.role)) fail('unauthorized', 'authenticated campaign member required');
@@ -153,6 +158,15 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     const grantCanAuthorize = permission.ownership !== 'gm' && authorizeCommand({ member: clone(member), entity: clone(entity), permission: clone(permission) }) === true;
     return ownershipMatches || grantCanAuthorize;
   };
+  const assertCommandAuthority = ({ request, command, member, entity, lock, participants = [] }) => {
+    const currentMember = principal(request.principalId, request.campaignId, request.authorityToken);
+    const currentLock = lockFor(request.campaignId);
+    if (hashV2Json(currentLock) !== hashV2Json(lock)) fail('unsupported', 'campaign capability lock changed during extension operation');
+    const { record } = readRecord(request.campaignId, request.entityId, currentMember, currentLock, participants);
+    if (record.typeId !== command.entityTypeId || !canCommand(currentMember, record, command.permission, participants)) fail('unauthorized', 'command authority changed during extension operation');
+    const { authorityToken: _authorityToken, ...publicRequest } = request;
+    if (authorizeCommandIntent({ member: clone(currentMember), entity: clone(record), command: clone(command), request: clone(publicRequest) }) !== true) fail('unauthorized', 'command-specific authority changed during extension operation');
+  };
   const projectRecord = (record, descriptor, member) => {
     const result = clone(record);
     for (const rule of descriptor.fieldVisibility || []) if (!rule.roles.includes(member.role)) {
@@ -171,6 +185,13 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const transaction = (work, mode = 'IMMEDIATE') => {
     if (db.isTransaction) fail('invalid', 'nested V2 host transaction is not supported');
     db.exec(`BEGIN ${mode}`); try { const value = work(); db.exec('COMMIT'); return value; } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
+  };
+  const authorityVersion = campaignId => {
+    db.prepare('INSERT OR IGNORE INTO v2_authority_versions(campaign_id,version) VALUES(?,0)').run(campaignId);
+    return db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId)?.version;
+  };
+  const assertAuthorityVersion = (campaignId, expected) => {
+    if (authorityVersion(campaignId) !== expected) fail('unauthorized', 'campaign or principal authority changed during extension operation');
   };
   const currentDescriptor = (record, lock) => {
     const descriptor = entityTypes.get(record.typeId);
@@ -312,6 +333,8 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     try {
       if (request.operationId !== pending.operation_id || request.campaignId !== pending.campaign_id || request.principalId !== pending.principal_id || request.commandId !== pending.command_id || request.entityId !== pending.entity_id || hashV2Json(request) !== pending.payload_hash) fail('conflict', 'pending command identity integrity check failed');
       if (hashV2Json(window.lock) !== hashV2Json(storedLock) || hashV2Json(window.resolver) !== hashV2Json(JSON.parse(pending.resolver)) || hashV2Json(window.continuation?.continuation) !== hashV2Json(JSON.parse(pending.continuation)) || window.continuation?.actorPrincipalId !== pending.principal_id) fail('conflict', 'reaction continuation identity does not match its pending command');
+      const currentAuthorityVersion = authorityVersion(pending.campaign_id);
+      if (pending.authority_version < 0 || currentAuthorityVersion !== pending.authority_version) fail('unauthorized', 'campaign or principal authority changed while command was suspended');
       if (!reauthorizePendingActor) fail('unauthorized', 'pending actor reauthorization is not configured');
       const currentMember = reauthorizePendingActor({ principalId: pending.principal_id, campaignId: pending.campaign_id, commandId: pending.command_id, entityId: pending.entity_id });
       if (!currentMember || currentMember.principalId !== pending.principal_id || !['gm', 'player'].includes(currentMember.role)) fail('unauthorized', 'pending actor is no longer authorized');
@@ -326,6 +349,11 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       if (record.revision !== request.expectedRevision) fail('stale', 'source entity revision changed while command was suspended');
       if (!canCommand(currentMember, record, command.permission)) fail('unauthorized', 'source command authority was revoked');
       if (authorizeCommandIntent({ member: clone(currentMember), entity: clone(record), command: clone(command), request: clone(request) }) !== true) fail('unauthorized', 'suspended command authority was revoked');
+      for (const decision of decisions) {
+        const eligible = window.eligible.find(item => item.principalId === decision.principalId);
+        const action = eligible?.actions.find(item => item.actionId === decision.actionId);
+        if (!eligible || !action || authorizeReactionResponder({ principalId: decision.principalId, window, action }) !== true) fail('unauthorized', 'a reaction participant is no longer authorized');
+      }
       const expectedRevisions = JSON.parse(pending.expected_revisions);
       for (const [entityId, expectedRevision] of Object.entries(expectedRevisions)) {
         const target = entityRows(pending.campaign_id, entityId);
@@ -356,6 +384,8 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       db.prepare('UPDATE v2_extension_pending_commands SET status=?, response=?, updated_at=? WHERE operation_id=? AND status=?').run('completed', json(storedResponse), now(), pending.operation_id, 'pending');
       db.prepare('UPDATE v2_extension_receipts SET response=?, created_at=? WHERE operation_id=? AND payload_hash=?').run(json(storedResponse), now(), pending.operation_id, pending.payload_hash);
       if (failureAt === 'after-final-receipt') fail('injected', 'failure after final command receipt');
+      assertCommandAuthority({ request: { ...request, authorityToken: currentMember.authorityToken }, command, member: currentMember, entity: record, lock: storedLock });
+      assertAuthorityVersion(pending.campaign_id, pending.authority_version);
       assertCurrentLock(pending.campaign_id, storedLock);
       return response;
     } catch (error) { if (effectApplicationStarted) throw error; return conflict(error); }
@@ -421,6 +451,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     validateBoundedJson(request.data, descriptor.schema);
     db.exec('BEGIN IMMEDIATE;');
     try {
+      const versionAtStart = authorityVersion(request.campaignId);
       const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, descriptor);
       if (request.expectedLockDigest !== undefined && hashV2Json(currentLock) !== request.expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
       if (!descriptor.creationRoles.includes(currentMember.role)) fail('unauthorized', 'entity creation is not permitted');
@@ -435,14 +466,14 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       const { authorityToken: _authorityToken, ...publicRequest } = request;
       const payload = { ...publicRequest, ownerPrincipalId: owner, capability: descriptor.capability, schemaVersion: descriptor.schemaVersion, migrationId: descriptor.migration.migrationId };
       const payloadHash = hashV2Json(payload); const retry = receipt(request, payloadHash);
-      if (retry) { assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return retry; }
+      if (retry) { assertCurrentLock(request.campaignId, currentLock); assertAuthorityVersion(request.campaignId, versionAtStart); db.exec('COMMIT;'); return retry; }
       db.prepare('INSERT INTO v2_effect_entities(campaign_id,entity_id,entity_type,revision,visibility,data) VALUES(?,?,?,?,?,?)').run(request.campaignId, request.entityId, descriptor.typeId, 1, storedVisibility(request.visibility), json(request.data));
       db.prepare('INSERT INTO v2_extension_entities(campaign_id,entity_id,descriptor_id,schema_version,migration_id,capability,owner_principal_id) VALUES(?,?,?,?,?,?,?)').run(request.campaignId, request.entityId, descriptor.typeId, descriptor.schemaVersion, descriptor.migration.migrationId, json(descriptor.capability), owner);
       const result = { operationId: request.operationId, status: 'applied', entityId: request.entityId, revision: 1 };
       writeEvent(request, request.entityId, 'entity.created', request.visibility === 'owner' ? 'private' : request.visibility, { typeId: descriptor.typeId, revision: 1 });
       if (failureAt === 'after-entity') fail('injected', 'failure after entity creation');
       db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(result), now());
-      assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return result;
+      assertCurrentLock(request.campaignId, currentLock); assertAuthorityVersion(request.campaignId, versionAtStart); db.exec('COMMIT;'); return result;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const startWorkflow = request => {
@@ -453,6 +484,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     const stateData = request.stateData ?? {}; validateBoundedJson(stateData, initialState.schema);
     db.exec('BEGIN IMMEDIATE;');
     try {
+      const versionAtStart = authorityVersion(request.campaignId);
       const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, workflow);
       const { record } = readRecord(request.campaignId, request.entityId, currentMember, currentLock);
       if (record.typeId !== workflow.entityTypeId) fail('unsupported', 'workflow entity type is unavailable');
@@ -462,7 +494,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       if (currentMember.role !== 'gm' && participants.some(id => id !== currentMember.principalId)) fail('unauthorized', 'only the GM may designate other workflow participants');
       const { authorityToken: _authorityToken, ...publicRequest } = request;
       const payload = { ...publicRequest, stateData, participants, capability: workflow.capability }; const payloadHash = hashV2Json(payload); const retry = receipt(request, payloadHash);
-      if (retry) { assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return retry; }
+      if (retry) { assertCurrentLock(request.campaignId, currentLock); assertAuthorityVersion(request.campaignId, versionAtStart); db.exec('COMMIT;'); return retry; }
       if (Date.parse(request.expiresAt) <= Date.parse(now())) fail('invalid', 'workflow expiry must be in the future');
       if (record.revision !== request.expectedEntityRevision) fail('stale', 'workflow entity revision is stale');
       const continuationId = createId(); if (!ID.test(continuationId)) fail('invalid', 'host produced invalid continuation identity');
@@ -470,7 +502,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       db.prepare('INSERT INTO v2_extension_workflows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(request.workflowId, request.campaignId, request.entityId, workflow.workflowType, json(workflow.capability), 1, workflow.initialState, json(stateData), continuationId, json(participants), request.expiresAt, 'active', request.principalId, now());
       writeEvent(request, request.entityId, 'workflow.started', storedVisibility(record.visibility), { workflowId: request.workflowId, revision: 1 });
       if (failureAt === 'after-workflow') fail('injected', 'failure after workflow creation');
-      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(result), now()); assertCurrentLock(request.campaignId, currentLock); db.exec('COMMIT;'); return result;
+      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(result), now()); assertCurrentLock(request.campaignId, currentLock); assertAuthorityVersion(request.campaignId, versionAtStart); db.exec('COMMIT;'); return result;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const executeCommand = request => {
@@ -483,6 +515,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     const payloadHash = hashV2Json(payload);
     db.exec('BEGIN IMMEDIATE;');
     try {
+      const authorityVersionAtStart = authorityVersion(request.campaignId);
       const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const lock = lockFor(request.campaignId);
       if (request.expectedLockDigest !== undefined && hashV2Json(lock) !== request.expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
       requireCapability(lock, command.capability, request.campaignId); requireCapability(lock, command.resolver, request.campaignId);
@@ -511,7 +544,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       // Do not apply the old expected revision/continuation to an exact retry:
       // the successful first attempt has already advanced them.
       const retry = projectCommandReceipt(request, payloadHash, currentMember, currentRecord);
-      if (retry) { assertCurrentLock(request.campaignId, lock); db.exec('COMMIT;'); return retry; }
+      if (retry) { assertCurrentLock(request.campaignId, lock); assertAuthorityVersion(request.campaignId, authorityVersionAtStart); db.exec('COMMIT;'); return retry; }
       if (command.permission.noPendingContinuations && db.prepare("SELECT 1 FROM v2_extension_pending_commands WHERE campaign_id=? AND entity_id=? AND status='pending' LIMIT 1").get(request.campaignId, request.entityId)) fail('conflict', 'command is unavailable while a reaction continuation is pending');
       if (currentRecord.revision !== request.expectedRevision) fail('stale', 'entity revision changed');
 
@@ -560,7 +593,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
         const privateContinuation = { continuation: clone(output.continuation), actorPrincipalId: currentMember.principalId };
         const window = { windowId, parentOperationId: request.operationId, campaignId: request.campaignId, resolver: clone(command.resolver), lock: clone(lock), eligible, ordering: intent.ordering, expiresAt: output.continuation.expiresAt, continuation: privateContinuation, visibility: intent.visibility };
         const pendingRequest = { ...payload };
-        db.prepare('INSERT INTO v2_extension_pending_commands VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(request.operationId, request.campaignId, currentMember.principalId, command.commandId, request.entityId, json(command.resolver), json(command.capability), json(lock), hashV2Json(lock), json(pendingRequest), payloadHash, json(expectedRevisions), json(output.continuation), json(output), windowId, 'pending', null, now());
+        db.prepare('INSERT INTO v2_extension_pending_commands(operation_id,campaign_id,principal_id,command_id,entity_id,resolver,command_capability,lock,lock_digest,request,payload_hash,expected_revisions,continuation,suspension_transcript,window_id,authority_version,status,response,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(request.operationId, request.campaignId, currentMember.principalId, command.commandId, request.entityId, json(command.resolver), json(command.capability), json(lock), hashV2Json(lock), json(pendingRequest), payloadHash, json(expectedRevisions), json(output.continuation), json(output), windowId, authorityVersionAtStart, 'pending', null, now());
         reactionKernel.openInTransaction(window, currentMember.principalId, request.authorityToken);
         if (failureAt === 'after-pending-window') fail('injected', 'failure after pending reaction window');
         const resultData = output.outcomes.map(({ kind, data, visibility }) => ({ kind, data, visibility })); validateBoundedJson(resultData, command.resultSchema);
@@ -569,7 +602,8 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
         const storedResponse = { ...response, allOutcomes: resultData, suspensionTranscript: output };
         db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(storedResponse), now());
         if (failureAt === 'after-pending-receipt') fail('injected', 'failure after pending command receipt');
-        assertCurrentLock(request.campaignId, lock); db.exec('COMMIT;'); return response;
+        assertCommandAuthority({ request, command, member: currentMember, entity: currentRecord, lock, participants: authorizedParticipants });
+        assertCurrentLock(request.campaignId, lock); assertAuthorityVersion(request.campaignId, authorityVersionAtStart); db.exec('COMMIT;'); return response;
       }
       for (const effect of output.effects) {
         const handler = effectHandlers.find(candidate => candidate.id === effect.handler && command.effects.some(ref => refKey(ref) === refKey(candidate)));
@@ -613,20 +647,23 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       if (failureAt === 'after-command-effects' && effectProposal) fail('injected', 'failure after command effects');
       const storedResponse = { ...response, allOutcomes: resultData, resolutionTranscript: output };
       db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, request.campaignId, request.principalId, payloadHash, json(storedResponse), now());
+      assertCommandAuthority({ request, command, member: currentMember, entity: currentRecord, lock, participants: authorizedParticipants });
+      assertAuthorityVersion(request.campaignId, authorityVersionAtStart);
       assertCurrentLock(request.campaignId, lock);
       if (failureAt === 'after-command-receipt') fail('injected', 'failure after command receipt');
       db.exec('COMMIT;'); return response;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
-  const hostReactionTransaction = work => {
+  const hostReactionTransaction = (campaignId, work) => {
     if (db.isTransaction) fail('invalid', 'reaction command cannot be nested in another host transaction');
     db.exec('BEGIN IMMEDIATE;');
-    try { const result = work(); db.exec('COMMIT;'); return result; }
+    try { const versionAtStart = campaignId ? authorityVersion(campaignId) : undefined; const result = work(); if (campaignId) assertAuthorityVersion(campaignId, versionAtStart); db.exec('COMMIT;'); return result; }
     catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
-  const submitReaction = (submission, authorityToken) => hostReactionTransaction(() => { const result = reactionKernel.submitInTransaction(submission, authorityToken); if (failureAt === 'after-reaction-submission') fail('injected', 'failure after reaction submission'); return result; });
-  const expireReaction = (windowId, principalId, authorityToken) => hostReactionTransaction(() => reactionKernel.expireInTransaction(windowId, principalId, authorityToken));
-  const adjudicateReaction = (windowId, principalId, decision = 'accept', authorityToken) => hostReactionTransaction(() => reactionKernel.adjudicateInTransaction(windowId, principalId, decision, authorityToken));
+  const reactionCampaign = windowId => db.prepare('SELECT campaign_id FROM v2_reaction_windows WHERE window_id=?').get(windowId)?.campaign_id;
+  const submitReaction = (submission, authorityToken) => hostReactionTransaction(submission?.campaignId ?? reactionCampaign(submission?.windowId), () => { const result = reactionKernel.submitInTransaction(submission, authorityToken); if (failureAt === 'after-reaction-submission') fail('injected', 'failure after reaction submission'); return result; });
+  const expireReaction = (windowId, principalId, authorityToken) => hostReactionTransaction(reactionCampaign(windowId), () => reactionKernel.expireInTransaction(windowId, principalId, authorityToken));
+  const adjudicateReaction = (windowId, principalId, decision = 'accept', authorityToken) => hostReactionTransaction(reactionCampaign(windowId), () => reactionKernel.adjudicateInTransaction(windowId, principalId, decision, authorityToken));
   const viewReaction = (windowId, principalId, authorityToken) => transaction(() => reactionKernel.view(windowId, principalId, authorityToken));
   const listReactions = (campaignId, principalId, authorityToken) => transaction(() => {
     const member = principal(principalId, campaignId, authorityToken); lockFor(campaignId);
@@ -646,19 +683,21 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
     if (!request || !ID.test(request.workflowId) || !ID.test(request.operationId) || !ID.test(request.principalId) || !Number.isInteger(request.expectedRevision) || !ID.test(request.expectedContinuationId ?? '')) fail('invalid', 'malformed workflow expiry');
     db.exec('BEGIN IMMEDIATE;'); try {
       const row = readWorkflowRow(request.workflowId); if (!row) fail('unavailable', 'workflow is unavailable'); const workflow = decodeWorkflow(row);
+      if (workflow.campaignId !== request.campaignId && request.campaignId !== undefined) fail('unavailable', 'workflow is unavailable');
+      const workflowAuthorityVersion = authorityVersion(workflow.campaignId);
       const member = principal(request.principalId, workflow.campaignId); const descriptor = workflowTypes.get(workflow.workflowType); const lock = lockFor(workflow.campaignId);
       if (!descriptor) fail('unsupported', 'workflow capability is unavailable'); validateStoredWorkflow(workflow, descriptor); assertTypePinned(workflow.campaignId, lock, descriptor);
       const { record } = readRecord(workflow.campaignId, workflow.entityId, member, lock, workflow.participants);
       if (!descriptor.expirationRoles.includes(member.role) || (member.role !== 'gm' && record.ownerPrincipalId !== member.principalId && !workflow.participants.includes(member.principalId))) fail('unauthorized', 'workflow expiry is not permitted');
       const payload = { ...request, campaignId: workflow.campaignId, principalId: member.principalId }; const payloadHash = hashV2Json(payload); const retry = receipt(payload, payloadHash);
-      if (retry) { assertCurrentLock(workflow.campaignId, lock); db.exec('COMMIT;'); return retry; }
+      if (retry) { assertCurrentLock(workflow.campaignId, lock); assertAuthorityVersion(workflow.campaignId, workflowAuthorityVersion); db.exec('COMMIT;'); return retry; }
       if (workflow.revision !== request.expectedRevision || workflow.continuationId !== request.expectedContinuationId) fail('stale', 'workflow continuation is stale');
       if (workflow.status !== 'active' || descriptor.terminalStates.includes(workflow.state)) fail('conflict', 'workflow is not active');
       if (Date.parse(workflow.expiresAt) > Date.parse(now())) fail('conflict', 'workflow has not expired');
       const update = db.prepare("UPDATE v2_extension_workflows SET revision=revision+1,status='expired',updated_at=? WHERE workflow_id=? AND revision=? AND continuation_id=? AND status='active'").run(now(), workflow.workflowId, request.expectedRevision, request.expectedContinuationId); if (update.changes !== 1) fail('stale', 'workflow revision changed');
       const response = { operationId: request.operationId, status: 'expired', workflowId: workflow.workflowId, revision: request.expectedRevision + 1 };
       writeEvent(payload, workflow.entityId, 'workflow.expired', storedVisibility(record.visibility), { workflowId: workflow.workflowId, revision: request.expectedRevision + 1 });
-      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, workflow.campaignId, member.principalId, payloadHash, json(response), now()); assertCurrentLock(workflow.campaignId, lock); db.exec('COMMIT;'); return response;
+      db.prepare('INSERT INTO v2_extension_receipts VALUES(?,?,?,?,?,?)').run(request.operationId, workflow.campaignId, member.principalId, payloadHash, json(response), now()); assertCurrentLock(workflow.campaignId, lock); assertAuthorityVersion(workflow.campaignId, workflowAuthorityVersion); db.exec('COMMIT;'); return response;
     } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; }
   };
   const snapshot = campaignId => {

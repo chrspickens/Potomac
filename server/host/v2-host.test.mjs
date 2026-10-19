@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { once } from 'node:events';
+import { Worker } from 'node:worker_threads';
 import test from 'node:test';
 import { createHost } from './index.mjs';
 
@@ -121,6 +123,149 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
   } finally {
     host?.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('authority changes during host resolution roll back effects, events and receipts as one SQLite transaction', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-authority-'));
+  const databasePath = join(directory, 'host.sqlite');
+  let host, baseUrl, lockDigest, playerA;
+  let authorityMutation;
+  const campaignId = 'campaign-v2-authority-race';
+  const sceneData = title => ({ title, status: 'ready', obstacle: 'fog-gate', characters: [
+    { id: 'char-a', name: 'Mira', ownerPrincipalId: playerA.memberId, pool: 2, stress: 0, push: 1, role: 'navigator' },
+    { id: 'char-b', name: 'Oren', ownerPrincipalId: 'gm', pool: 2, stress: 0, push: 1, role: 'keeper' }
+  ], log: [], gmNote: 'private' });
+  const launch = async () => {
+    host = createHost({ databasePath, campaignId, enableV2Api: true, v2RandomInt: min => {
+      if (authorityMutation) { const mutate = authorityMutation; authorityMutation = undefined; mutate(); }
+      return min;
+    } });
+    const address = await host.listen(0); baseUrl = `http://127.0.0.1:${address.port}`;
+  };
+  const request = (path, token = 'local-gm', options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers } });
+  const send = (path, body, token = 'local-gm', method = 'POST', headers = {}) => request(path, token, { method, body: JSON.stringify(body), headers });
+  try {
+    await launch();
+    playerA = await (await send('/api/members/enroll', { displayName: 'Player A' })).json();
+    assert.equal((await send('/api/v2/campaign/lock', { moduleId: 'example.dicepool' }, 'local-gm', 'PUT')).status, 201);
+    lockDigest = (await (await request('/api/v2/campaign/lock', playerA.credential)).json()).digest;
+    const proof = { 'x-v2-lock-digest': lockDigest };
+    for (const [entityId, title] of [['authority-source', 'Source'], ['authority-other', 'Other']]) {
+      const created = await send('/api/v2/entities', { operationId: `create-${entityId}`, entityId, typeId: 'example.dicepool.scene', visibility: 'public', data: sceneData(title) }, 'local-gm', 'POST', proof);
+      assert.equal(created.status, 201, await created.text());
+    }
+    assert.equal((await send('/api/v2/entities/authority-source/grants', { memberId: playerA.memberId, permissions: ['read', 'act'] }, 'local-gm')).status, 201);
+    assert.equal((await send('/api/v2/entities/authority-other/grants', { memberId: playerA.memberId, permissions: ['read', 'act'] }, 'local-gm')).status, 201);
+    const initialVersion = host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version;
+    // Each synchronous hook runs inside the host's command transaction from its random
+    // source. These deterministic in-flight changes prove rollback without timing races.
+    const mutations = [
+      ['grant-change', () => host.db.prepare('UPDATE actor_grants SET can_read=0 WHERE actor_id=? AND member_id=?').run(`v2:${campaignId}:authority-other`, playerA.memberId)],
+      ['source-owner-change', () => host.db.prepare('UPDATE v2_extension_entities SET owner_principal_id=? WHERE campaign_id=? AND entity_id=?').run('gm', campaignId, 'authority-source')],
+      ['owner-change', () => host.db.prepare('UPDATE v2_extension_entities SET owner_principal_id=? WHERE campaign_id=? AND entity_id=?').run(playerA.memberId, campaignId, 'authority-other')],
+      ['visibility-change', () => host.db.prepare("UPDATE v2_effect_entities SET visibility='gm' WHERE campaign_id=? AND entity_id=?").run(campaignId, 'authority-other')],
+      ['membership-revocation', () => host.db.prepare("UPDATE members SET revoked_at='2026-10-18T00:00:00.000Z' WHERE id=?").run(playerA.memberId)]
+    ];
+    for (const [suffix, mutate] of mutations) {
+      const operationId = `authority-during-${suffix}`;
+      const command = { operationId, commandId: 'example.dicepool.skill-challenge', entityId: 'authority-source', expectedRevision: 1, input: { actorId: 'char-a', difficulty: 1, push: false } };
+      authorityMutation = mutate;
+      const denied = await send('/api/v2/commands', command, playerA.credential, 'POST', proof);
+      assert.ok([401, 403].includes(denied.status), `${suffix} during resolver fails closed: ${await denied.clone().text()}`);
+      assert.equal(host.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'authority-source').revision, 1, `${suffix}: entity effect rolled back`);
+      assert.equal(host.db.prepare('SELECT can_read FROM actor_grants WHERE actor_id=? AND member_id=?').get(`v2:${campaignId}:authority-other`, playerA.memberId).can_read, 1, `${suffix}: grant remains unchanged`);
+      assert.equal(host.db.prepare('SELECT owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'authority-other').owner_principal_id, null, `${suffix}: owner remains unchanged`);
+      assert.equal(host.db.prepare('SELECT owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'authority-source').owner_principal_id, null, `${suffix}: source owner remains unchanged`);
+      assert.equal(host.db.prepare('SELECT visibility FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'authority-other').visibility, 'public', `${suffix}: visibility remains unchanged`);
+      assert.equal(host.db.prepare('SELECT revoked_at FROM members WHERE id=?').get(playerA.memberId).revoked_at, null, `${suffix}: membership remains active`);
+      assert.equal(host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version, initialVersion, `${suffix}: authority revision rolled back`);
+      for (const table of ['v2_effect_receipts', 'v2_extension_receipts', 'v2_extension_events']) assert.equal(host.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE operation_id=?`).get(operationId).count, 0, `${suffix}: ${table} has no committed rejected-operation record`);
+    }
+
+    // Ownership changes are also part of the same versioned authority domain.
+    const beforeOwnerChange = host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version;
+    host.db.prepare('UPDATE v2_extension_entities SET owner_principal_id=? WHERE campaign_id=? AND entity_id=?').run(playerA.memberId, campaignId, 'authority-other');
+    assert.equal(host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version, beforeOwnerChange + 1);
+    const staleCommand = { operationId: 'stale-lock-authority', commandId: 'example.dicepool.skill-challenge', entityId: 'authority-source', expectedRevision: 1, input: { actorId: 'char-a', difficulty: 1, push: false } };
+    const staleLock = await send('/api/v2/commands', staleCommand, playerA.credential, 'POST', { 'x-v2-lock-digest': `sha256:${'0'.repeat(64)}` });
+    assert.equal(staleLock.status, 409, 'a mismatched lock digest is rejected');
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_receipts WHERE operation_id=?').get('stale-lock-authority').count, 0);
+
+    // A revocation committed before a fresh request is authoritative even if the client has a session.
+    assert.equal((await send(`/api/members/${playerA.memberId}`, {}, 'local-gm', 'DELETE')).status, 200);
+    const revokedRequest = await send('/api/v2/commands', { ...staleCommand, operationId: 'revoked-fresh-command' }, playerA.credential, 'POST', proof);
+    assert.equal(revokedRequest.status, 401);
+    assert.equal(host.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'authority-source').revision, 1);
+    host.close(); host = undefined;
+    await launch();
+    assert.equal(host.db.prepare('SELECT owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'authority-other').owner_principal_id, playerA.memberId, 'committed authority mutations survive restart');
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_receipts WHERE operation_id IN (?,?)').get(staleCommand.operationId, 'revoked-fresh-command').count, 0);
+    assert.equal((await request('/api/v2/campaign/lock', playerA.credential)).status, 401, 'revoked member remains revoked after restart');
+  } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a competing SQLite authority writer is serialized after the command and revocation gates later retries', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-authority-writer-'));
+  const databasePath = join(directory, 'host.sqlite');
+  let host, baseUrl, playerA, lockDigest, worker;
+  const barrier = new SharedArrayBuffer(8);
+  const signal = new Int32Array(barrier);
+  const campaignId = 'campaign-v2-authority-writer';
+  const launch = async () => {
+    host = createHost({ databasePath, campaignId, enableV2Api: true, v2RandomInt: min => {
+      if (!worker) {
+        worker = new Worker(`
+          import { parentPort, workerData } from 'node:worker_threads';
+          import { DatabaseSync } from 'node:sqlite';
+          const db = new DatabaseSync(workerData.databasePath);
+          db.exec('PRAGMA busy_timeout=5000');
+          Atomics.store(new Int32Array(workerData.barrier), 0, 1);
+          Atomics.notify(new Int32Array(workerData.barrier), 0);
+          db.prepare('UPDATE actor_grants SET can_act=0 WHERE actor_id=? AND member_id=?').run(workerData.actorId, workerData.memberId);
+          db.close();
+        `, { eval: true, workerData: { databasePath, barrier, actorId: `v2:${campaignId}:writer-scene`, memberId: playerA.memberId } });
+        const ready = Atomics.wait(signal, 0, 0, 5000);
+        assert.equal(ready, 'ok', 'external writer reaches its barrier while host command owns SQLite write transaction');
+      }
+      return min;
+    } });
+    const address = await host.listen(0); baseUrl = `http://127.0.0.1:${address.port}`;
+  };
+  const request = (path, token = 'local-gm', options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers } });
+  const send = (path, body, token = 'local-gm', method = 'POST', headers = {}) => request(path, token, { method, body: JSON.stringify(body), headers });
+  try {
+    await launch();
+    playerA = await (await send('/api/members/enroll', { displayName: 'Player A' })).json();
+    assert.equal((await send('/api/v2/campaign/lock', { moduleId: 'example.dicepool' }, 'local-gm', 'PUT')).status, 201);
+    lockDigest = (await (await request('/api/v2/campaign/lock', playerA.credential)).json()).digest;
+    const proof = { 'x-v2-lock-digest': lockDigest };
+    const data = { title: 'Writer order', status: 'ready', obstacle: 'gate', characters: [
+      { id: 'char-a', name: 'Mira', ownerPrincipalId: playerA.memberId, pool: 2, stress: 0, push: 1, role: 'navigator' },
+      { id: 'char-b', name: 'Oren', ownerPrincipalId: 'gm', pool: 2, stress: 0, push: 1, role: 'keeper' }
+    ], log: [], gmNote: 'private' };
+    assert.equal((await send('/api/v2/entities', { operationId: 'writer-create', entityId: 'writer-scene', typeId: 'example.dicepool.scene', visibility: 'public', data }, 'local-gm', 'POST', proof)).status, 201);
+    assert.equal((await send('/api/v2/entities/writer-scene/grants', { memberId: playerA.memberId, permissions: ['read', 'act'] })).status, 201);
+    const versionBefore = host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version;
+    const command = { operationId: 'writer-serialized-command', commandId: 'example.dicepool.skill-challenge', entityId: 'writer-scene', expectedRevision: 1, input: { actorId: 'char-a', difficulty: 1, push: false } };
+    const applied = await send('/api/v2/commands', command, playerA.credential, 'POST', proof);
+    assert.equal(applied.status, 200, await applied.clone().text());
+    assert.equal((await applied.json()).status, 'applied');
+    await once(worker, 'exit');
+    assert.equal(host.db.prepare('SELECT can_act FROM actor_grants WHERE actor_id=? AND member_id=?').get(`v2:${campaignId}:writer-scene`, playerA.memberId).can_act, 0, 'external writer revocation commits after the in-flight transaction');
+    assert.equal(host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version, versionBefore + 1);
+    assert.equal(host.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'writer-scene').revision, 2);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get(command.operationId).count, 1);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_extension_events WHERE operation_id=?').get(command.operationId).count, 1);
+    assert.equal((await send('/api/v2/commands', command, playerA.credential, 'POST', proof)).status, 403, 'revoked principal cannot use a prior receipt for a fresh privileged request');
+    host.close(); host = undefined;
+    await launch();
+    assert.equal(host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get(campaignId).version, versionBefore + 1, 'authority epoch survives restart');
+    assert.equal(host.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, 'writer-scene').revision, 2);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get(command.operationId).count, 1);
+  } finally {
+    if (worker?.threadId) await worker.terminate();
+    host?.close(); rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -285,6 +430,8 @@ test('authenticated HTTP reaction routes recover, authorize and resume a generic
     assert.equal((await send('/api/v2/entities/interrupt-record/grants', { memberId: playerA.memberId, permissions: ['act'] }, 'local-gm', lock)).status, 201);
     const command = { operationId: 'initiate-interruption', commandId: 'example.interruption.request', entityId: 'interrupt-record', expectedRevision: 1, input: {} };
     const started = await send('/api/v2/commands', command, playerA.credential, lock); assert.equal(started.status, 200, await started.clone().text()); pending = await started.json(); assert.equal(pending.status, 'pending');
+    const pendingAuthority = host.db.prepare('SELECT authority_version FROM v2_extension_pending_commands WHERE operation_id=?').get(command.operationId).authority_version;
+    assert.equal(pendingAuthority, host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get('campaign-v2-reaction-http').version);
     assert.equal(draws, 1, 'host draws and records the private suspension randomness');
     assert.equal((await (await request('/api/v2/reactions', playerA.credential, { headers: lock })).json()).length, 0, 'initiator does not see GM-private responder window');
     const visible = await (await request('/api/v2/reactions', playerB.credential, { headers: lock })).json(); assert.equal(visible.length, 1); assert.equal(visible[0].permissions.submit, true);
@@ -317,6 +464,7 @@ test('authenticated HTTP reaction routes recover, authorize and resume a generic
     assert.equal((await request(`/api/members/${playerB.memberId}`, 'local-gm', { method: 'DELETE' })).status, 200, 'GM can revoke the responder membership');
     assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/decisions`, { operationId: 'revoked-responder-choice', actionId: 'example.interruption.choose', input: { choice: 'accept' }, decision: 'accept' }, playerB.credential, lock)).status, 401, 'revoked responder cannot use a previously eligible reaction');
     assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/adjudicate`, { decision: 'accept' }, 'local-gm', lock)).status, 200, 'authorized GM adjudication resumes after responder revocation');
-    assert.equal(host.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get(revokedCommand.operationId).status, 'completed');
+    assert.equal(host.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get(revokedCommand.operationId).status, 'conflicted', 'authority changed since suspension, so GM adjudication records only a terminal conflict');
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get(revokedCommand.operationId).count, 0, 'revoked responder authority cannot resume parent effects');
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
