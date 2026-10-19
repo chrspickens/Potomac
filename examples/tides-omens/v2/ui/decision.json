@@ -1,0 +1,37 @@
+{
+  "contractVersion": 1,
+  "contributionId": "example.tides-omens.player-panel",
+  "contributionVersion": "1.0.0",
+  "kind": "panel",
+  "entityTypeId": "example.tides-omens.player-decision",
+  "entitySchemaVersion": 1,
+  "capability": { "id": "example.tides-omens", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273" },
+  "entityCapability": { "id": "example.tides-omens.player-decision", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273" },
+  "entitySchema": {
+    "type": "object",
+    "properties": {
+      "role": { "type": "string", "enum": ["navigator", "keeper"] },
+      "progress": { "type": "integer", "minimum": 0, "maximum": 4 },
+      "danger": { "type": "integer", "minimum": 0, "maximum": 4 },
+      "tokens": { "type": "object", "properties": { "calm": { "type": "integer", "minimum": 0, "maximum": 3 }, "storm": { "type": "integer", "minimum": 0, "maximum": 3 }, "omen": { "type": "integer", "minimum": 0, "maximum": 3 } }, "required": ["calm", "storm", "omen"], "additionalProperties": false },
+      "choices": { "type": "array", "items": { "type": "object", "properties": { "approach": { "type": "string", "enum": ["observe", "bargain", "endure"] }, "fate": { "type": "string", "enum": ["calm", "storm", "omen"] }, "result": { "type": "string", "enum": ["opening", "setback", "revelation"] } }, "required": ["approach", "fate", "result"], "additionalProperties": false }, "maxItems": 4 }
+    },
+    "required": ["role", "progress", "danger", "tokens", "choices"],
+    "additionalProperties": false
+  },
+  "commands": [{
+    "commandId": "example.tides-omens.choose-fate",
+    "capability": { "id": "example.tides-omens.choose-fate", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273" },
+    "inputSchema": { "type": "object", "properties": { "approach": { "type": "string", "enum": ["observe", "bargain", "endure"] }, "fate": { "type": "string", "enum": ["calm", "storm", "omen"] } }, "required": ["approach", "fate"], "additionalProperties": false }
+  }],
+  "workflows": [],
+  "slots": [],
+  "nodes": [{ "kind": "section", "id": "example.tides-omens.resources", "label": "Fate and scene", "children": [
+    { "kind": "display", "id": "example.tides-omens.progress", "path": "progress", "label": "Progress" },
+    { "kind": "display", "id": "example.tides-omens.danger", "path": "danger", "label": "Danger" },
+    { "kind": "display", "id": "example.tides-omens.calm", "path": "tokens.calm", "label": "Calm tokens" },
+    { "kind": "display", "id": "example.tides-omens.storm", "path": "tokens.storm", "label": "Storm tokens" },
+    { "kind": "display", "id": "example.tides-omens.omen", "path": "tokens.omen", "label": "Omen tokens" },
+    { "kind": "form", "id": "example.tides-omens.choose", "commandId": "example.tides-omens.choose-fate", "label": "Choose an approach and commit a fate token" }
+  ] }]
+}

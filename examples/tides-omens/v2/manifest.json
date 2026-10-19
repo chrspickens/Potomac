@@ -1,0 +1,8 @@
+{
+  "formatVersion": 2,
+  "id": "example.tides-omens",
+  "name": "Tides & Omens",
+  "version": "1.0.0",
+  "trust": "bundled-trusted",
+  "entry": "extensions.mjs"
+}

@@ -1,0 +1,33 @@
+# Third-module authoring challenge: Tides & Omens
+
+**Status: independent authoring, reviewed catalog registration, and authenticated generic browser playability are separate milestones.** The original independent author source and contemporaneous author log are preserved. Following the generic entity-setup improvements in PR #161, the module is registered in the repository's reviewed static catalog and exercised through the shared `/v2-modules` surface. This is evidence for a third module using the current trusted V2 platform, not for independent installation or full tracker #131 acceptance.
+
+## A. Independent module source from public contracts
+
+The primary author was a fresh Codex subagent restricted to `AGENTS.md`, public engineering/architecture guidance, `docs/v2-module-authoring.md`, `docs/v2-trusted-catalog.md`, `docs/v2-module-integration-boundaries.md`, `docs/third-module-quickstart.md`, `packages/contracts/src`, and `examples/module-starter/v2`. It was not given Revised 5e, Dice-pool, host internals, registry implementation, or the previous audit. The original contemporaneous record remains at [`examples/tides-omens/AUTHOR-LOG.md`](../examples/tides-omens/AUTHOR-LOG.md); it has not been edited to rewrite the initial integration history.
+
+The author created `example.tides-omens` v1.0.0: five capabilities, a principal-owned decision entity, a player command, deterministic resolver, typed effect handler, declarative panel and a playable Navigator/Keeper scene. Players commit bounded `calm`, `storm`, or `omen` tokens with a narrative approach; outcomes change bounded progress, danger, tokens, and choice history. It uses no HP, AC, initiative, d20, dice-pool counting, or random draw.
+
+The authoring record documents successful digest/validation, six original contract tests, seven original focused resolver tests, and the unsupported `pnpm v2:module build` attempt. The documented CLI supports `digest` and `validate`, not `build`. The original source digest `sha256:62ba14cf92848e6111c77ef8e2b2936fe5545542ca5cb4d4e89dd796a56bf5da` is retained in that historical log as the author-phase evidence; it is not the digest of the integrated, currently validated module.
+
+## B. Separate reviewed trusted-catalog registration
+
+The integrator inspected host internals only after the independent authoring phase. The module is now an explicit entry in `server/host/trusted-v2-catalog.json`; it is still reviewed, local executable source, not user-discovered code. The current module digest from `pnpm v2:module digest examples/tides-omens/v2` and `pnpm v2:module validate examples/tides-omens/v2` is `sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273`. Validation reports the exact five-entry capability closure: root, `.choose-fate`, `.choose-fate-resolver`, `.decision-state`, and `.player-decision`, all bound to that digest. The catalog is independently checked to derive that same root digest and closure; it does not recalculate any already-pinned campaign lock.
+
+The integration found one objectively necessary module-local correction: the generic host's effect contract requires private effects/events for principal-owned entities, whereas the initial module declared public effect/event visibility and an unsupported `owner` target-visibility token. The effect now targets the owning private record and emits private state events, while the command's deliberately limited narrative outcome remains public. README and a focused regression test document/check this boundary. The old digest is therefore historical author-phase evidence only; the current digest above is what catalog and campaign locks use.
+
+## C. Real authenticated generic browser playability
+
+Dedicated acceptance `pnpm acceptance:tides-omens-browser` drives the actual gated loopback V2 host, the real Vite `/v2-modules` application, and isolated Chromium browser contexts authenticated separately as GM, Player A, and Player B. It creates a fresh campaign; pins Tides & Omens; enrolls both players; creates two schema-valid principal-owned entities through generic enum/nested-resource forms; assigns Navigator and Keeper to their corresponding principals; and grants player permissions through the generic workflow. The owners submit distinct `observe/calm` and `bargain/omen` decisions through the declarative command panel.
+
+The acceptance verifies host-computed deterministic outcomes, bounded resource/progress/danger changes, effect/event/receipt persistence, private cross-player projection and denied cross-player reads/actions. It exercises forged ownership, unauthorized grant attempts, malformed input, stale revisions, exact retry replay and altered-payload conflict. It then closes and restarts the actual host, reconnects all three browser contexts, and verifies the same five-entry lock, authorized ownership, exact state, and persisted events/receipts. This is real-host/browser evidence; it is not a mocked module resolver test.
+
+## D. Module-local versus generic platform changes
+
+PR #161 supplied the generic schema-aware creation, multiple-entity setup, GM-controlled principal ownership assignment, and grant workflow that the first challenge had exposed as missing. This PR consumes those shared mechanisms without changing generic Core, host execution/registry/authorization, or the generic renderer. Its platform integration adds only the reviewed catalog entry and catalog/browser expectation updates, plus the dedicated Tides acceptance and its command. Tides source changes are limited to the private effect/event contract correction and corresponding documentation/test. No module-specific host import, resolver branch, route, authorization exception, or renderer behavior was added.
+
+The independent authoring source remains independently authored, but the end-to-end proof is honestly described as **public-contract authoring plus separate reviewed catalog integration plus real generic browser execution**; trusted local registration remains an operator/reviewer action, not an independent install flow.
+
+## E. Remaining limitations
+
+The V2 catalog executes reviewed trusted local JavaScript and is not an arbitrary-module sandbox. General installation/discovery, untrusted execution, V2 archive migration/restore, offline V2, and production multi-process authority are not provided. Existing pinned locks remain exact and fail closed if their source is unavailable; this work does not provide migration or recovery for unavailable modules. Development bearer credentials are not a production identity model. Tracker #131 and production gates #139 and #145 remain open.

@@ -6,6 +6,7 @@
     { "id": "example.interruption", "version": "1.0.0", "source": "../../examples/example.interruption/v2", "entry": "extensions.mjs", "authoring": true },
     { "id": "example.dicepool", "version": "1.0.0", "source": "../../examples/example.dicepool/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "dicepoolAuthorizeIntent", "reactionPrincipalExport": "dicepoolReactionPrincipal" },
     { "id": "example.starter", "version": "1.0.0", "source": "../../examples/module-starter/v2", "entry": "extensions.mjs", "authoring": true },
-    { "id": "example.generic-entity-setup", "version": "1.0.0", "source": "../../examples/example.generic-entity-setup/v2", "entry": "extensions.mjs", "authoring": true }
+    { "id": "example.generic-entity-setup", "version": "1.0.0", "source": "../../examples/example.generic-entity-setup/v2", "entry": "extensions.mjs", "authoring": true },
+    { "id": "example.tides-omens", "version": "1.0.0", "source": "../../examples/tides-omens/v2", "entry": "extensions.mjs", "authoring": true }
   ]
 }
