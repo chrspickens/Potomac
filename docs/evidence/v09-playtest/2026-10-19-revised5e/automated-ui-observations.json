@@ -1,0 +1,48 @@
+{
+  "browser": "Chromium headless, isolated CDP browser contexts",
+  "origin": "http://127.0.0.1:5173/",
+  "campaign": "Issue 110 Revised 5e Playtest",
+  "lock": "example.revised5e@1.1.0 sha256:d8a631a927bc43ae219c23d02d2aca4471b505e52bd5d479b71cd6029b60811e",
+  "playerA": {
+    "text": "◆\n⌂\n▦\n▤\n♙\n⚑\n⌖\n▤\n⚙\nWORKSPACE / RULES\nRules\nSearch campaign\n● CONNECTED\nUse player credential\nForget this device\nRole \nGM\nPlayer\n\nPLAYER SESSION\n\nNo live session\nNo current encounter is published. · No authorized character yet.\nReturn to Table\n Save next permitted action as a private draft (do not submit)Require this authorized character to stay unchanged \nNo dependency guard\n\nSTATIC TRUSTED CATALOG · EXPERIMENTAL V2\n\nRevised 5e Encounter\nAuthenticated as [principal id redacted] · Player\nReturn to campaign\n\nAuthenticated; the campaign lock is unchanged.\n\nImmutable campaign module\n\nexample.revised5e@1.1.0 · sha256:d8a631a927bc43ae219c23d02d2aca4471b505e52bd5d479b71cd6029b60811e\n\nRefresh authorized state",
+    "buttons": [
+      "⌂ Home",
+      "▦ Table",
+      "▤ Dashboard",
+      "♙ Characters",
+      "⚑ Encounters",
+      "⌖ Maps",
+      "▤ Lore",
+      "⚙ Rules",
+      "◉ Local profile: local-demo",
+      "Use player credential",
+      "Forget this device",
+      "Return to Table",
+      "Return to campaign",
+      "Refresh authorized state"
+    ],
+    "rulesNav": true
+  },
+  "playerB": {
+    "text": "◆\n⌂\n▦\n▤\n♙\n⚑\n⌖\n▤\n⚙\nWORKSPACE / RULES\nRules\nSearch campaign\n● CONNECTED\nUse player credential\nForget this device\nRole \nGM\nPlayer\n\nPLAYER SESSION\n\nNo live session\nNo current encounter is published. · No authorized character yet.\nReturn to Table\n Save next permitted action as a private draft (do not submit)Require this authorized character to stay unchanged \nNo dependency guard\n\nSTATIC TRUSTED CATALOG · EXPERIMENTAL V2\n\nRevised 5e Encounter\nAuthenticated as [principal id redacted] · Player\nReturn to campaign\n\nAuthenticated; the campaign lock is unchanged.\n\nImmutable campaign module\n\nexample.revised5e@1.1.0 · sha256:d8a631a927bc43ae219c23d02d2aca4471b505e52bd5d479b71cd6029b60811e\n\nRefresh authorized state",
+    "buttons": [
+      "⌂ Home",
+      "▦ Table",
+      "▤ Dashboard",
+      "♙ Characters",
+      "⚑ Encounters",
+      "⌖ Maps",
+      "▤ Lore",
+      "⚙ Rules",
+      "◉ Local profile: local-demo",
+      "Use player credential",
+      "Forget this device",
+      "Return to Table",
+      "Return to campaign",
+      "Refresh authorized state"
+    ],
+    "rulesNav": true
+  },
+  "credentialDisclosure": "No player Rules view contained its own bearer credential. GM one-time enrollment credential output was excluded from screenshots; values remained only in the runner memory.",
+  "limits": "This capture confirms enrollment, credential authentication, ordinary Rules navigation, role identity, and the visible workspace only. It does not claim the Revised 5e combat workflow, private-field isolation, reactions, or session integration passed."
+}
