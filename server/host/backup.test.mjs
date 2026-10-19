@@ -7,6 +7,8 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { createHost } from './index.mjs';
 import { exportCampaignBackup, restoreCampaignBackup } from './backup.mjs';
+import { loadTrustedV2Catalog } from './v2-catalog.mjs';
+import { hashV2Json } from './v2-effects.mjs';
 
 const withDirectory = async run => {
   const directory = mkdtempSync(join(tmpdir(), 'potomac-backup-'));
@@ -70,6 +72,77 @@ test('campaign backup round-trips Lore and asset bytes along with host tables', 
     assert.deepEqual({ ...restored.db.prepare('SELECT original_name,media_type,byte_size,sha256,created_by FROM lore_assets WHERE id=?').get('asset-1') }, { original_name: 'map.png', media_type: 'image/png', byte_size: 11, sha256: createHashHex('image bytes'), created_by: 'gm' });
   } finally { restored.close(); }
   assert.equal(readFileSync(`${restoredPath}.assets/${createHashHex('image bytes')}`, 'utf8'), 'image bytes');
+}));
+
+test('v6 backup preserves the exact trusted V2 lock, authority epoch, ownership and receipts', async () => withDirectory(async directory => {
+  const databasePath = join(directory, 'v2.sqlite'), backupPath = join(directory, 'v2.json'), restoredPath = join(directory, 'restored-v2.sqlite');
+  let host = createHost({ databasePath, campaignId: 'backup-v2', enableV2Api: true });
+  let address = await host.listen(0); let base = `http://127.0.0.1:${address.port}`;
+  const req = (path, token = 'local-gm', body, method = 'GET', headers = {}) => fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  try {
+    const enrolled = await (await req('/api/members/enroll', 'local-gm', { displayName: 'Player A' }, 'POST')).json();
+    await req('/api/v2/campaign/lock', 'local-gm', { moduleId: 'example.starship.system' }, 'PUT');
+    const lock = await (await req('/api/v2/campaign/lock')).json(); const proof = { 'x-v2-lock-digest': lock.digest };
+    await req('/api/v2/entities', 'local-gm', { operationId: 'backup-create-entity', entityId: 'reactor', typeId: 'example.starship.reactor', visibility: 'owner', ownerPrincipalId: enrolled.memberId, data: { power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: ['secret'] } }, 'POST', proof);
+    const command = { operationId: 'backup-command', commandId: 'example.starship.reactor.allocate-power', entityId: 'reactor', expectedRevision: 1, input: { subsystem: 'propulsion', amount: 12 } };
+    const committed = await (await req('/api/v2/commands', 'local-gm', command, 'POST', proof)).json();
+    const assetBytes = Buffer.from('schema-v6 asset publication rollback'); const assetDigest = createHashHex(assetBytes);
+    mkdirSync(`${databasePath}.assets`, { recursive: true }); writeFileSync(`${databasePath}.assets/${assetDigest}`, assetBytes);
+    host.db.prepare("INSERT INTO lore_entries(id,campaign_id,type,title,created_at,updated_at) VALUES('backup-lore','backup-v2','note','Recovery attachment','now','now')").run();
+    host.db.prepare("INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES('backup-asset','backup-v2','backup-lore','note.txt','text/plain',?,?, 'gm','now')").run(assetBytes.length, assetDigest);
+    exportCampaignBackup(databasePath, backupPath);
+    host.close(); host = undefined;
+    const original = JSON.parse(readFileSync(backupPath, 'utf8'));
+    const rejectMutation = (label, mutate, { recompute = true, options = {} } = {}) => {
+      const tamperedPath = join(directory, `${label}.json`), destination = join(directory, `${label}.sqlite`);
+      const archive = structuredClone(original); mutate(archive);
+      if (recompute) archive.integrity.sha256 = archiveChecksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data });
+      writeFileSync(tamperedPath, JSON.stringify(archive));
+      assert.throws(() => restoreCampaignBackup(tamperedPath, destination, options), /Backup/ , `${label} rejected`);
+      assert.equal(existsSync(destination), false, `${label} fails before destination publication`);
+      assert.equal(existsSync(`${destination}.assets`), false, `${label} leaves no asset publication`);
+    };
+    rejectMutation('bad-root-digest', archive => { archive.data.v2_campaign_locks[0].root_module_digest = `sha256:${'0'.repeat(64)}`; });
+    rejectMutation('bad-capability-closure', archive => {
+      const lock = archive.manifest.v2.lock; lock.entries.pop();
+      archive.data.v2_campaign_locks[0].lock_json = JSON.stringify(lock);
+      archive.data.v2_campaign_locks[0].lock_digest = hashV2Json(lock);
+      archive.data.v2_campaign_locks[0].root_module_digest = lock.rootModule.digest;
+      archive.manifest.v2.lockDigest = hashV2Json(lock);
+    });
+    rejectMutation('bad-owner', archive => { archive.data.v2_extension_entities[0].owner_principal_id = 'missing-member'; });
+    rejectMutation('bad-campaign-reference', archive => { archive.data.v2_extension_entities[0].campaign_id = 'other-campaign'; });
+    rejectMutation('bad-authority-epoch', archive => { archive.data.v2_authority_versions[0].version = -1; archive.manifest.v2.authorityVersion = -1; });
+    rejectMutation('bad-receipt-payload', archive => { archive.data.v2_extension_receipts[0].response = '{'; });
+    rejectMutation('bad-event-payload', archive => { archive.data.v2_extension_events[0].payload = '{'; });
+    rejectMutation('bad-checksum', archive => { archive.data.v2_campaign_locks[0].lock_digest = 'corrupt'; }, { recompute: false });
+    const catalog = await loadTrustedV2Catalog();
+    rejectMutation('missing-trusted-module', () => undefined, { options: { trustedCatalog: { byId: new Map() } } });
+    const alteredProviders = new Map(catalog.byId);
+    alteredProviders.set('example.starship.system', { ...alteredProviders.get('example.starship.system'), digest: `sha256:${'0'.repeat(64)}` });
+    rejectMutation('altered-trusted-module', () => undefined, { options: { trustedCatalog: { byId: alteredProviders } } });
+    for (const stage of ['after-validation', 'during-row-import', 'during-asset-publication', 'before-destination-publication']) {
+      const destination = join(directory, `rollback-${stage}.sqlite`);
+      assert.throws(() => restoreCampaignBackup(backupPath, destination, { onRestoreStage: current => { if (current === stage) throw new Error(`injected:${stage}`); } }), new RegExp(`injected:${stage}`));
+      assert.equal(existsSync(destination), false, `${stage} leaves no database`);
+      assert.equal(existsSync(`${destination}.assets`), false, `${stage} leaves no published assets`);
+    }
+    restoreCampaignBackup(backupPath, restoredPath);
+    host = createHost({ databasePath: restoredPath, campaignId: 'backup-v2', enableV2Api: true });
+    address = await host.listen(0); base = `http://127.0.0.1:${address.port}`;
+    const restoredLock = await (await req('/api/v2/campaign/lock')).json();
+    assert.equal(restoredLock.digest, lock.digest);
+    const state = JSON.parse(readFileSync(backupPath, 'utf8'));
+    assert.deepEqual(state.manifest.v2.lock, JSON.parse(state.data.v2_campaign_locks[0].lock_json));
+    assert.equal(state.schemaVersion, 6); assert.equal(state.data.v2_extension_entities[0].owner_principal_id, enrolled.memberId);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_extension_receipts WHERE operation_id=?').get('backup-command').n, 1);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_receipts WHERE operation_id=?').get('backup-command').n, 1);
+    assert.equal(host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get('backup-v2').version, state.manifest.v2.authorityVersion);
+    const player = await (await req('/api/v2/entities/reactor', enrolled.credential, undefined, 'GET', { 'x-v2-lock-digest': lock.digest })).json();
+    assert.equal('engineeringLog' in player.data, false, 'restored player projection continues to filter private fields');
+    assert.deepEqual(await (await req('/api/v2/commands', 'local-gm', command, 'POST', proof)).json(), committed, 'exact retry after restore replays its committed receipt');
+    assert.equal((await req('/api/v2/commands', 'local-gm', { ...command, input: { subsystem: 'propulsion', amount: 11 } }, 'POST', proof)).status, 409, 'altered retry remains a conflict after restore');
+  } finally { host?.close(); }
 }));
 
 test('v5 backup round-trips World and Battle scenes, pieces, map links and managed image bytes', async () => withDirectory(async directory => {

@@ -13,7 +13,7 @@ const chrome = [process.env.POTOMAC_CHROME, 'C:/Program Files/Google/Chrome/Appl
 if (!chrome) throw new Error('Chrome/Edge not found. Set POTOMAC_CHROME.');
 const scratch = await mkdtemp(join(tmpdir(), 'potomac-tides-omens-acceptance-'));
 const freePort = async () => { const server = createServer(); await new Promise((ok, bad) => server.once('error', bad).listen(0, '127.0.0.1', ok)); const value = server.address().port; await new Promise((ok, bad) => server.close(error => error ? bad(error) : ok())); return value; };
-const hostPort = await freePort(), webPort = await freePort(), debugPort = await freePort();
+const hostPort = await freePort(), debugPort = await freePort(); let webPort;
 let host, socket, sequence = 0; const children = [], pending = new Map(), sessions = {}, contexts = [];
 const child = (cmd, args, options = {}) => { const proc = spawn(cmd, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options }); let output = ''; proc.stdout.on('data', chunk => output += chunk); proc.stderr.on('data', chunk => output += chunk); children.push({ proc, get output() { return output; } }); return proc; };
 const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const id = ++sequence, timer = setTimeout(() => { pending.delete(id); bad(new Error(`CDP ${method} timed out`)); }, 15000); pending.set(id, message => { clearTimeout(timer); message.error ? bad(new Error(message.error.message)) : ok(message.result); }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
@@ -23,14 +23,32 @@ const click = async (name, label) => { const result = await evaluate(name, `(()=
 const setValue = async (name, selector, value) => assert.equal(await evaluate(name, `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;const p=e instanceof HTMLSelectElement?HTMLSelectElement.prototype:e instanceof HTMLInputElement?HTMLInputElement.prototype:null;const setter=p&&Object.getOwnPropertyDescriptor(p,'value')?.set;if(setter)setter.call(e,${JSON.stringify(value)});else e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return true})()`), true, `set ${selector}`);
 const api = (url, token = 'local-gm', init = {}) => fetch(`http://127.0.0.1:${hostPort}${url}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } });
 async function startHost() { host = createHost({ databasePath: join(scratch, 'host.sqlite'), campaignId: 'campaign-tides-omens-browser', enableV2Api: true }); await host.listen(hostPort); }
+async function startWeb() {
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    webPort = await freePort();
+    const proc = child(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(webPort), '--strictPort'], { cwd: join(root, 'clients/web'), env: { ...process.env, POTOMAC_WEB_HOST: `http://127.0.0.1:${hostPort}` } });
+    for (let i = 0; i < 100; i++) {
+      if (proc.exitCode !== null) break;
+      try {
+        const response = await fetch(`http://127.0.0.1:${webPort}/v2-modules`);
+        if (response.ok && (await response.text()).includes('/src/main.tsx')) return;
+      } catch {}
+      await delay(100);
+    }
+    if (proc.exitCode === null) proc.kill();
+    await new Promise(resolveExit => proc.exitCode !== null ? resolveExit() : proc.once('exit', resolveExit));
+    const output = children.at(-1)?.output ?? '';
+    if (!/EADDRINUSE|already in use/i.test(output)) throw new Error(`Vite did not become ready on attempt ${attempt}: ${output}`);
+  }
+  throw new Error(`Vite could not acquire a loopback port after retries: ${children.at(-1)?.output ?? ''}`);
+}
 async function newPage(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-modules` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('#v2-catalog-credential'))`, `${name} login`); }
 async function login(name, credential) { await setValue(name, '#v2-catalog-credential', credential); await click(name, 'Connect'); await waitFor(name, `Boolean(document.querySelector('#v2-module-picker')) || document.body.innerText.includes('Immutable campaign module')`, `${name} authenticated workspace`); }
 const digest = 'sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273';
 const typeId = 'example.tides-omens.player-decision';
 try {
   await startHost();
-  child(process.execPath, [join(root, 'clients/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(webPort), '--strictPort'], { cwd: join(root, 'clients/web'), env: { ...process.env, POTOMAC_WEB_HOST: `http://127.0.0.1:${hostPort}` } });
-  for (let i = 0; i < 200; i++) { try { if ((await fetch(`http://127.0.0.1:${webPort}/v2-modules`)).ok) break; } catch {} await delay(100); }
+  await startWeb();
   child(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${join(scratch, 'chrome')}`, 'about:blank']);
   let info; for (let i = 0; i < 200; i++) { try { info = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json(); break; } catch { await delay(100); } } assert.ok(info?.webSocketDebuggerUrl);
   socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const msg = JSON.parse(event.data); if (msg.id && pending.has(msg.id)) { const done = pending.get(msg.id); pending.delete(msg.id); done(msg); } });
