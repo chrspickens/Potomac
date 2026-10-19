@@ -72,6 +72,38 @@ test('campaign backup round-trips Lore and asset bytes along with host tables', 
   assert.equal(readFileSync(`${restoredPath}.assets/${createHashHex('image bytes')}`, 'utf8'), 'image bytes');
 }));
 
+test('v6 backup preserves the exact trusted V2 lock, authority epoch, ownership and receipts', async () => withDirectory(async directory => {
+  const databasePath = join(directory, 'v2.sqlite'), backupPath = join(directory, 'v2.json'), restoredPath = join(directory, 'restored-v2.sqlite');
+  let host = createHost({ databasePath, campaignId: 'backup-v2', enableV2Api: true });
+  let address = await host.listen(0); let base = `http://127.0.0.1:${address.port}`;
+  const req = (path, token = 'local-gm', body, method = 'GET', headers = {}) => fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  try {
+    const enrolled = await (await req('/api/members/enroll', 'local-gm', { displayName: 'Player A' }, 'POST')).json();
+    await req('/api/v2/campaign/lock', 'local-gm', { moduleId: 'example.starship.system' }, 'PUT');
+    const lock = await (await req('/api/v2/campaign/lock')).json(); const proof = { 'x-v2-lock-digest': lock.digest };
+    await req('/api/v2/entities', 'local-gm', { operationId: 'backup-create-entity', entityId: 'reactor', typeId: 'example.starship.reactor', visibility: 'owner', ownerPrincipalId: enrolled.memberId, data: { power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: ['secret'] } }, 'POST', proof);
+    const command = { operationId: 'backup-command', commandId: 'example.starship.reactor.allocate-power', entityId: 'reactor', expectedRevision: 1, input: { subsystem: 'propulsion', amount: 12 } };
+    const committed = await (await req('/api/v2/commands', 'local-gm', command, 'POST', proof)).json();
+    exportCampaignBackup(databasePath, backupPath);
+    host.close(); host = undefined;
+    restoreCampaignBackup(backupPath, restoredPath);
+    host = createHost({ databasePath: restoredPath, campaignId: 'backup-v2', enableV2Api: true });
+    address = await host.listen(0); base = `http://127.0.0.1:${address.port}`;
+    const restoredLock = await (await req('/api/v2/campaign/lock')).json();
+    assert.equal(restoredLock.digest, lock.digest);
+    const state = JSON.parse(readFileSync(backupPath, 'utf8'));
+    assert.deepEqual(state.manifest.v2.lock, JSON.parse(state.data.v2_campaign_locks[0].lock_json));
+    assert.equal(state.schemaVersion, 6); assert.equal(state.data.v2_extension_entities[0].owner_principal_id, enrolled.memberId);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_extension_receipts WHERE operation_id=?').get('backup-command').n, 1);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_receipts WHERE operation_id=?').get('backup-command').n, 1);
+    assert.equal(host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get('backup-v2').version, state.manifest.v2.authorityVersion);
+    const player = await (await req('/api/v2/entities/reactor', enrolled.credential, undefined, 'GET', { 'x-v2-lock-digest': lock.digest })).json();
+    assert.equal('engineeringLog' in player.data, false, 'restored player projection continues to filter private fields');
+    assert.deepEqual(await (await req('/api/v2/commands', 'local-gm', command, 'POST', proof)).json(), committed, 'exact retry after restore replays its committed receipt');
+    assert.equal((await req('/api/v2/commands', 'local-gm', { ...command, input: { subsystem: 'propulsion', amount: 11 } }, 'POST', proof)).status, 409, 'altered retry remains a conflict after restore');
+  } finally { host?.close(); }
+}));
+
 test('v5 backup round-trips World and Battle scenes, pieces, map links and managed image bytes', async () => withDirectory(async directory => {
   const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'maps.json'), restoredPath = join(directory, 'restored.sqlite');
   const host = createHost({ databasePath: sourcePath });
