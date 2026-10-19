@@ -1,12 +1,28 @@
 # Potomac Extension Platform V2 — Working Plan
 
-**Status:** Draft / living tracker; implementation-oriented architectural review
-**Updated:** 2026-10-17
-**Target:** Proposed V2 extension foundation; not final and not an approved milestone
+**Status:** Historical architecture working plan with a current implementation snapshot below
+**Updated:** 2026-10-19
+**Target:** V2 extension foundation; this document is not a production-readiness signoff
 
 ## Scope and guardrails
 
 This plan tracks the V2 extension platform. Preserve V1 manifests/actions, exact campaign pins, host authorization and redaction, offline receipts/proposals, backup compatibility and historical archive QA. V2 proposals must not execute untrusted module code; a Node worker is not a security sandbox.
+
+## Current status after PR #164 (2026-10-19)
+
+The initial implementation sequence below has been substantially delivered through merged PRs #140–#164. The current priority is observed GM/player playability, not further platform expansion. See the [playability and refinement plan](playability-refinement-plan.md) for the next P0 walkthrough and evidence rules.
+
+| Area | Implemented and verified evidence | Still open or bounded |
+| --- | --- | --- |
+| Registry and exact locks | PRs #140, #159 and #164; `scripts/v2-catalog.test.mjs`, normal Campaign Home acceptance. Host creates and pins the exact trusted module/version/digest/capability closure. V1 adapter and archive behavior remain covered. | Bundled trusted modules only; no general third-party installer or publisher trust root. |
+| Resolvers and effects | PRs #141–#142 plus host integration #147–#148; deterministic transcripts, host-validated effects, transactions, receipts/events and retry/rejection tests. | Trusted local implementation model; no untrusted executable sandbox or multi-process production guarantee. |
+| Reactions and authority | PRs #143, #150–#153 and #162; durable authorized continuations, filtered projections, version-bound authority and restart/retry tests. | #145 remains open for independent authority concurrency/revocation acceptance and production limitations. |
+| Extension entities and workflows | PRs #144, #160 and #161; generic ownership/commands, the independent Tides & Omens challenge and browser acceptance. | #136 remains open for its specific migration/extension completeness signoff; no automatic module-version migration. |
+| Declarative module UI and campaign setup | PRs #146, #159 and #164; generic renderer and ordinary Campaign Home setup with authenticated player navigation. | Experimental, default-off and loopback-only; one configured V2 campaign per host; keyboard/screen-reader and human usability signoff remain open under #137/#109. |
+| Backup and recovery | PR #163; schema-v6 exact-lock export/validated atomic restore, V1 v5 preservation, tamper/rollback/missing-module/pending-reaction and real three-browser acceptance. | #139 remains open for live reconnect/privacy and genuine historical archive/device evidence. Offline command reconciliation is deferred. |
+| Module challenge | PR #160 and `docs/third-module-round2-report.md`; trusted catalog entry, independent public-contract authoring and real GM/A/B Chromium checks. | This is automated challenge evidence, not human playability testing or general independent installation. |
+
+PR #164's post-merge `main` Checks run 39200925933 passed on `13162115dd80f45b8141259847e72e0b91ace001`. That workflow does not itself close the open human, historical, accessibility, recovery, or authority signoff gates.
 
 ## Review result
 
@@ -25,23 +41,21 @@ Recommended direction is documented in [Rules Module V2 RFC](rules-module-rfc.md
 | V1 lifecycle audit | Complete | `rules-module-audit.md` with paths, functions, confirmed findings and hypotheses. |
 | V2 contract review | **Draft complete; critical risks unresolved** | RFC covers registry, execution and extensibility alternatives, interfaces, invariants, failure, migration, examples and acceptance tests. |
 | ADR drafts | **Added in this review** | ADR-0019 through ADR-0021 record proposed exact locks, host execution boundary and authorized extension contributions. |
-| Registry implementation | Not started | Small PR 1 criteria in RFC: resolver/lock/conflict/digest/V1 tests. |
-| Resolver/host kernel | **Isolated evidence complete; production implementation not started** | PR #130 commit `f06307b` passes 9 focused tests for SQLite atomicity, rollback, hashes, action eligibility and continuation recovery. Production adapters and policies remain required. |
-| Extension data plane (issue #136 slice) | Implemented; production integration deferred | Versioned generic entity/command/workflow contracts, host SQLite kernel, atomic V2 effects/receipts/events, serialized continuation, starship proof and focused tests. Routes, migrations and archive wiring remain deferred. |
-| UI contribution plane (issue #137 slice) | Experimental declarative client renderer; workspace wiring deferred | Exact-pinned typed contracts and host React renderer for sheets, panels, action/forms, displays, resources and composable bricks. Starship and d20/dice-pool probes use the same renderer. A default-off V2 host API now serves authenticated projections/commands for one bundled proof, but the web workspace does not mount it. |
-| System probes and QA | **Two bundled V2 probes; authoring contract published; installation still bundled-only** | Revised 5e and dice-pool modules exercise shared generic kernels. The #157 challenge exposed missing public authoring detail; [V2 module authoring](v2-module-authoring.md), the trusted-source CLI and starter now specify/validate source, schema, effect, digest and capability-closure contracts. This is not a general loader or UI mount and does not prove independent installation. See the [challenge report](third-module-authoring-report.md) and [integration boundaries](v2-module-integration-boundaries.md). |
+| Registry implementation | Implemented in PRs #140/#159/#164 | Exact catalog, lock and ordinary setup checks; no general installer or trust root. |
+| Resolver/host kernel | Implemented in PRs #141–#143/#147/#148/#162 | Host authority is version-bound for the supported local single-process SQLite configuration; #145 signoff is still open. |
+| Extension data plane (issue #136 slice) | Implemented foundation and generic UI wiring | PRs #144/#160/#161/#164 cover generic entities, ownership, commands, workflows and a third module. Keep #136 open for migration/extension acceptance not demonstrated by this evidence. |
+| UI contribution plane (issue #137 slice) | Implemented experimental declarative renderer and normal campaign entry | PRs #146/#159/#164. The host remains default-off, loopback-only and limited to one configured V2 campaign; human accessibility signoff remains outstanding. |
+| System probes and QA | Three bundled trusted modules; independent authoring challenge recorded | Revised 5e, Dice-pool and Tides & Omens use the shared contracts. PR #160 is automated challenge evidence, not human usability, untrusted installation, or general distribution acceptance. |
 
-## Recommended implementation order
+## Recommended next activity
 
-1. Registry lock and V1 adapter.
-2. Pure resolver protocol with two resolvers in one module.
-3. Host typed-effect transaction kernel.
-4. Serializable continuations/reaction windows.
-5. Extension entities/commands/workflows/migrations and backup closure.
-6. Generic authorized UI contributions and accessibility/offline states; the renderer prototype now exists, but it is gated and not production-playable.
-7. System probes, campaign isolation and full migration/archive QA.
+1. Run #110's Revised 5e human GM + two-player walkthrough through ordinary Campaign Home, with the contrasting Dice-pool smoke and evidence bundle described in [the playability plan](playability-refinement-plan.md).
+2. Fix only reproduced core-flow, authorization/privacy, recovery, or V1-compatibility blockers; map usability findings to existing #111–#113 before opening any new issue.
+3. Coordinate #114 manual QA and close #115 only after evidence, explicit limitations, and release-owner signoff.
 
-Each step remains a small reviewable PR with the specific acceptance criteria in the RFC. Do not mark a phase complete from documentation alone.
+The earlier implementation plan below records design rationale and pre-merge evidence. Its old sequence is historical; it does not supersede the current status or authorize multi-campaign, untrusted-module, offline-action, or abstraction work.
+
+The per-PR sections below retain evidence and scope statements as they were written. Any statement that a later integration was "not yet" connected is historical for that section; use the current status table above for the post-#164 state.
 
 ## PR #130 evidence boundary
 
@@ -62,7 +76,7 @@ Before calling V2 production-ready, implement and test the smallest host-owned s
 
 This is a minimum execution/registry scope, not a complete UI/content platform. Entity/UI contributions, migration tooling and third-party executable extensions remain subsequent work.
 
-## Ordered implementation PR plan
+## Original ordered implementation PR plan (historical)
 
 | Order | Focus | Acceptance criteria |
 | --- | --- | --- |
