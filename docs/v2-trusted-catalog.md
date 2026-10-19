@@ -8,7 +8,7 @@ Only module IDs explicitly listed in the checked-in catalog are available to the
 
 At host initialization, every listed source is validated through the published `pnpm v2:module validate` workflow. Capability manifests and closure, package/root digests, module identity/version, and descriptors are checked before callbacks are registered. Declarative UI contributions are checked against the same entity, command, workflow, and exact capability references used by the UI registry. Initialization fails closed on missing or invalid trusted source, conflicting identity, unsupported schema/UI, or digest mismatch. No fallback provider or automatic lock replacement exists.
 
-The catalog currently contains Starship Systems, Revised 5e, Interruption Example, Dice-pool, and Starter. Legacy examples have authoring sidecars so their closure is validated while their historical host root digests remain unchanged. New providers should use the normal full-content digest recipe in [V2 module authoring](v2-module-authoring.md), not legacy mode.
+The catalog currently contains Starship Systems, Revised 5e, Interruption Example, Dice-pool, Starter, the generic entity-setup test module, and Tides & Omens. Legacy examples have authoring sidecars so their closure is validated while their historical host root digests remain unchanged. New providers should use the normal full-content digest recipe in [V2 module authoring](v2-module-authoring.md), not legacy mode. Tides & Omens demonstrates a separate third-module source validated through the published CLI and mounted in the generic workspace; this is reviewed bundled registration, not independent installation.
 
 ## Registry composition and policies
 

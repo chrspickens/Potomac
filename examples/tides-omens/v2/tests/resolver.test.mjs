@@ -15,8 +15,15 @@ const resolve = (data, input) => resolver.resolve({ state: data, input });
 test('calm observation consumes one token and advances progress deterministically', () => {
   const output = resolve(state(), { approach: 'observe', fate: 'calm' });
   assert.deepEqual(output.outcomes[0].data, { result: 'opening', progress: 1, danger: 0 });
+  assert.equal(output.effects[0].visibility, 'private', 'owner-only state mutation stays private to match entity authority');
   assert.equal(output.effects[0].payload.state.tokens.calm, 1);
   assert.deepEqual(output.effects[0].payload.state.choices, [{ approach: 'observe', fate: 'calm', result: 'opening' }]);
+});
+
+test('committed owner-only decisions emit private state events while returning the declared scene outcome', () => {
+  const output = resolve(state(), { approach: 'observe', fate: 'calm' });
+  assert.equal(output.outcomes[0].visibility, 'public');
+  assert.equal(output.effects[0].visibility, 'private');
 });
 
 test('storm endurance increases danger and consumes committed resource', () => {

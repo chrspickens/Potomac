@@ -1,5 +1,5 @@
 // Trusted bundled module entry. Resolver and handler are pure and use no ambient randomness.
-const digest = 'sha256:62ba14cf92848e6111c77ef8e2b2936fe5545542ca5cb4d4e89dd796a56bf5da';
+const digest = 'sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273';
 const ref = id => ({ id, apiVersion: '1.0.0', implementationVersion: '1.0.0', digest });
 export const refs = {
   root: ref('example.tides-omens'),
@@ -108,7 +108,7 @@ export const resolver = {
     return {
       outcomes: [{ kind: `tides-omens.${result}`, data: { result, progress: next.progress, danger: next.danger }, visibility: 'public' }],
       decisions: [],
-      effects: [{ effectId: 'record-fate-choice', handler: refs.handler.id, targetId: state.entityId, payload: { state: next }, visibility: 'public' }]
+      effects: [{ effectId: 'record-fate-choice', handler: refs.handler.id, targetId: state.entityId, payload: { state: next }, visibility: 'private' }]
     };
   }
 };
@@ -119,10 +119,10 @@ export const handler = {
   atomic: true,
   conflict: 'reject-overlap',
   targetType: refs.entity.id,
-  targetVisibility: 'owner',
+  targetVisibility: 'private',
   payloadSchema: { type: 'object', properties: { state: decisionSchema }, required: ['state'], additionalProperties: false },
   eventKind: 'tides-omens.fate-chosen',
-  eventVisibility: 'public',
+  eventVisibility: 'private',
   eventSchema: {
     type: 'object',
     properties: {
@@ -137,7 +137,7 @@ export const handler = {
     data: effect.payload.state,
     revision: entity.revision + 1,
     event: {
-      kind: 'tides-omens.fate-chosen', visibility: 'public',
+      kind: 'tides-omens.fate-chosen', visibility: 'private',
       payload: { role: effect.payload.state.role, progress: effect.payload.state.progress, danger: effect.payload.state.danger }
     }
   })

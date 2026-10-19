@@ -1,6 +1,6 @@
 {
   "digestFiles": ["manifest.json", "capabilities.json", "extensions.mjs", "ui/decision.json"],
-  "contentDigest": "sha256:62ba14cf92848e6111c77ef8e2b2936fe5545542ca5cb4d4e89dd796a56bf5da",
+  "contentDigest": "sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273",
   "capabilitiesFile": "capabilities.json",
   "uiFiles": ["ui/decision.json"]
 }

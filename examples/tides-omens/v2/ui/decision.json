@@ -5,8 +5,8 @@
   "kind": "panel",
   "entityTypeId": "example.tides-omens.player-decision",
   "entitySchemaVersion": 1,
-  "capability": { "id": "example.tides-omens", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:62ba14cf92848e6111c77ef8e2b2936fe5545542ca5cb4d4e89dd796a56bf5da" },
-  "entityCapability": { "id": "example.tides-omens.player-decision", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:62ba14cf92848e6111c77ef8e2b2936fe5545542ca5cb4d4e89dd796a56bf5da" },
+  "capability": { "id": "example.tides-omens", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273" },
+  "entityCapability": { "id": "example.tides-omens.player-decision", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273" },
   "entitySchema": {
     "type": "object",
     "properties": {
@@ -21,7 +21,7 @@
   },
   "commands": [{
     "commandId": "example.tides-omens.choose-fate",
-    "capability": { "id": "example.tides-omens.choose-fate", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:62ba14cf92848e6111c77ef8e2b2936fe5545542ca5cb4d4e89dd796a56bf5da" },
+    "capability": { "id": "example.tides-omens.choose-fate", "apiVersion": "1.0.0", "implementationVersion": "1.0.0", "digest": "sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273" },
     "inputSchema": { "type": "object", "properties": { "approach": { "type": "string", "enum": ["observe", "bargain", "endure"] }, "fate": { "type": "string", "enum": ["calm", "storm", "omen"] } }, "required": ["approach", "fate"], "additionalProperties": false }
   }],
   "workflows": [],
