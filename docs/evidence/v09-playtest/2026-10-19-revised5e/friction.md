@@ -1,0 +1,11 @@
+# Confirmed friction and blockers
+
+| Priority | Finding | Reproduction / impact | Existing tracking |
+|---|---|---|---|
+| S1 | V2 module actions are not reachable from normal campaign workspace | Pin Revised 5e from Campaign Home, create/select the module entity in the generic Rules workspace: no declared combat controls appear there. The module’s runnable `/v2-combat` route is separate from ordinary navigation and its existing browser acceptance seeds state by API. GM and players cannot proceed through the intended normal campaign route. | [#166](https://github.com/chrspickens/Potomac/issues/166), linked to #110 and #111. |
+| S1 | V2 campaign state is not integrated with Table/session or Maps navigation | Campaign Home reports no live session/current encounter and no character, while the module models its encounter independently. The planned session/table/map-return steps have no normal UI route. | #110 evidence and new issue; #111 tracks GM prep/session friction. |
+| S2 | Generic encounter schema form is not a guided setup experience | Revised 5e presents a single large entity form with nested actors/combat bookkeeping and sample `x` strings; ownership is a free-form principal ID. This requires module-schema knowledge and does not guide character creation, enrollment association, or encounter preparation. | #110, #111 and #112 cover the playtest and GM/player flow; use findings before splitting UX work. |
+| S2 | V1 draft controls appear on V2 player Home | The V2 player with no authorized character sees “Save next permitted action as a private draft” and dependency-guard controls above the getting-started state. The controls are not useful for the unavailable V2 combat action and may imply that an action can be queued. | #112 / #113; confirm with a human participant before opening a narrower wording issue. |
+| PENDING | Privacy and authorization with owned/private V2 characters | No player-owned character or private encounter field was created in Revised 5e UI, so cross-player read/action filtering with actual state is not tested here. | #110/#112; do not claim passed. |
+
+Severity reflects the tested workflow blocker, not a claim about underlying host API correctness. Existing `/v2-combat` mechanics acceptance is separate automated evidence and was not used as a substitute for this UI journey.
