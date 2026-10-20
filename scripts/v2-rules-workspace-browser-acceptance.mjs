@@ -54,7 +54,7 @@ async function ordinaryPlayer(name, player) {
   await page(name);
   await ev(name, `window.prompt=()=>${JSON.stringify(player.credential)}`);
   await click(name, 'Use player credential');
-  await waitFor(name, `document.body.innerText.includes('Connected') || document.body.innerText.includes('Campaign Home')`, `${name} authenticated main workspace`);
+  await waitFor(name, `document.querySelector('.app-topbar select')?.value==='player' && (()=>{try{return JSON.parse(localStorage.getItem('potomac.identity.v1')||'null')?.credential===${JSON.stringify(player.credential)}}catch{return false}})()`, `${name} authenticated with its issued player credential`);
   await waitFor(name, ` [...document.querySelectorAll('.app-rail nav button')].some(b=>b.textContent.includes('Rules'))`, `${name} Rules navigation`);
   await click(name, '⚙ Rules');
   await waitFor(name, `Boolean(document.querySelector('.v2-combat-header'))`, `${name} generic Rules workspace`);
