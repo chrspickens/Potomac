@@ -145,8 +145,9 @@ try {
   await waitFor(sessionId, 'document.querySelector("#permitted form [role=alert]")?.textContent.includes("Retry its exact inputs")', 'changed input blocked while prior command outcome is unknown');
   assert.equal(await evaluate(sessionId, 'window.__v2Submissions.length'), 2, 'changed input cannot create a second operation while the pending receipt is unresolved');
 
-  await evaluate(sessionId, `sessionStorage.setItem('harnessRevision', '5'); window.location.reload()`);
-  await waitFor(sessionId, 'window.__v2Ready === true && window.__v2Submissions.length === 2', 'restore pending exact intent after refreshed revision');
+  await evaluate(sessionId, `sessionStorage.setItem('harnessRevision', '5')`);
+  await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-ui-test-harness.html` }, sessionId);
+  await waitFor(sessionId, `location.pathname==='/v2-ui-test-harness.html' && document.readyState==='complete' && window.__v2Ready===true && window.__v2Submissions.length===2`, 'restore pending exact intent after refreshed revision', 30000);
   assert.equal(await evaluate(sessionId, 'document.querySelector("#permitted input[name=amount]").value'), '13', 'pending input is retained across renderer restart');
   await evaluate(sessionId, `document.querySelector('#permitted form').requestSubmit()`);
   await waitFor(sessionId, 'window.__v2Submissions.length === 3 && document.querySelector("#permitted form [role=status]")?.textContent.includes("committed by the host")', 'exact retry replays the original intent');

@@ -43,7 +43,13 @@ async function startWeb() {
   throw new Error(`Vite could not acquire a loopback port after retries: ${children.at(-1)?.output ?? ''}`);
 }
 async function newPage(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-modules` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('#v2-catalog-credential'))`, `${name} login`); }
-async function login(name, credential) { await setValue(name, '#v2-catalog-credential', credential); await click(name, 'Connect'); await waitFor(name, `Boolean(document.querySelector('#v2-module-picker')) || document.body.innerText.includes('Immutable campaign module')`, `${name} authenticated workspace`); }
+async function login(name, credential) {
+  await evaluate(name, `(()=>{const input=document.querySelector('#v2-catalog-credential');if(!input)return false;input.focus();input.select();return true})()`);
+  await cdp('Input.insertText', { text: credential }, sessions[name]);
+  await waitFor(name, `(()=>{const input=document.querySelector('#v2-catalog-credential');const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Connect');return Boolean(input&&input.value===${JSON.stringify(credential)}&&button&&!button.disabled)})()`, `${name} credential form ready`);
+  await click(name, 'Connect');
+  await waitFor(name, `Boolean(document.querySelector('#v2-module-picker')) || document.body.innerText.includes('Immutable campaign module')`, `${name} authenticated workspace`);
+}
 const digest = 'sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273';
 const typeId = 'example.tides-omens.player-decision';
 try {
