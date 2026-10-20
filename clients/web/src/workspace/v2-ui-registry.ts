@@ -21,6 +21,11 @@ function pathSchema(schema: JsonValue, path: string): JsonValue | undefined {
   let current: JsonValue | undefined = schema;
   for (const part of parts) {
     if (!part || !current || !isJsonObject(current)) return undefined;
+    if (part === '*') {
+      if (current.type !== 'array' || !current.items) return undefined;
+      current = current.items;
+      continue;
+    }
     const properties: JsonValue | undefined = current.properties;
     if (!properties || !isJsonObject(properties) || !Object.hasOwn(properties, part)) return undefined;
     current = properties[part];
@@ -182,7 +187,14 @@ export class UiContributionRegistry {
 }
 
 export function readUiPath(data: JsonValue, path: string): JsonValue | undefined {
-  return path.split('.').filter(Boolean).reduce<JsonValue | undefined>((value, part) => value && typeof value === 'object' && !Array.isArray(value) ? value[part] : undefined, data);
+  const read = (value: JsonValue | undefined, parts: string[]): JsonValue | undefined => {
+    if (value === undefined || parts.length === 0) return value;
+    const [part, ...remaining] = parts;
+    if (part === '*') return Array.isArray(value) ? value.map(item => read(item, remaining) ?? null) : undefined;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+    return read(value[part], remaining);
+  };
+  return read(data, path.split('.').filter(Boolean));
 }
 
 export function uiNodeIsVisible(node: UiNode, data: JsonValue): boolean {

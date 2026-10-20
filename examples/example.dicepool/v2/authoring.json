@@ -1,8 +1,18 @@
 {
-  "digestFiles": ["manifest.json", "extensions.mjs", "ui/scene.json"],
-  "contentDigest": "sha256:b819e73c82927c8b362e8929d97dbdb67d6fd036b25686ba8dc1c37729c3ec12",
-  "hostDigestFiles": ["manifest.json", "extensions.mjs"],
-  "hostDigest": "sha256:4a9bc882fe0d53bc7efc11f0ac459887d6b1243c100b193069c9029d98ce8a65",
+  "digestFiles": [
+    "manifest.json",
+    "extensions.mjs",
+    "ui/scene.json"
+  ],
+  "contentDigest": "sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc",
+  "hostDigestFiles": [
+    "manifest.json",
+    "extensions.mjs",
+    "ui/scene.json"
+  ],
+  "hostDigest": "sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc",
   "legacyBundledReferences": true,
-  "uiFiles": ["ui/scene.json"]
+  "uiFiles": [
+    "ui/scene.json"
+  ]
 }

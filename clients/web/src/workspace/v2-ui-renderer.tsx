@@ -81,14 +81,20 @@ function NodeView({ node, contribution, entity, host }: { node: UiNode; contribu
   if (node.kind === 'slot') return <div className="v2-ui-slot" data-slot={node.slotId} aria-label={node.slotId} />;
   if (node.kind === 'display') {
     const value = readUiPath(entity.data, node.path);
-    return value === undefined ? null : <dl className="v2-ui-display"><dt>{node.label}</dt><dd>{valueText(value)}</dd></dl>;
+    return value === undefined ? null : <dl className="v2-ui-display"><dt>{node.label}</dt><dd>{Array.isArray(value) ? value.map(valueText).join(' · ') : valueText(value)}</dd></dl>;
   }
   if (node.kind === 'resource') {
     const current = readUiPath(entity.data, node.currentPath);
     const maximum = readUiPath(entity.data, node.maximumPath);
-    if (typeof current !== 'number' || typeof maximum !== 'number') return null;
-    const value = Math.max(0, Math.min(maximum, current));
-    return <div className="v2-ui-resource"><label>{node.label}<progress value={value} max={Math.max(1, maximum)} aria-label={node.label} /> <output>{current} / {maximum}</output></label></div>;
+    const currents = Array.isArray(current) ? current : [current];
+    const maximums = Array.isArray(maximum) ? maximum : [maximum];
+    if (currents.length !== maximums.length || currents.some(value => typeof value !== 'number') || maximums.some(value => typeof value !== 'number')) return null;
+    return <div className="v2-ui-resource">{currents.map((currentValue, index) => {
+      const maximumValue = maximums[index] as number;
+      const value = Math.max(0, Math.min(maximumValue, currentValue as number));
+      const label = currents.length > 1 ? `${node.label} ${index + 1}` : node.label;
+      return <label key={index}>{label}<progress value={value} max={Math.max(1, maximumValue)} aria-label={label} /> <output>{valueText(currentValue)} / {maximumValue}</output></label>;
+    })}</div>;
   }
   if (node.kind === 'workflow-status') { const workflow = currentWorkflow(contribution, entity, host, node.workflowTypeId); return workflow ? <p className="v2-ui-workflow-status" role="status" aria-live="polite">{node.label}: {workflow.state.replaceAll('.', ' ')} · {workflow.status}</p> : <p role="status">{node.label}: no active workflow.</p>; }
   if (!host.allowedCommandIds.includes(node.commandId)) return null;
@@ -98,19 +104,29 @@ function NodeView({ node, contribution, entity, host }: { node: UiNode; contribu
 
 function CommandButton({ node, contribution, entity, host }: { node: Extract<UiNode, { kind: 'command' }>; contribution: UiContribution; entity: UiEntityProjection; host: UiHostContext }) {
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const workflow = node.workflowTypeId ? currentWorkflow(contribution, entity, host, node.workflowTypeId) : undefined;
   const needsWorkflow = Boolean(node.workflowTypeId);
   const submit = async () => {
-    setPending(true); setError('');
+    setPending(true); setMessage('');
     try {
       await host.submitCommand({ operationId: stableOperationId(entity, node.commandId), campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: entity.revision, input: {}, ...(workflow ? { workflow: { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } } : {}) });
       clearOperationId(entity, node.commandId);
-    } catch {
-      setError('The command was not accepted. Check access and connection, then retry.');
+      setMessage('Command committed by the host.');
+    } catch (error) {
+      setMessage(commandErrorMessage(error));
     } finally { setPending(false); }
   };
-  return <div className="v2-ui-command"><button type="button" disabled={pending || needsWorkflow && !workflow} onClick={() => void submit()}>{pending ? 'Working…' : node.label}</button>{needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}{error && <p role="alert">{error}</p>}</div>;
+  return <div className="v2-ui-command"><button type="button" disabled={pending || needsWorkflow && !workflow} onClick={() => void submit()}>{pending ? 'Working…' : node.label}</button>{needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}{message && <p role={message.startsWith('Command committed') ? 'status' : 'alert'} aria-live="polite">{message}</p>}</div>;
+}
+
+function commandErrorMessage(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+  const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
+  if (status === 403 || code === 'unauthorized' || code === 'forbidden') return 'The host denied this action for your account or selected character.';
+  if (status === 409 || code === 'conflict' || code === 'stale_revision') return 'The campaign changed before this action completed. Refresh the entity and review the current state.';
+  if (status === 404) return 'The selected entity or command is no longer available to this account.';
+  return 'The host did not confirm this action. Check access and connection, then retry.';
 }
 
 type SchemaProperty = { type: 'string' | 'integer' | 'number' | 'boolean'; title?: string; description?: string; enum?: JsonValue[]; required?: never; minimum?: number; maximum?: number; minLength?: number; maxLength?: number };
@@ -171,8 +187,8 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
       clearOperationId(entity, node.commandId);
       form.reset();
       setMessage('Command accepted by the host.');
-    } catch {
-      setMessage('The command was not accepted. Check access and connection, then retry.');
+    } catch (error) {
+      setMessage(commandErrorMessage(error));
     } finally { setPending(false); }
   };
   return <form className="v2-ui-form" aria-label={node.label} noValidate onSubmit={onSubmit}>
@@ -186,6 +202,6 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
     })}
     <button type="submit" disabled={pending || needsWorkflow && !workflow}>{pending ? 'Submitting…' : node.label}</button>
     {needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}
-    {message && <p role={message.startsWith('The command') || message.endsWith('required.') || message.startsWith('Enter ') || message.startsWith('Choose ') ? 'alert' : 'status'} aria-live="polite">{message}</p>}
+    {message && <p role={message.startsWith('Command accepted') ? 'status' : 'alert'} aria-live="polite">{message}</p>}
   </form>;
 }

@@ -77,20 +77,19 @@ export async function loadTrustedV2Catalog({ catalogFile = configFile } = {}) {
     for (const command of commands) if (!moduleRefs.some(ref => ref.id === command.capability.id && ref.digest === command.capability.digest && ref.implementationVersion === command.capability.implementationVersion)) fail(`${item.id}: command capability is outside the catalog closure`);
     const uiValues = item.authoring ? await Promise.all((authoring.uiFiles ?? []).map(file => readJson(path.join(root, file)))) : [];
     for (const contribution of uiValues) {
-      if (contribution.nodes && contribution.commands) {
-        const inClosure = ref => moduleRefs.some(candidate => candidate.id === ref.id && candidate.apiVersion === ref.apiVersion && candidate.implementationVersion === ref.implementationVersion && candidate.digest === ref.digest);
-        const entity = entities.find(candidate => candidate.typeId === contribution.entityTypeId);
-        if (!entity || contribution.entitySchemaVersion !== entity.schemaVersion || JSON.stringify(contribution.entitySchema) !== JSON.stringify(entity.schema) || !inClosure(contribution.capability) || !inClosure(contribution.entityCapability)) fail(`${item.id}: declarative UI entity/capability contract is incompatible`);
-        for (const commandContract of contribution.commands) {
-          const command = commands.find(candidate => candidate.commandId === commandContract.commandId);
-          if (!command || !inClosure(commandContract.capability) || JSON.stringify(command.inputSchema) !== JSON.stringify(commandContract.inputSchema)) fail(`${item.id}: declarative UI command is unresolved or mismatched`);
-        }
+      if (!contribution || !Array.isArray(contribution.nodes) || !Array.isArray(contribution.commands)) fail(`${item.id}: declared UI must use the bounded nodes/commands contract`);
+      const inClosure = ref => moduleRefs.some(candidate => candidate.id === ref?.id && candidate.apiVersion === ref?.apiVersion && candidate.implementationVersion === ref?.implementationVersion && candidate.digest === ref?.digest);
+      const entity = entities.find(candidate => candidate.typeId === contribution.entityTypeId);
+      if (!entity || contribution.entitySchemaVersion !== entity.schemaVersion || JSON.stringify(contribution.entitySchema) !== JSON.stringify(entity.schema) || !inClosure(contribution.capability) || !inClosure(contribution.entityCapability)) fail(`${item.id}: declarative UI entity/capability contract is incompatible`);
+      for (const commandContract of contribution.commands) {
+        const command = commands.find(candidate => candidate.commandId === commandContract.commandId);
+        if (!command || !inClosure(commandContract.capability) || JSON.stringify(command.inputSchema) !== JSON.stringify(commandContract.inputSchema)) fail(`${item.id}: declarative UI command is unresolved or mismatched`);
       }
     }
     const uiLock = { lockVersion: 1, campaignId: 'trusted-catalog-validation', rootModule: { id: item.id, version: item.version, digest: rootDigest }, entries: [...new Map([[item.id, { id: item.id, apiVersion: rootCapability?.api.apiVersion ?? '1.0.0', implementationVersion: item.version, digest: rootDigest }], ...moduleRefs.map(ref => [ref.id, { id: ref.id, apiVersion: ref.apiVersion, implementationVersion: ref.implementationVersion, digest: ref.digest }])]).values()].map(ref => ({ ...ref, source: 'bundled', optional: false })) };
     const uiCatalog = { entities: entities.map(({ typeId, schemaVersion, schema, capability }) => ({ typeId, schemaVersion, schema, capability })), commands: commands.map(({ commandId, entityTypeId, capability, inputSchema }) => ({ commandId, entityTypeId, capability, inputSchema })), workflows: descriptors.filter(value => value?.descriptorVersion === 1 && typeof value.workflowType === 'string').map(({ workflowType, entityTypeId, capability, states, transitions }) => ({ workflowType, entityTypeId, capability, states, transitions })) };
     const uiRegistry = new UiContributionRegistry(uiLock, uiLock.campaignId, uiCatalog);
-    for (const contribution of uiValues.filter(value => value?.nodes && value?.commands)) uiRegistry.register(contribution);
+    for (const contribution of uiValues) uiRegistry.register(contribution);
     if (item.intentAuthorizerExport && typeof source[item.intentAuthorizerExport] !== 'function') fail(`${item.id}: configured intent authorizer export is unavailable`);
     if (item.reactionPrincipalExport && typeof source[item.reactionPrincipalExport] !== 'function') fail(`${item.id}: configured reaction principal export is unavailable`);
     providers.push({ ...item, root, manifest, version: item.version, digest: rootDigest, contentDigest: verification.contentDigest, moduleRefs, capabilities, source, entities, commands, resolvers, effectHandlers,

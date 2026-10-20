@@ -1,22 +1,827 @@
 {
   "contractVersion": 1,
   "contributionId": "example.revised5e.combat",
-  "contributionVersion": "1.0.0",
-  "kind": "panel",
-  "slots": [],
+  "contributionVersion": "1.1.0",
+  "kind": "sheet",
+  "capability": {
+    "id": "example.revised5e.combat-ui",
+    "apiVersion": "1.0.0",
+    "implementationVersion": "1.0.0",
+    "digest": "sha256:278838eb75ffef4c3ed442eb6135ac58c2b4fac17f5d199c0372b9f355a6abca"
+  },
+  "entityTypeId": "example.revised5e.encounter",
+  "entityCapability": {
+    "id": "example.revised5e.encounter",
+    "apiVersion": "1.0.0",
+    "implementationVersion": "1.0.0",
+    "digest": "sha256:4dbfc9e1bf26568d9a5d31ca4ee80c2e79ad2763210f1c21dd2fcb95da76f583"
+  },
+  "entitySchemaVersion": 2,
+  "entitySchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "setup",
+          "active",
+          "complete"
+        ]
+      },
+      "actors": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "player",
+                "enemy"
+              ]
+            },
+            "position": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            },
+            "speed": {
+              "type": "integer",
+              "enum": [
+                25,
+                30,
+                35,
+                40
+              ]
+            },
+            "movementRemaining": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 40
+            },
+            "meleeReach": {
+              "type": "integer",
+              "enum": [
+                5,
+                10
+              ]
+            },
+            "reactionAvailable": {
+              "type": "boolean"
+            },
+            "disengaged": {
+              "type": "boolean"
+            },
+            "bonusActionAvailable": {
+              "type": "boolean"
+            },
+            "classId": {
+              "type": "string",
+              "enum": [
+                "fighter",
+                "not-modeled"
+              ]
+            },
+            "classLevel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20
+            },
+            "secondWindMaximum": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4
+            },
+            "secondWindUses": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4
+            },
+            "ownerPrincipalId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "abilityModifiers": {
+              "type": "object",
+              "properties": {
+                "strength": {
+                  "type": "integer",
+                  "minimum": -5,
+                  "maximum": 10
+                },
+                "dexterity": {
+                  "type": "integer",
+                  "minimum": -5,
+                  "maximum": 10
+                }
+              },
+              "required": [
+                "strength",
+                "dexterity"
+              ],
+              "additionalProperties": false
+            },
+            "proficiencyBonus": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 6
+            },
+            "armorClass": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "maximumHitPoints": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "currentHitPoints": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 500
+            },
+            "initiativeModifier": {
+              "type": "integer",
+              "minimum": -5,
+              "maximum": 10
+            },
+            "weapon": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "damageDie": {
+                  "type": "integer",
+                  "enum": [
+                    4,
+                    6,
+                    8,
+                    10,
+                    12
+                  ]
+                },
+                "damageType": {
+                  "type": "string",
+                  "enum": [
+                    "bludgeoning",
+                    "piercing",
+                    "slashing"
+                  ]
+                },
+                "attackAbility": {
+                  "type": "string",
+                  "enum": [
+                    "strength",
+                    "dexterity"
+                  ]
+                },
+                "proficient": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "damageDie",
+                "damageType",
+                "attackAbility",
+                "proficient"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "kind",
+            "position",
+            "speed",
+            "movementRemaining",
+            "meleeReach",
+            "reactionAvailable",
+            "disengaged",
+            "bonusActionAvailable",
+            "classId",
+            "classLevel",
+            "secondWindMaximum",
+            "secondWindUses",
+            "ownerPrincipalId",
+            "abilityModifiers",
+            "proficiencyBonus",
+            "armorClass",
+            "maximumHitPoints",
+            "currentHitPoints",
+            "initiativeModifier",
+            "weapon"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "grid": {
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "squareFeet": {
+            "type": "integer",
+            "enum": [
+              5
+            ]
+          },
+          "blocked": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "width",
+          "height",
+          "squareFeet",
+          "blocked"
+        ],
+        "additionalProperties": false
+      },
+      "initiativeOrder": {
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "initiativeRolls": {
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        }
+      },
+      "currentTurnIndex": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 2
+      },
+      "round": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10000
+      },
+      "actionsUsed": {
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "shortRestCount": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10000
+      },
+      "combatLog": {
+        "type": "array",
+        "maxItems": 100,
+        "items": {
+          "type": "object",
+          "properties": {
+            "round": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "actorId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "actorName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "targetId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "targetName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "initiative",
+                "miss",
+                "hit",
+                "critical",
+                "defeat",
+                "opportunity-miss",
+                "opportunity-hit",
+                "opportunity-critical",
+                "opportunity-defeat",
+                "second-wind",
+                "short-rest"
+              ]
+            },
+            "d20": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "attackTotal": {
+              "type": "integer",
+              "minimum": -10,
+              "maximum": 100
+            },
+            "armorClass": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "damageRolls": {
+              "type": "array",
+              "maxItems": 2,
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12
+              }
+            },
+            "damageModifier": {
+              "type": "integer",
+              "minimum": -5,
+              "maximum": 10
+            },
+            "damage": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "healingRoll": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "healingBonus": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20
+            },
+            "healing": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "remainingHitPoints": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 500
+            },
+            "resourceUsesRemaining": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4
+            },
+            "defeated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "round",
+            "actorId",
+            "actorName",
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "movementLog": {
+        "type": "array",
+        "maxItems": 100,
+        "items": {
+          "type": "object",
+          "properties": {
+            "round": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "actorId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "actorName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "from": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            },
+            "to": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            },
+            "feetSpent": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 40
+            },
+            "remaining": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 40
+            },
+            "stoppedByDefeat": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "round",
+            "actorId",
+            "actorName",
+            "from",
+            "to",
+            "feetSpent",
+            "remaining",
+            "stoppedByDefeat"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "title",
+      "status",
+      "actors",
+      "grid",
+      "initiativeOrder",
+      "initiativeRolls",
+      "currentTurnIndex",
+      "round",
+      "actionsUsed",
+      "shortRestCount",
+      "combatLog",
+      "movementLog"
+    ],
+    "additionalProperties": false
+  },
+  "commands": [
+    {
+      "commandId": "example.revised5e.initialize",
+      "capability": {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "commandId": "example.revised5e.attack",
+      "capability": {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actorId": {
+            "type": "string",
+            "enum": [
+              "player-a",
+              "player-b",
+              "enemy"
+            ]
+          },
+          "targetId": {
+            "type": "string",
+            "enum": [
+              "player-a",
+              "player-b",
+              "enemy"
+            ]
+          }
+        },
+        "required": [
+          "actorId",
+          "targetId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "commandId": "example.revised5e.disengage",
+      "capability": {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actorId": {
+            "type": "string",
+            "enum": [
+              "player-a",
+              "player-b",
+              "enemy"
+            ]
+          }
+        },
+        "required": [
+          "actorId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "commandId": "example.revised5e.end-turn",
+      "capability": {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actorId": {
+            "type": "string",
+            "enum": [
+              "player-a",
+              "player-b",
+              "enemy"
+            ]
+          }
+        },
+        "required": [
+          "actorId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "commandId": "example.revised5e.second-wind",
+      "capability": {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actorId": {
+            "type": "string",
+            "enum": [
+              "player-a",
+              "player-b",
+              "enemy"
+            ]
+          }
+        },
+        "required": [
+          "actorId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "commandId": "example.revised5e.short-rest",
+      "capability": {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
   "workflows": [],
+  "slots": [],
   "nodes": [
     {
       "kind": "section",
-      "id": "example.revised5e.combat.controls",
-      "label": "Encounter actions",
+      "id": "example.revised5e.rules.status",
+      "label": "Encounter state",
       "children": [
-        { "kind": "command", "id": "example.revised5e.combat.initialize", "commandId": "example.revised5e.initialize", "label": "Roll initiative and begin" },
-        { "kind": "form", "id": "example.revised5e.combat.attack", "commandId": "example.revised5e.attack", "label": "Attack" },
-        { "kind": "form", "id": "example.revised5e.combat.second-wind", "commandId": "example.revised5e.second-wind", "label": "Use Second Wind (Bonus Action)" },
-        { "kind": "form", "id": "example.revised5e.combat.disengage", "commandId": "example.revised5e.disengage", "label": "Disengage" },
-        { "kind": "form", "id": "example.revised5e.combat.end-turn", "commandId": "example.revised5e.end-turn", "label": "End turn" },
-        { "kind": "command", "id": "example.revised5e.combat.short-rest", "commandId": "example.revised5e.short-rest", "label": "Complete Short Rest (GM)" }
+        {
+          "kind": "display",
+          "id": "example.revised5e.rules.title",
+          "path": "title",
+          "label": "Encounter"
+        },
+        {
+          "kind": "display",
+          "id": "example.revised5e.rules.status-value",
+          "path": "status",
+          "label": "Status"
+        },
+        {
+          "kind": "display",
+          "id": "example.revised5e.rules.round",
+          "path": "round",
+          "label": "Round"
+        },
+        {
+          "kind": "display",
+          "id": "example.revised5e.rules.initiative",
+          "path": "initiativeOrder",
+          "label": "Initiative order"
+        },
+        {
+          "kind": "display",
+          "id": "example.revised5e.rules.actor-names",
+          "path": "actors.*.name",
+          "label": "Combatants"
+        },
+        {
+          "kind": "resource",
+          "id": "example.revised5e.rules.hit-points",
+          "label": "Hit points",
+          "currentPath": "actors.*.currentHitPoints",
+          "maximumPath": "actors.*.maximumHitPoints"
+        },
+        {
+          "kind": "resource",
+          "id": "example.revised5e.rules.movement",
+          "label": "Movement remaining",
+          "currentPath": "actors.*.movementRemaining",
+          "maximumPath": "actors.*.speed"
+        },
+        {
+          "kind": "resource",
+          "id": "example.revised5e.rules.second-wind",
+          "label": "Second Wind uses",
+          "currentPath": "actors.*.secondWindUses",
+          "maximumPath": "actors.*.secondWindMaximum"
+        },
+        {
+          "kind": "display",
+          "id": "example.revised5e.rules.combat-log",
+          "path": "combatLog",
+          "label": "Recent combat log"
+        }
+      ]
+    },
+    {
+      "kind": "section",
+      "id": "example.revised5e.rules.actions",
+      "label": "Declared actions",
+      "children": [
+        {
+          "kind": "command",
+          "id": "example.revised5e.rules.initialize",
+          "commandId": "example.revised5e.initialize",
+          "label": "Roll initiative and begin"
+        },
+        {
+          "kind": "form",
+          "id": "example.revised5e.rules.attack",
+          "commandId": "example.revised5e.attack",
+          "label": "Attack"
+        },
+        {
+          "kind": "form",
+          "id": "example.revised5e.rules.second-wind-action",
+          "commandId": "example.revised5e.second-wind",
+          "label": "Use Second Wind (Bonus Action)"
+        },
+        {
+          "kind": "form",
+          "id": "example.revised5e.rules.disengage",
+          "commandId": "example.revised5e.disengage",
+          "label": "Disengage"
+        },
+        {
+          "kind": "form",
+          "id": "example.revised5e.rules.end-turn",
+          "commandId": "example.revised5e.end-turn",
+          "label": "End turn"
+        },
+        {
+          "kind": "command",
+          "id": "example.revised5e.rules.short-rest",
+          "commandId": "example.revised5e.short-rest",
+          "label": "Complete Short Rest (GM)"
+        }
       ]
     }
   ]

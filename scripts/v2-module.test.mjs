@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { assertCapabilityRef, canonicalFileDigest, resolveCapabilityLock, validateAuthoringSchema, validateModule } from './v2-module.mjs';
 
-test('the public authoring validator accepts the existing Revised 5e and dice-pool bundles', async () => {
-  const expected = { 'example.revised5e': 'sha256:d8a631a927bc43ae219c23d02d2aca4471b505e52bd5d479b71cd6029b60811e', 'example.dicepool': 'sha256:4a9bc882fe0d53bc7efc11f0ac459887d6b1243c100b193069c9029d98ce8a65' };
+test('the public authoring validator accepts the current Revised 5e and dice-pool bundles', async () => {
+  const expected = { 'example.revised5e': 'sha256:c7a4b28a88161825b8f788cb4290388084cb168900778734fc02876508c95192', 'example.dicepool': 'sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc' };
   for (const [name, folder] of [['example.revised5e', 'example.revised5e'], ['example.dicepool', 'example.dicepool'], ['example.starter', 'module-starter']]) {
     const result = await validateModule(new URL(`../examples/${folder}/v2`, import.meta.url));
     const authoring = JSON.parse(await readFile(new URL(`../examples/${folder}/v2/authoring.json`, import.meta.url), 'utf8'));
@@ -14,7 +14,7 @@ test('the public authoring validator accepts the existing Revised 5e and dice-po
     assert.match(result.contentDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(result.contentDigest, authoring.contentDigest);
     assert.equal(result.rootDigest, authoring.legacyBundledReferences ? authoring.hostDigest : authoring.contentDigest);
-    if (expected[name]) assert.equal(result.rootDigest, expected[name], `${name} historic root digest remains unchanged`);
+    if (expected[name]) assert.equal(result.rootDigest, expected[name], `${name} authored package and exact root digest match`);
     assert.ok(result.entities > 0 && result.commands > 0 && result.resolvers > 0 && result.effectHandlers > 0);
     assert.ok(result.lock.entries.length > 1);
   }
