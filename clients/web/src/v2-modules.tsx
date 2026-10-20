@@ -15,6 +15,7 @@ type EnrolledPlayer = V2PreparationMember & { credential?: string };
 type CreationRequest = { data: JsonValue; ownerPrincipalId?: string; visibility: 'public' | 'gm' | 'owner' };
 type PreparationRecovery = { key: string; entityTypeId: string; entityId?: string; assignedMemberIds: string[]; grantedMemberIds: string[] };
 type ReactionProjection = { windowId: string; parentOperationId: string; status: string; expiresAt: string; permissions: { submit: boolean; expire: boolean; adjudicate: boolean }; availableActions: Array<{ actionId: string; inputSchema: JsonValue }> };
+type CurrentSession = { status: 'none' | 'live' | 'finished'; revision: number; encounter?: { entityId: string; revision: number; title?: string } };
 const apiEndpoint = (path: string) => `${(import.meta.env.VITE_POTOMAC_HOST || '').replace(/\/$/, '')}${path}`;
 const preparationRecoveryStorageKey = 'potomac.v2.generic.preparation-recovery';
 const readPreparationRecovery = (): PreparationRecovery | undefined => {
@@ -68,6 +69,7 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
   const [modules, setModules] = useState<CatalogModule[]>([]); const [selectedId, setSelectedId] = useState(''); const [lock, setLock] = useState<LockView>();
   const [entities, setEntities] = useState<Entity[]>([]); const [selectedEntityId, setSelectedEntityId] = useState(initialEntityId ?? ''); const [allowedCommandIds, setAllowedCommandIds] = useState<string[]>([]); const [commandsLoading, setCommandsLoading] = useState(false);
   const [reactions, setReactions] = useState<ReactionProjection[]>([]);
+  const [currentSession, setCurrentSession] = useState<CurrentSession>();
   const [players, setPlayers] = useState<EnrolledPlayer[]>([]); const [grantMemberId, setGrantMemberId] = useState(''); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
   const [preparationRecovery, setPreparationRecovery] = useState<PreparationRecovery | undefined>(() => readPreparationRecovery());
   const selected = lock ? modules.find(module => module.id === lock.lock.rootModule.id && module.version === lock.lock.rootModule.version && module.digest === lock.lock.rootModule.digest) : modules.find(module => module.id === selectedId);
@@ -83,14 +85,15 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
     const body = await response.json(); if (!response.ok) throw Object.assign(new Error(String(body.error ?? body.message ?? `Request failed (${response.status})`)), { status: response.status, code: body.error }); return body;
   };
   const refresh = async (current = lock, currentModules = modules, activeCredential = credential) => {
-    if (!current) { setEntities([]); setSelectedEntityId(''); setReactions([]); return; }
+    if (!current) { setEntities([]); setSelectedEntityId(''); setReactions([]); setCurrentSession(undefined); return; }
     const module = currentModules.find(item => item.id === current.lock.rootModule.id);
-    const [responses, reactionRows] = await Promise.all([
+    const [responses, reactionRows, sessionProjection] = await Promise.all([
       module?.entities.length ? Promise.all(module.entities.map(descriptor => request(`/api/v2/entities?typeId=${encodeURIComponent(descriptor.typeId)}`, {}, true, current.digest, activeCredential))) : Promise.resolve([]),
-      request('/api/v2/reactions', {}, true, current.digest, activeCredential)
+      request('/api/v2/reactions', {}, true, current.digest, activeCredential),
+      request('/api/v2/session/current', {}, false, current.digest, activeCredential)
     ]);
     const records = responses.flatMap(rows => rows.entities ?? rows) as Entity[];
-    setEntities(records); setSelectedEntityId(value => records.some(row => row.entityId === initialEntityId) ? initialEntityId! : records.some(row => row.entityId === value) ? value : records[0]?.entityId ?? ''); setReactions((reactionRows.reactions ?? reactionRows) as ReactionProjection[]);
+    setEntities(records); setSelectedEntityId(value => records.some(row => row.entityId === initialEntityId) ? initialEntityId! : records.some(row => row.entityId === value) ? value : records[0]?.entityId ?? ''); setReactions((reactionRows.reactions ?? reactionRows) as ReactionProjection[]); setCurrentSession(sessionProjection as CurrentSession);
   };
   const connectCredential = async (activeCredential: string) => {
     setCredential(activeCredential); setBusy(true);
@@ -109,6 +112,13 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
   };
   const connect = (event: React.FormEvent) => { event.preventDefault(); void connectCredential(credential); };
   useEffect(() => { if (!initialCredential || autoConnected.current) return; autoConnected.current = true; void connectCredential(initialCredential); }, [initialCredential]);
+  useEffect(() => {
+    if (!connected || !lock) return;
+    let cancelled = false;
+    const refreshSession = async () => { try { const projection = await request('/api/v2/session/current', {}, false) as CurrentSession; if (!cancelled) setCurrentSession(projection); } catch { if (!cancelled) setCurrentSession(undefined); } };
+    void refreshSession(); const timer = window.setInterval(() => void refreshSession(), 3000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [connected, lock?.digest, principalId]);
   const pin = async () => { setBusy(true); try { const body = await request('/api/v2/campaign/lock', { method: 'PUT', body: JSON.stringify({ moduleId: selectedId }) }, false); setLock(body); await refresh(body); setMessage(`${selected?.name ?? selectedId} pinned at its exact validated digest.`); } catch (error) { setMessage(error instanceof Error ? error.message : 'Pin failed.'); } finally { setBusy(false); } };
   const savePreparationRecovery = (value: PreparationRecovery) => { sessionStorage.setItem(preparationRecoveryStorageKey, JSON.stringify(value)); setPreparationRecovery(value); };
   const clearPreparationRecovery = (key: string) => {
@@ -208,6 +218,18 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
     setBusy(true); try { await request(`/api/v2/reactions/${encodeURIComponent(reaction.windowId)}/expire`, { method: 'POST', body: JSON.stringify({}) }); await refresh(); setMessage('Host-confirmed reaction expiry recorded.'); }
     catch (error) { setMessage(error instanceof Error ? error.message : 'Reaction expiry failed.'); } finally { setBusy(false); }
   };
+  const transitionSession = async (action: 'start' | 'finish') => {
+    if (!lock || !entity || !currentSession) return;
+    const key = `session:${action}:${entity.entityId}:${currentSession.revision}:${entity.revision}`;
+    setBusy(true);
+    try {
+      const body = { operationId: operationId(key), expectedSessionRevision: currentSession.revision, expectedEncounterRevision: entity.revision, expectedLockDigest: lock.digest, ...(action === 'start' ? { encounterId: entity.entityId } : {}) };
+      await request(`/api/v2/session/${action}`, { method: 'POST', body: JSON.stringify(body) });
+      await refresh(); sessionStorage.removeItem(`potomac.v2.generic.operation.${key}`);
+      setMessage(action === 'start' ? 'Session started from the selected host encounter.' : 'Session finished. Encounter history remains available.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : `Session ${action} failed; refresh and retry the exact operation.`); }
+    finally { setBusy(false); }
+  };
   useEffect(() => { if (!lock || !entity) { setAllowedCommandIds([]); setCommandsLoading(false); return; } let cancelled = false; setCommandsLoading(true); setAllowedCommandIds([]); void request(`/api/v2/entities/${encodeURIComponent(entity.entityId)}/commands`).then(body => { if (!cancelled) setAllowedCommandIds(body.commandIds); }).catch(error => { if (!cancelled) setMessage(error instanceof Error ? error.message : 'Command permissions unavailable.'); }).finally(() => { if (!cancelled) setCommandsLoading(false); }); return () => { cancelled = true; }; }, [lock?.digest, entity?.entityId, entity?.revision, principalId]);
   const submitCommand = async (command: { operationId: string; commandId: string; entityId: string; expectedRevision: number; input: Record<string, JsonValue> }) => {
     if (!lock) throw new Error('No pinned campaign lock.');
@@ -229,6 +251,7 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
     {lock && selected && <><section className="v2-setup-card"><h2>Immutable campaign module</h2><p>{lock.lock.rootModule.id}@{lock.lock.rootModule.version} · {lock.lock.rootModule.digest}</p>{isGm && <><button disabled={busy} onClick={() => void enrollPlayer()}>Enroll a player</button>{players.map(player => <p key={player.memberId}>{player.credential ? <output>{player.displayName}: {player.credential}</output> : <span>{player.displayName} · enrolled</span>}</p>)}</>}</section>
       {isGm && preparationRecovery && <section className="v2-setup-card" aria-label="Preparation recovery" role="status"><h2>Preparation recovery</h2>{preparationRecovery.entityId ? <><p>{preparationRecovery.entityTypeId} exists as {preparationRecovery.entityId}. Confirmed grants: {preparationRecovery.grantedMemberIds.map(id => players.find(player => player.memberId === id)?.displayName ?? 'enrolled player').join(', ') || 'none'}.</p><p>Still required: {preparationRecovery.assignedMemberIds.filter(id => !preparationRecovery.grantedMemberIds.includes(id)).map(id => players.find(player => player.memberId === id)?.displayName ?? 'enrolled player').join(', ') || 'none'}. Select this entity below and grant each remaining player, or retry the exact original preparation.</p><button type="button" disabled={busy} onClick={() => setSelectedEntityId(preparationRecovery.entityId!)}>Open recovered entity</button></> : <p>The preparation outcome is uncertain. Retry the exact original form values; its saved operation identity will prevent duplicate creation. This attempt cannot be cleared until the host confirms its result.</p>}</section>}
       {reactions.map(reaction => <section className="v2-setup-card" key={reaction.windowId} aria-label="Authorized reaction"><h3>Pending reaction</h3><p>Movement or the parent action is paused until this decision resolves. Expires {new Date(reaction.expiresAt).toLocaleString()}.</p>{reaction.permissions.adjudicate ? <><h4>GM adjudication</h4>{reaction.availableActions.map(action => <V2EntitySchemaForm key={action.actionId} schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-gm-accept`} disabled={busy} submitLabel={`GM adjudicate: accept ${action.actionId}`} onSubmit={input => adjudicateReaction(reaction, 'accept', action.actionId, input)} />)}<button disabled={busy} onClick={() => void adjudicateReaction(reaction, 'decline')}>GM adjudicate: decline and resume</button></> : reaction.permissions.submit && reaction.availableActions.map(action => <div key={action.actionId}><V2EntitySchemaForm schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-accept`} disabled={busy} submitLabel={`Accept ${action.actionId}`} onSubmit={input => decideReaction(reaction, action.actionId, 'accept', input)} /><V2EntitySchemaForm schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-decline`} disabled={busy} submitLabel={`Decline ${action.actionId}`} onSubmit={input => decideReaction(reaction, action.actionId, 'decline', input)} /></div>)}{reaction.permissions.expire && <button disabled={busy || Date.parse(reaction.expiresAt) > Date.now()} onClick={() => void expireReaction(reaction)}>Expire after deadline</button>}</section>)}
+      {entity && <section className="v2-setup-card" aria-label="Current V2 session"><h3>Current session</h3><p>{!currentSession ? 'Checking host session status' : currentSession.status === 'live' ? `Live${currentSession.encounter?.title ? ` · ${currentSession.encounter.title}` : ''}` : currentSession.status === 'finished' ? 'Finished' : 'Not started'}</p>{isGm && (currentSession?.status === 'live' && currentSession.encounter?.entityId === entity.entityId ? <button type="button" disabled={busy} onClick={() => void transitionSession('finish')}>Finish session</button> : currentSession?.status !== 'live' && (entity.typeId.endsWith('.encounter') || entity.typeId.endsWith('.scene')) ? <button type="button" disabled={busy || !currentSession} onClick={() => void transitionSession('start')}>Start session</button> : null)}</section>}
       {isGm && selected.entities.filter(descriptor => descriptor.creationRoles.includes('gm')).map(descriptor => <EntityCreationPanel key={`${selected.id}:${descriptor.typeId}`} moduleId={selected.id} descriptor={descriptor} preparation={selected.preparation?.find(form => form.entityTypeId === descriptor.typeId)} players={players} busy={busy} onCreate={(submission, assignedMembers) => createEntity(descriptor, submission, assignedMembers)} />)}
       {entities.length > 0 && <section className="v2-setup-card"><label htmlFor="v2-entity-picker">Authorized entities</label><select id="v2-entity-picker" value={entity?.entityId ?? ''} onChange={event => setSelectedEntityId(event.target.value)}>{entities.map(item => <option key={item.entityId} value={item.entityId}>{item.entityId}</option>)}</select>{entity && <><p>Entity revision {entity.revision}</p>{onOpenInTable && <button type="button" onClick={() => onOpenInTable(entity.entityId)}>Open in Table</button>}{isGm && players.length > 0 && <div className="v2-grant-controls"><label htmlFor="v2-grant-member">Grant read and act</label><select id="v2-grant-member" value={grantMemberId} onChange={event => setGrantMemberId(event.target.value)}><option value="">Choose an enrolled player</option>{players.map(player => <option key={player.memberId} value={player.memberId}>{player.displayName}</option>)}</select><button disabled={busy || !grantMemberId} onClick={() => void grantPlayer()}>Grant selected player read/act</button></div>}{commandsLoading && <p role="status" aria-live="polite">Loading available module actions…</p>}{!commandsLoading && uiRegistry && selected.contributions.filter(contribution => contribution.entityTypeId === entity.typeId).map(contribution => <V2UiContributionView key={contribution.contributionId} experimentalEnabled registry={uiRegistry} contributionId={contribution.contributionId} entity={entity} host={{ lock: lock.lock, principalId, allowedCommandIds, submitCommand }} />)}{!commandsLoading && allowedCommandIds.length === 0 && selected.contributions.some(contribution => contribution.entityTypeId === entity.typeId && contribution.commands.length > 0) && <p role="status">No module actions are currently authorized for this account.</p>}</>}</section>}
     </>}

@@ -594,6 +594,17 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         };
         try {
           if (req.method === 'GET' && url.pathname === '/api/v2/session') return json(res, 200, { principalId: auth.principalId, role: auth.role });
+          if (req.method === 'GET' && url.pathname === '/api/v2/session/current') return json(res, 200, v2Api.currentSession(auth.principalId, proof));
+          if (req.method === 'POST' && url.pathname === '/api/v2/session/start') {
+            const body = await readBody(req);
+            if (Object.keys(body).some(key => !['operationId','encounterId','expectedSessionRevision','expectedEncounterRevision','expectedLockDigest'].includes(key))) return json(res, 400, { error: 'Current-session authority and state are host-derived', reasonCode: 'invalid' });
+            const result = v2Api.startSession(auth.principalId, proof, body); notify(); return json(res, 200, result);
+          }
+          if (req.method === 'POST' && url.pathname === '/api/v2/session/finish') {
+            const body = await readBody(req);
+            if (Object.keys(body).some(key => !['operationId','expectedSessionRevision','expectedEncounterRevision','expectedLockDigest'].includes(key))) return json(res, 400, { error: 'Current-session authority and state are host-derived', reasonCode: 'invalid' });
+            const result = v2Api.finishSession(auth.principalId, proof, body); notify(); return json(res, 200, result);
+          }
           if (req.method === 'GET' && url.pathname === '/api/v2/members') return json(res, 200, { members: v2Api.listMembers(auth.principalId, proof) });
           if (req.method === 'GET' && url.pathname === '/api/v2/modules') return json(res, 200, { modules: v2Api.listModules(auth.principalId, proof) });
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'GET') return json(res, 200, v2Api.getLock(auth.principalId, proof));

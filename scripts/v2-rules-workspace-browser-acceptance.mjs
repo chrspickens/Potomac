@@ -197,6 +197,18 @@ try {
   const afterNewPreparation = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.equal((afterNewPreparation.entities ?? afterNewPreparation).length, 3, 'confirmed recovery permits a genuinely new entity after the original operation keys are retired');
   await setValue('gm', '#v2-entity-picker', committedEntityId);
+  await waitFor('gm', `document.body.innerText.includes('Not started') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Start session')`, 'GM current-session start control');
+  await click('gm', 'Start session');
+  await waitFor('gm', `document.body.innerText.includes('Session started from the selected host encounter.') && document.body.innerText.includes('Live · Ash Bridge')`, 'GM session start is confirmed from the host projection');
+  const startedSession = await (await api('/api/v2/session/current', 'local-gm')).json();
+  assert.equal(startedSession.status, 'live'); assert.equal(startedSession.encounter.entityId, committedEntityId);
+  await click('gm', 'Return to campaign');
+  await waitFor('gm', `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Session live') && document.body.innerText.includes('Active encounter: Ash Bridge')`, 'Campaign Home reflects the live V2 host session');
+  await screenshot('gm', 'gm-campaign-home-session-live.png');
+  await click('gm', '⚙ Rules');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header'))`, 'Rules return after live session Home check');
+  await setValue('gm', '#v2-entity-picker', committedEntityId);
+  await waitFor('gm', `document.body.innerText.includes('Live · Ash Bridge')`, 'Rules session projection is consistent with Campaign Home');
 
   await waitFor('gm', `document.querySelectorAll('progress[aria-label="Hit points 1"]').length === 1`, 'per-character hit point resources');
   const revisedEntities = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
@@ -288,6 +300,7 @@ try {
   await screenshot('gm', 'gm-table-grid.png');
   assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(encounterId)})`), true, 'Table route retains the original stable entity reference');
   assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(lock.lock.rootModule.digest)})`), true, 'Table displays the exact pinned module provenance');
+  assert.equal(await ev('gm', `document.body.innerText.includes('Session live')`), true, 'Table derives live-session status from the same host projection');
   assert.equal(await ev('gm', `document.querySelectorAll('.v2-table-grid').length`), 1, 'declared grid and actor positions render as a spatial table');
   await click('gm', 'Refresh authorized state');
   await waitFor('gm', `document.body.innerText.includes('Authorized encounter state loaded from the host') && document.body.innerText.includes('Grid · 8 × 5')`, 'Table refresh reloads the latest authoritative projection');
@@ -299,6 +312,7 @@ try {
   await screenshot('playerA', 'player-a-table-grid.png');
   assert.equal(await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Table never renders GM-only actor ownership principals');
   assert.equal(await ev('playerA', `Boolean(document.querySelector('.v2-table-grid'))`), true, 'authorized player receives the declared spatial projection');
+  assert.equal(await ev('playerA', `document.body.innerText.includes('Session live')`), true, 'player Table receives the consistent live-session projection');
   await click('playerA', 'Open in Rules');
   await waitFor('playerA', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'player returns to Rules with the same encounter selected');
   await cdp('Page.reload', {}, sessions.playerA);
@@ -311,6 +325,16 @@ try {
   assert.equal(await ev('playerB', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Player B Table projection excludes GM-only actor ownership');
   await click('playerB', 'Open in Rules');
   await waitFor('playerB', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'Player B returns to Rules with the same stable entity reference');
+  await click('gm', 'Refresh authorized state');
+  await waitFor('gm', `document.body.innerText.includes('Authorized state refreshed from the host') && document.body.innerText.includes('Live · Ash Bridge')`, 'GM refreshes the live session after player actions');
+  await click('gm', 'Finish session');
+  await waitFor('gm', `document.body.innerText.includes('Session finished. Encounter history remains available.') && document.body.innerText.includes('Finished')`, 'GM finishes the current session');
+  const finishedSession = await (await api('/api/v2/session/current', 'local-gm')).json(); assert.equal(finishedSession.status, 'finished');
+  await click('gm', 'Return to campaign');
+  await waitFor('gm', `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Session ended')`, 'Campaign Home reflects the finished V2 session');
+  await cdp('Page.reload', {}, sessions.playerA);
+  await waitFor('playerA', `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Session ended')`, 'player reconnects to the finished V2 session after refresh');
+  await screenshot('gm', 'gm-campaign-home-session-finished.png');
   const revokeA = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}/grants/${encodeURIComponent(a.principalId)}`, 'local-gm', { method: 'DELETE', headers: { 'x-v2-lock-digest': lock.digest } });
   assert.equal(revokeA.status, 200, 'GM grant revocation succeeds');
   const participantRead = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } });
@@ -352,6 +376,13 @@ try {
   assert.equal(await ev('diceGm', `document.body.innerText.includes(${JSON.stringify(sceneId)})`), true, 'Dice-pool Table handoff retains the original scene entity ID');
   await click('diceGm', 'Open in Rules');
   await waitFor('diceGm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(sceneId)}`, 'Dice-pool Rules return retains the same scene');
+  await waitFor('diceGm', `document.body.innerText.includes('Not started') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Start session')`, 'Dice-pool scene offers the module-neutral session start');
+  await click('diceGm', 'Start session');
+  await waitFor('diceGm', `document.body.innerText.includes('Live · Lantern Bridge')`, 'Dice-pool scene starts a host-owned session');
+  await click('diceGm', 'Open in Table');
+  await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Session live') && document.body.innerText.includes('No grid is declared')`, 'non-grid Dice-pool Table shares the current-session projection');
+  await click('diceGm', 'Open in Rules');
+  await waitFor('diceGm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(sceneId)}`, 'Dice-pool session navigation preserves the selected scene');
   await ordinaryPlayer('diceA', diceA); await installCommandCapture('diceA');
   await commandForm('diceA', 'Resolve skill challenge', { actorId: 'player-a', difficulty: '8', push: 'false' });
   await waitFor('diceA', `document.body.innerText.includes('example.dicepool.skill-challenge committed by the host.')`, 'Dice-pool authorized skill action');
@@ -374,14 +405,16 @@ try {
   await click('diceB', 'Accept example.dicepool.brace');
   await waitFor('diceB', `!document.body.innerText.includes(${JSON.stringify(windowId)})`, 'reaction resolved and continuation projection refreshed');
   const parentEffects = host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(contest.request.operationId).n;
-  assert.equal(parentEffects, 1, 'continuation commits parent effects once');
+  assert.equal(parentEffects, 1, `continuation commits parent effects once; pending=${JSON.stringify(host.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get(contest.request.operationId))}; window=${JSON.stringify(host.db.prepare('SELECT status FROM v2_reaction_windows WHERE parent_operation_id=?').get(contest.request.operationId))}`);
   assert.equal((await api('/api/v2/commands', diceA.credential, { method: 'POST', body: JSON.stringify(contest.request), headers: { 'x-v2-lock-digest': diceLock.digest } })).status, 200, 'exact parent retry replays its receipt after reaction completion');
   assert.equal((await api('/api/v2/commands', diceA.credential, { method: 'POST', body: JSON.stringify({ ...contest.request, input: { actorId: 'player-a', defenderId: 'player-a', push: false } }), headers: { 'x-v2-lock-digest': diceLock.digest } })).status, 409, 'altered parent retry conflicts after recovery');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(contest.request.operationId).n, 1, 'parent retry does not duplicate effects');
   await host.close(); host = undefined; await delay(150); await startHost('dicepool.sqlite', 'campaign-issue-166-dicepool');
   await click('diceB', 'Refresh authorized state'); await waitFor('diceB', `document.body.innerText.includes('Lantern Bridge') && document.body.innerText.includes('resolved')`, 'Dice-pool continuation result persists after second host start');
+  await click('diceGm', 'Refresh authorized state'); await waitFor('diceGm', `document.body.innerText.includes('Live · Lantern Bridge')`, 'Dice-pool live session survives host restart');
+  await click('diceGm', 'Finish session'); await waitFor('diceGm', `document.body.innerText.includes('Finished')`, 'GM finishes the module-neutral Dice-pool session');
   assert.deepEqual((await lockFor()).lock, diceLock.lock, 'Dice-pool exact lock is unchanged after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_reaction_windows WHERE parent_operation_id=? AND status=?').get(contest.request.operationId, 'resolved').n, 1, 'reaction resolution persists exactly once');
-  console.log('PASS Dice-pool normal Rules: separate fresh host, exact root lock, guided scene form with roster assignment, generic resource contribution, authorized skill action, GM-only field filtering, pending continuation, authorized Player B one-time reaction, unauthorized Player A rejection, parent-effect exactly-once retry and restart persistence.');
+  console.log('PASS Dice-pool normal Rules: separate fresh host, exact root lock, non-grid current-session start/Table projection/finish across restart, guided scene and roster assignment, generic resource contribution, authorized skill action, GM-only field filtering, pending continuation, authorized Player B one-time reaction, unauthorized Player A rejection, parent-effect exactly-once retry and restart persistence.');
 } catch (error) { console.error(error); console.error(children.map(item => item.output).join('\n')); process.exitCode = 1; }
 finally { try { host?.close(); } catch {} for (const context of contexts) try { await cdp('Target.disposeBrowserContext', { browserContextId: context }); } catch {} try { await cdp('Browser.close'); } catch {} try { socket?.close(); } catch {} for (const item of children) try { if (item.proc.exitCode === null) item.proc.kill(); } catch {} await Promise.all(children.map(item => item.proc.exitCode !== null ? Promise.resolve() : new Promise(resolveExit => { item.proc.once('exit', resolveExit); setTimeout(resolveExit, 1500); }))); await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }

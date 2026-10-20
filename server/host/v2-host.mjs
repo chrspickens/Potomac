@@ -10,6 +10,16 @@ CREATE TABLE IF NOT EXISTS v2_campaign_locks (
   lock_json TEXT NOT NULL, root_module_id TEXT NOT NULL, root_module_version TEXT NOT NULL,
   root_module_digest TEXT NOT NULL, pinned_by TEXT NOT NULL, pinned_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS v2_current_sessions (
+  campaign_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, encounter_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('live','finished')), revision INTEGER NOT NULL,
+  started_by TEXT NOT NULL, started_at TEXT NOT NULL, finished_by TEXT, finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS v2_session_receipts (
+  campaign_id TEXT NOT NULL, operation_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY(campaign_id,operation_id)
+);
 CREATE TRIGGER IF NOT EXISTS v2_campaign_locks_immutable_update
 BEFORE UPDATE ON v2_campaign_locks BEGIN SELECT RAISE(ABORT, 'V2 campaign capability locks are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS v2_campaign_locks_immutable_delete
@@ -96,6 +106,25 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
   };
   const grantKey = entityId => `v2:${campaignId}:${entityId}`;
   const hasGrant = (entityId, memberId, permission) => Boolean(db.prepare(`SELECT 1 FROM actor_grants g JOIN members m ON m.id=g.member_id WHERE g.actor_id=? AND g.member_id=? AND m.revoked_at IS NULL AND g.can_${permission}=1`).get(grantKey(entityId), memberId));
+  const sessionPayloadHash = request => hashV2Json(request);
+  const authorizedSessionProjection = (principalId, authorityToken) => {
+    const member = authenticate(principalId, { campaignId, authorityToken });
+    const row = db.prepare('SELECT * FROM v2_current_sessions WHERE campaign_id=?').get(campaignId);
+    if (!row) return { status: 'none', revision: 0 };
+    const projection = { status: row.status, revision: row.revision };
+    const entity = db.prepare(`SELECT e.entity_type,e.visibility,e.data,e.revision,x.owner_principal_id
+      FROM v2_effect_entities e JOIN v2_extension_entities x USING(campaign_id,entity_id)
+      WHERE e.campaign_id=? AND e.entity_id=?`).get(campaignId, row.encounter_id);
+    const visible = entity && (member.role === 'gm' || entity.visibility === 'public' || entity.owner_principal_id === principalId || hasGrant(row.encounter_id, principalId, 'read'));
+    if (visible) {
+      let title;
+      try { const data = JSON.parse(entity.data); if (typeof data.title === 'string') title = data.title; } catch { /* Redact malformed stored data. */ }
+      projection.encounter = { entityId: row.encounter_id, revision: entity.revision, ...(title ? { title } : {}) };
+    }
+    if (row.status === 'finished') projection.finishedAt = row.finished_at;
+    return projection;
+  };
+  const unresolvedSessionContinuation = entityId => Boolean(db.prepare("SELECT 1 FROM v2_extension_pending_commands WHERE campaign_id=? AND entity_id=? AND status IN ('pending','conflicted') LIMIT 1").get(campaignId, entityId));
   const resolveReactionEligibility = ({ campaignId: requestedCampaign, actorPrincipalId, commandId, entityId, intent, entity, input }) => {
     if (requestedCampaign !== campaignId) return [];
     const owner = db.prepare('SELECT owner_principal_id FROM v2_extension_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, entityId)?.owner_principal_id;
@@ -157,6 +186,66 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
         if (!lock) throw Object.assign(new Error('campaign capability lock is not pinned'), { code: 'unavailable' });
         validateLock(campaignId, lock);
         return { lock, digest: hashV2Json(lock) };
+      });
+    },
+    currentSession(principalId, authorityToken) {
+      return begin(db, 'DEFERRED', () => {
+        if (!authenticate(principalId, { campaignId, authorityToken })) throw Object.assign(new Error('authenticated campaign member required'), { code: 'unauthorized' });
+        return authorizedSessionProjection(principalId, authorityToken);
+      });
+    },
+    startSession(principalId, authorityToken, request) {
+      return begin(db, 'IMMEDIATE', () => {
+        const member = authenticate(principalId, { campaignId, authorityToken });
+        if (!member) throw Object.assign(new Error('authenticated campaign member required'), { code: 'unauthorized' });
+        if (member.role !== 'gm') throw Object.assign(new Error('GM authority required'), { code: 'forbidden' });
+        const lock = getCampaignLock(campaignId); if (!lock) throw Object.assign(new Error('campaign capability lock is not pinned'), { code: 'unsupported' });
+        validateLock(campaignId, lock);
+        const { operationId, encounterId, expectedSessionRevision, expectedEncounterRevision, expectedLockDigest } = request ?? {};
+        if (typeof operationId !== 'string' || !operationId || typeof encounterId !== 'string' || !encounterId || !Number.isInteger(expectedSessionRevision) || !Number.isInteger(expectedEncounterRevision) || expectedLockDigest !== hashV2Json(lock) || Object.keys(request).some(key => !['operationId','encounterId','expectedSessionRevision','expectedEncounterRevision','expectedLockDigest'].includes(key))) throw Object.assign(new Error('invalid current-session start request'), { code: 'invalid' });
+        const payloadHash = sessionPayloadHash(request);
+        const previous = db.prepare('SELECT principal_id,payload_hash,response FROM v2_session_receipts WHERE campaign_id=? AND operation_id=?').get(campaignId, operationId);
+        if (previous) { if (previous.principal_id !== principalId || previous.payload_hash !== payloadHash) throw Object.assign(new Error('operation ID was already used with a different request'), { code: 'idempotency_conflict' }); return JSON.parse(previous.response); }
+        const current = db.prepare('SELECT * FROM v2_current_sessions WHERE campaign_id=?').get(campaignId);
+        const currentRevision = current?.revision ?? 0;
+        if (currentRevision !== expectedSessionRevision) throw Object.assign(new Error('current-session revision is stale'), { code: 'stale' });
+        if (current?.status === 'live') throw Object.assign(new Error('another V2 session is already live'), { code: 'conflict' });
+        const entity = db.prepare(`SELECT e.entity_type,e.revision FROM v2_effect_entities e JOIN v2_extension_entities x USING(campaign_id,entity_id) WHERE e.campaign_id=? AND e.entity_id=?`).get(campaignId, encounterId);
+        const descriptor = entities.find(item => item.typeId === entity?.entity_type && (item.typeId.endsWith('.encounter') || item.typeId.endsWith('.scene')));
+        if (!entity || !descriptor) throw Object.assign(new Error('eligible encounter is unavailable'), { code: 'unavailable' });
+        if (entity.revision !== expectedEncounterRevision) throw Object.assign(new Error('encounter revision is stale'), { code: 'stale' });
+        if (unresolvedSessionContinuation(encounterId)) throw Object.assign(new Error('resolve pending reactions before starting this session'), { code: 'conflict' });
+        const now = new Date().toISOString(), sessionId = createHash('sha256').update(`${campaignId}:${operationId}`).digest('hex').slice(0, 32);
+        db.prepare(`INSERT INTO v2_current_sessions(campaign_id,session_id,encounter_id,status,revision,started_by,started_at,finished_by,finished_at)
+          VALUES(?,?,?,'live',?,?,?,NULL,NULL) ON CONFLICT(campaign_id) DO UPDATE SET session_id=excluded.session_id,encounter_id=excluded.encounter_id,status='live',revision=excluded.revision,started_by=excluded.started_by,started_at=excluded.started_at,finished_by=NULL,finished_at=NULL`).run(campaignId, sessionId, encounterId, currentRevision + 1, principalId, now);
+        const response = { status: 'live', revision: currentRevision + 1, sessionId, encounterId, encounterRevision: entity.revision, startedAt: now };
+        db.prepare('INSERT INTO v2_session_receipts(campaign_id,operation_id,principal_id,payload_hash,response,created_at) VALUES(?,?,?,?,?,?)').run(campaignId, operationId, principalId, payloadHash, JSON.stringify(response), now);
+        writeGrantAudit({ kind: 'v2.session.started', visibility: 'gm', payload: { campaignId, sessionId, encounterId, revision: response.revision } });
+        return response;
+      });
+    },
+    finishSession(principalId, authorityToken, request) {
+      return begin(db, 'IMMEDIATE', () => {
+        const member = authenticate(principalId, { campaignId, authorityToken });
+        if (!member) throw Object.assign(new Error('authenticated campaign member required'), { code: 'unauthorized' });
+        if (member.role !== 'gm') throw Object.assign(new Error('GM authority required'), { code: 'forbidden' });
+        const lock = getCampaignLock(campaignId); if (!lock) throw Object.assign(new Error('campaign capability lock is not pinned'), { code: 'unsupported' }); validateLock(campaignId, lock);
+        const { operationId, expectedSessionRevision, expectedEncounterRevision, expectedLockDigest } = request ?? {};
+        if (typeof operationId !== 'string' || !operationId || !Number.isInteger(expectedSessionRevision) || !Number.isInteger(expectedEncounterRevision) || expectedLockDigest !== hashV2Json(lock) || Object.keys(request).some(key => !['operationId','expectedSessionRevision','expectedEncounterRevision','expectedLockDigest'].includes(key))) throw Object.assign(new Error('invalid current-session finish request'), { code: 'invalid' });
+        const payloadHash = sessionPayloadHash(request);
+        const previous = db.prepare('SELECT principal_id,payload_hash,response FROM v2_session_receipts WHERE campaign_id=? AND operation_id=?').get(campaignId, operationId);
+        if (previous) { if (previous.principal_id !== principalId || previous.payload_hash !== payloadHash) throw Object.assign(new Error('operation ID was already used with a different request'), { code: 'idempotency_conflict' }); return JSON.parse(previous.response); }
+        const current = db.prepare('SELECT * FROM v2_current_sessions WHERE campaign_id=?').get(campaignId);
+        if (!current || current.status !== 'live' || current.revision !== expectedSessionRevision) throw Object.assign(new Error('current-session revision is stale or no session is live'), { code: 'stale' });
+        const entity = db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get(campaignId, current.encounter_id);
+        if (!entity || entity.revision !== expectedEncounterRevision) throw Object.assign(new Error('encounter revision is stale'), { code: 'stale' });
+        if (unresolvedSessionContinuation(current.encounter_id)) throw Object.assign(new Error('resolve pending reactions before finishing this session'), { code: 'conflict' });
+        const now = new Date().toISOString(), revision = current.revision + 1;
+        db.prepare("UPDATE v2_current_sessions SET status='finished',revision=?,finished_by=?,finished_at=? WHERE campaign_id=? AND revision=? AND status='live'").run(revision, principalId, now, campaignId, expectedSessionRevision);
+        const response = { status: 'finished', revision, sessionId: current.session_id, finishedAt: now };
+        db.prepare('INSERT INTO v2_session_receipts(campaign_id,operation_id,principal_id,payload_hash,response,created_at) VALUES(?,?,?,?,?,?)').run(campaignId, operationId, principalId, payloadHash, JSON.stringify(response), now);
+        writeGrantAudit({ kind: 'v2.session.finished', visibility: 'gm', payload: { campaignId, sessionId: current.session_id, revision } });
+        return response;
       });
     },
     pinLock(principalId, authorityToken, moduleId = 'example.starship.system') {
