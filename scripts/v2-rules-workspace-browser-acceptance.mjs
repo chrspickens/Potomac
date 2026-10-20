@@ -61,7 +61,7 @@ async function ordinaryPlayer(name, player) {
 }
 async function commandForm(name, label, values) {
   const selector = `form[aria-label=${JSON.stringify(label)}]`;
-  await waitFor(name, `Boolean(document.querySelector(${JSON.stringify(selector)}))`, `${label} form`);
+  await waitFor(name, `(()=>{const f=document.querySelector(${JSON.stringify(selector)});return Boolean(f&&${JSON.stringify(Object.keys(values))}.every(field=>f.elements.namedItem(field)))})()`, `${label} form and declared fields`);
   for (const [field, value] of Object.entries(values)) {
     const setBy = await ev(name, `(()=>{const f=document.querySelector(${JSON.stringify(selector)});const e=f?.elements.namedItem(${JSON.stringify(field)});return e?e.tagName.toLowerCase():''})()`);
     assert.ok(setBy, `${label}.${field} exists`);
