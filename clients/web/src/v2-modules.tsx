@@ -103,12 +103,24 @@ export function V2ModulesApp({ initialCredential, initialModuleId, onExit }: { i
     if (!selected || !lock) return; setBusy(true);
     const key = `create:${selected.id}:${descriptor.typeId}`;
     let createdEntityId: string | undefined;
+    let grantsComplete = false;
     try {
       const body = await request('/api/v2/entities', { method: 'POST', body: JSON.stringify({ operationId: operationId(key), entityId: stableEntityId(key), typeId: descriptor.typeId, visibility: submission.visibility, ...(submission.ownerPrincipalId ? { ownerPrincipalId: submission.ownerPrincipalId } : {}), data: submission.data }) });
       createdEntityId = body.entityId;
       for (const memberId of [...new Set(assignedMembers.filter(Boolean))]) await request(`/api/v2/entities/${encodeURIComponent(body.entityId)}/grants`, { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) });
-      sessionStorage.removeItem(`potomac.v2.generic.operation.${key}`); sessionStorage.removeItem(`potomac.v2.generic.entity.${key}`); await refresh(); setSelectedEntityId(body.entityId); setMessage(`${descriptor.typeId} prepared by the host and read/act access granted to the selected players.`);
-    } catch (error) { setMessage(createdEntityId ? `The entity exists, but player access could not be confirmed. Keep the same form values and retry to complete the grants, or refresh and grant players individually. ${error instanceof Error ? error.message : ''}` : error instanceof Error ? error.message : 'Entity creation failed.'); }
+      grantsComplete = true;
+      await refresh();
+      setSelectedEntityId(body.entityId);
+      sessionStorage.removeItem(`potomac.v2.generic.operation.${key}`); sessionStorage.removeItem(`potomac.v2.generic.entity.${key}`);
+      setMessage(`${descriptor.typeId} prepared by the host and read/act access granted to the selected players.`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '';
+      setMessage(createdEntityId
+        ? grantsComplete
+          ? `The entity and player grants are committed, but the authorized state refresh failed. Use Refresh authorized state or retry with the same form values; the original operation is retained to prevent a duplicate. ${detail}`
+          : `The entity exists, but player access could not be confirmed. Keep the same form values and retry to complete the grants, or refresh and grant players individually. ${detail}`
+        : error instanceof Error ? error.message : 'Entity creation failed.');
+    }
     finally { setBusy(false); }
   };
   const enrollPlayer = async () => {
