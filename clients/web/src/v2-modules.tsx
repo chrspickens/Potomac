@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CapabilityLock, JsonValue, UiContribution, UiDescriptorCatalog, UiEntityProjection } from '@potomac/contracts';
 import { UiContributionRegistry } from './workspace/v2-ui-registry.ts';
-import { V2UiContributionView } from './workspace/v2-ui-renderer.tsx';
+import { commandResultFeedback, V2UiContributionView } from './workspace/v2-ui-renderer.tsx';
 import { V2EntitySchemaForm } from './workspace/v2-entity-schema-form.tsx';
 import type { EntityJsonSchema } from './workspace/v2-entity-schema.ts';
 import './v2-combat.css';
@@ -135,8 +135,12 @@ export function V2ModulesApp({ initialCredential, initialModuleId, onExit }: { i
   const submitCommand = async (command: { operationId: string; commandId: string; entityId: string; expectedRevision: number; input: Record<string, JsonValue> }) => {
     if (!lock) throw new Error('No pinned campaign lock.');
     const result = await request('/api/v2/commands', { method: 'POST', body: JSON.stringify({ operationId: command.operationId, commandId: command.commandId, entityId: command.entityId, expectedRevision: command.expectedRevision, input: command.input }) });
-    setMessage(`${command.commandId} committed by the host.`);
-    try { await refresh(); } catch { setMessage(`${command.commandId} committed by the host, but the refreshed projection is unavailable. Use Refresh authorized state before acting again.`); }
+    const feedback = commandResultFeedback(result);
+    const prefix = `${command.commandId} ${feedback.message.replace(/^Command /, '')}`;
+    setMessage(prefix);
+    if (feedback.status === 'applied' || feedback.status === 'pending') {
+      try { await refresh(); } catch { setMessage(`${prefix} The refreshed projection is unavailable; use Refresh authorized state before acting again.`); }
+    }
     return result;
   };
   if (!connected) return <main className="v2-combat-page"><section className="v2-login-card"><p className="v2-eyebrow">Potomac · Experimental V2</p><h1>Trusted module workspace</h1><form onSubmit={connect}><label htmlFor="v2-catalog-credential">Host credential</label><input id="v2-catalog-credential" type="password" value={credential} onChange={event => setCredential(event.target.value)} required /><button disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button></form>{message && <p role="alert">{message}</p>}{onExit && <button type="button" onClick={onExit}>Return to campaign</button>}</section></main>;

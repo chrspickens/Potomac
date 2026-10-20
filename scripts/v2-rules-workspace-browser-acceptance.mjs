@@ -172,8 +172,8 @@ try {
   assert.equal(Object.hasOwn(playerScene.data, 'gmNote'), false, 'GM-only module field is removed from the player projection');
   assert.equal(await ev('diceA', `document.body.innerText.includes('The bell answers from below.')`), false, 'GM-only field never appears in the player UI');
   await commandForm('diceA', 'Start contested action', { actorId: 'player-a', defenderId: 'player-b', push: 'false' });
-  await waitFor('diceA', `document.body.innerText.includes('example.dicepool.contested-action committed by the host.')`, 'Dice-pool parent command enters a durable reaction');
-  const contest = await ev('diceA', `window.__potomacCommands.find(item=>item.request.commandId==='example.dicepool.contested-action')`); assert.equal(contest.status, 200);
+  await waitFor('diceA', `document.body.innerText.includes('example.dicepool.contested-action is waiting for its authorized reaction; its effects are not committed yet.')`, 'Dice-pool parent command reports its durable reaction as pending');
+  const contest = await ev('diceA', `window.__potomacCommands.find(item=>item.request.commandId==='example.dicepool.contested-action')`); assert.equal(contest.status, 200); assert.equal(contest.response.status, 'pending', JSON.stringify(contest));
   const pendingRows = await host.db.prepare("SELECT window_id FROM v2_reaction_windows WHERE parent_operation_id=?").all(contest.request.operationId);
   assert.equal(pendingRows.length, 1, 'one durable reaction window is linked to the parent command'); const windowId = pendingRows[0].window_id;
   await ordinaryPlayer('diceB', diceB); await click('diceB', 'Refresh authorized state');
