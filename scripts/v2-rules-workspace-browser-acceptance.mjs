@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,6 +20,19 @@ const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const
 const ev = async (name, expression) => { const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessions[name]); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; };
 const waitFor = async (name, expression, what, timeout = 25000) => { const until = Date.now() + timeout; while (Date.now() < until) { if (await ev(name, expression)) return; await delay(100); } throw new Error(`Timeout ${what}: ${await ev(name, 'document.body.innerText.slice(-1800)')}`); };
 const click = async (name, label, rootSelector = 'body') => { const result = await ev(name, `(()=>{const r=document.querySelector(${JSON.stringify(rootSelector)})||document;const b=[...r.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)return {ok:false,buttons:[...r.querySelectorAll('button')].map(x=>[x.textContent.trim(),x.disabled]),tail:document.body.innerText.slice(-900)};b.click();return {ok:true}})()`); assert.equal(result.ok, true, `click ${label}: ${JSON.stringify(result)}`); };
+const screenshot = async (name, filename) => {
+  if (!process.env.POTOMAC_EVIDENCE_DIR) return;
+  await mkdir(process.env.POTOMAC_EVIDENCE_DIR, { recursive: true });
+  await ev(name, `(()=>{const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);const saved=[];while(walker.nextNode()){const node=walker.currentNode,original=node.nodeValue;if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|sha256:[0-9a-f]{64}/i.test(original)){saved.push([node,original]);node.nodeValue=original.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,'[redacted-id]').replace(/sha256:[0-9a-f]{64}/gi,'sha256:[redacted]')}}window.__evidenceRedactions=saved;return saved.length})()`);
+  const { data } = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessions[name]);
+  await writeFile(join(process.env.POTOMAC_EVIDENCE_DIR, filename), Buffer.from(data, 'base64'));
+  await ev(name, `(()=>{for(const [node,original] of window.__evidenceRedactions||[])node.nodeValue=original;window.__evidenceRedactions=[];return true})()`);
+};
+const saveEvidenceJson = async (filename, value) => {
+  if (!process.env.POTOMAC_EVIDENCE_DIR) return;
+  await mkdir(process.env.POTOMAC_EVIDENCE_DIR, { recursive: true });
+  await writeFile(join(process.env.POTOMAC_EVIDENCE_DIR, filename), `${JSON.stringify(value, null, 2)}\n`);
+};
 const setValue = async (name, selector, value, selectText = false) => {
   const result = await ev(name, `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return {ok:false,reason:'missing'};if(e instanceof HTMLSelectElement){const o=[...e.options].find(x=>x.value===${JSON.stringify(String(value))}||x.textContent.trim()===${JSON.stringify(String(value))});if(!o)return {ok:false,reason:'option',options:[...e.options].map(x=>[x.value,x.textContent.trim()])};Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,o.value)}else{const p=Object.getPrototypeOf(e),s=Object.getOwnPropertyDescriptor(p,'value')?.set;if(s)s.call(e,${JSON.stringify(String(value))});else e.value=${JSON.stringify(String(value))}}e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return {ok:true}})()`);
   assert.equal(result.ok, true, `set ${selector}=${value}: ${JSON.stringify(result)}${selectText ? '' : ''}`);
@@ -31,13 +44,14 @@ const setLabeledValue = async (name, label, value) => {
 };
 const api = (url, token = 'local-gm', init = {}) => fetch(`http://127.0.0.1:${hostPort}${url}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } });
 async function startHost(databaseName, campaignId) { host = createHost({ databasePath: join(scratch, databaseName), campaignId, enableV2Api: true, v2RandomInt: (_min, max) => max - 1 }); await host.listen(hostPort); }
-async function page(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`); }
+async function page(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`); }
 async function installCommandCapture(name) { await ev(name, `(()=>{window.__potomacCommands=[];const old=fetch.bind(window);window.fetch=async(url,init={})=>{const response=await old(url,init);if(String(url).endsWith('/api/v2/commands'))window.__potomacCommands.push({request:JSON.parse(init.body),status:response.status,response:await response.clone().json()});return response}})()`); }
 async function normalSetup(name, moduleId, campaignName) {
   await page(name);
   await waitFor(name, `Boolean(document.querySelector('select[aria-label="Reviewed V2 module"]'))`, 'ordinary Campaign Home V2 setup');
   await setValue(name, '.campaign-setup input', campaignName);
   await setValue(name, 'select[aria-label="Reviewed V2 module"]', moduleId);
+  if (name === 'gm') await screenshot(name, 'gm-campaign-home.png');
   await click(name, 'Create fresh experimental V2 campaign');
   await waitFor(name, `Boolean(document.querySelector('.v2-combat-header')) && document.body.innerText.includes('Immutable campaign module')`, 'normal setup into Rules');
   await waitFor(name, `(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Enroll a player');return Boolean(b&&!b.disabled)})()`, 'GM enrollment ready');
@@ -84,6 +98,7 @@ try {
   await normalSetup('gm', 'example.revised5e', 'Issue 166 Revised 5e');
   const [a, b] = await enrollTwo('gm');
   const lock = await lockFor(); assert.equal(lock.lock.rootModule.id, 'example.revised5e'); assert.equal(lock.lock.rootModule.version, '1.2.0'); assert.equal(lock.lock.rootModule.digest, lock.lock.entries.find(item => item.id === 'example.revised5e').digest);
+  await saveEvidenceJson('revised5e-lock.json', lock);
   const catalog = await (await api('/api/v2/modules')).json(); const provider = catalog.modules.find(item => item.id === 'example.revised5e');
   const completeClosure = [{ id: provider.id, apiVersion: '1.0.0', implementationVersion: provider.version, digest: provider.digest }, ...provider.capabilities];
   assert.deepEqual(completeClosure.map(({ id, apiVersion, implementationVersion, digest }) => `${id}@${apiVersion}@${implementationVersion}:${digest}`).sort(), lock.lock.entries.map(item => `${item.id}@${item.apiVersion}@${item.implementationVersion}:${item.digest}`).sort());
@@ -192,10 +207,14 @@ try {
 
   await ordinaryPlayer('playerA', a); await setValue('playerA', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerA');
   await waitFor('playerA', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]')) && document.body.innerText.includes('Asha')`, 'Player A authorized contribution and projection');
+  await screenshot('playerA', 'player-a-rules.png');
   const gmPrincipalId = (await (await api('/api/v2/session', 'local-gm')).json()).principalId;
   assert.equal((await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`)), false, 'player UI does not render GM-only principal fields');
   const playerProjection = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.ok(playerProjection.data.actors.every(actor => !Object.hasOwn(actor, 'ownerPrincipalId')), 'nested owner principal fields are filtered before reaching players');
+  const movementFormVisible = await ev('playerA', `Boolean(document.querySelector('form[aria-label="Move"]'))`);
+  assert.equal(movementFormVisible, false, 'Revised 5e movement command is not exposed as a normal Rules form');
+  console.log('FINDING P1 Revised 5e movement/reaction initiation has no ordinary Rules form; a direct API probe was required.');
   await commandForm('playerA', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
   await waitFor('playerA', `window.__potomacCommands.some(item=>item.request.commandId==='example.revised5e.attack')`, 'Player A attack request');
   const attackA = await ev('playerA', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(attackA.status, 200, JSON.stringify(attackA)); assert.equal(attackA.response.status, 'applied', JSON.stringify(attackA));
@@ -214,10 +233,14 @@ try {
   await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
   for (const [name, principal] of [['gm', 'gm'], ['playerA', a], ['playerB', b]]) { await click(name, 'Refresh authorized state'); await waitFor(name, `document.body.innerText.includes('Ash Bridge') && document.body.innerText.includes('complete')`, `${name} completed Revised 5e state after host restart`); }
   assert.deepEqual((await lockFor()).lock, lock.lock, 'exact root and full module capability closure survive host restart');
+  const authoritativeAfterRestart = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.equal(authoritativeAfterRestart.data.status, 'complete', 'authoritative Rules projection reports the completed encounter after restart');
   assert.equal((await retry(a, attackA.request)).status, 200, 'completed receipt remains idempotent after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(attackA.request.operationId).n, 1, 'one effect event exists for the UI command');
   await click('gm', 'Open in Table');
   await waitFor('gm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Participants and spatial view') && document.body.innerText.includes('Grid · 8 × 5')`, 'GM opens the exact V2 encounter in Table with its grid');
+  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(`revision ${authoritativeAfterRestart.revision}`)})`), true, 'GM Table displays the same authoritative revision as Rules');
+  await screenshot('gm', 'gm-table-grid.png');
   assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(encounterId)})`), true, 'Table route retains the original stable entity reference');
   assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(lock.lock.rootModule.digest)})`), true, 'Table displays the exact pinned module provenance');
   assert.equal(await ev('gm', `document.querySelectorAll('.v2-table-grid').length`), 1, 'declared grid and actor positions render as a spatial table');
@@ -225,8 +248,10 @@ try {
   await waitFor('gm', `document.body.innerText.includes('Authorized encounter state loaded from the host') && document.body.innerText.includes('Grid · 8 × 5')`, 'Table refresh reloads the latest authoritative projection');
   await click('gm', 'Open in Rules');
   await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'return to Rules preserves selected encounter');
+  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(`Entity revision ${authoritativeAfterRestart.revision}`)})`), true, 'Rules return shows the same authoritative revision as Table');
   await click('playerA', 'Open in Table');
   await waitFor('playerA', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'Player A opens an authorized host-filtered encounter in Table');
+  await screenshot('playerA', 'player-a-table-grid.png');
   assert.equal(await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Table never renders GM-only actor ownership principals');
   assert.equal(await ev('playerA', `Boolean(document.querySelector('.v2-table-grid'))`), true, 'authorized player receives the declared spatial projection');
   await click('playerA', 'Open in Rules');
@@ -241,6 +266,19 @@ try {
   assert.equal(await ev('playerB', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Player B Table projection excludes GM-only actor ownership');
   await click('playerB', 'Open in Rules');
   await waitFor('playerB', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'Player B returns to Rules with the same stable entity reference');
+  const revokeA = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}/grants/${encodeURIComponent(a.principalId)}`, 'local-gm', { method: 'DELETE', headers: { 'x-v2-lock-digest': lock.digest } });
+  assert.equal(revokeA.status, 200, 'GM grant revocation succeeds');
+  const participantRead = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } });
+  assert.equal(participantRead.status, 200, 'Player A remains authorized through explicit encounter participant assignment');
+  const retainedBRead = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, b.credential, { headers: { 'x-v2-lock-digest': lock.digest } });
+  assert.equal(retainedBRead.status, 200, 'Player B retains its independent encounter grant');
+  const revokeMember = await api(`/api/members/${encodeURIComponent(a.principalId)}`, 'local-gm', { method: 'DELETE' });
+  assert.equal(revokeMember.status, 200, 'GM revokes Player A membership');
+  const revokedRead = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } });
+  assert.ok([401, 403].includes(revokedRead.status), `revoked Player A membership blocks reads (${revokedRead.status})`);
+  const bAfterRevocation = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, b.credential, { headers: { 'x-v2-lock-digest': lock.digest } });
+  assert.equal(bAfterRevocation.status, 200, 'Player B remains authorized after Player A membership revocation');
+  console.log('PASS revocation boundaries: direct grant removal preserves assigned-participant access; member revocation blocks Player A while Player B access remains intact.');
   console.log('PASS Revised 5e Rules-to-Table: stable entity handoff, exact lock provenance, schema-declared grid/positions, authorized GM and Player A projection, owner-principal filtering, Rules return and reconnect persistence.');
   console.log('PASS Revised 5e normal Rules: ordinary Campaign Home setup, exact trusted lock closure, guided character and encounter forms with roster assignment, host-confirmed initiative and player attacks, per-actor HP resources, two isolated player contexts, cross-player denial, nested owner-field filtering, exact/altered/stale retries, and restart persistence.');
 
@@ -251,6 +289,7 @@ try {
   await normalSetup('diceGm', 'example.dicepool', 'Issue 166 Dice-pool');
   const [diceA, diceB] = await enrollTwo('diceGm');
   const diceLock = await lockFor(); assert.equal(diceLock.lock.rootModule.id, 'example.dicepool');
+  await saveEvidenceJson('dicepool-lock.json', diceLock);
   const diceCatalog = await (await api('/api/v2/modules')).json(); const diceModule = diceCatalog.modules.find(item => item.id === 'example.dicepool');
   assert.ok(diceModule.contributions.some(item => item.contributionId === 'example.dicepool.scene-ui' && JSON.stringify(item).includes('characters.*.stress')));
   assert.equal(diceModule.preparation[0].entityTypeId, 'example.dicepool.scene');
@@ -263,6 +302,7 @@ try {
   const sceneId = (diceScenes.entities ?? diceScenes)[0].entityId;
   await click('diceGm', 'Open in Table');
   await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('No grid is declared') && document.body.innerText.includes('Asha')`, 'Dice-pool uses generic non-grid Table roster');
+  await screenshot('diceGm', 'dicepool-table-roster.png');
   assert.equal(await ev('diceGm', `Boolean(document.querySelector('.v2-table-grid'))`), false, 'non-grid module is not presented as a battle map');
   assert.equal(await ev('diceGm', `document.body.innerText.includes(${JSON.stringify(sceneId)})`), true, 'Dice-pool Table handoff retains the original scene entity ID');
   await click('diceGm', 'Open in Rules');
