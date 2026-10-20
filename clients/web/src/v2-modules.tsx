@@ -13,8 +13,18 @@ type LockView = { lock: CapabilityLock; digest: string };
 type Entity = UiEntityProjection & { revision: number; ownerPrincipalId?: string | null };
 type EnrolledPlayer = V2PreparationMember & { credential?: string };
 type CreationRequest = { data: JsonValue; ownerPrincipalId?: string; visibility: 'public' | 'gm' | 'owner' };
+type PreparationRecovery = { key: string; entityTypeId: string; entityId?: string; assignedMemberIds: string[]; grantedMemberIds: string[] };
 type ReactionProjection = { windowId: string; parentOperationId: string; status: string; expiresAt: string; permissions: { submit: boolean; expire: boolean; adjudicate: boolean }; availableActions: Array<{ actionId: string; inputSchema: JsonValue }> };
 const apiEndpoint = (path: string) => `${(import.meta.env.VITE_POTOMAC_HOST || '').replace(/\/$/, '')}${path}`;
+const preparationRecoveryStorageKey = 'potomac.v2.generic.preparation-recovery';
+const readPreparationRecovery = (): PreparationRecovery | undefined => {
+  try {
+    const value = sessionStorage.getItem(preparationRecoveryStorageKey);
+    if (!value) return undefined;
+    const parsed = JSON.parse(value) as PreparationRecovery;
+    return typeof parsed.key === 'string' && typeof parsed.entityTypeId === 'string' && Array.isArray(parsed.assignedMemberIds) && Array.isArray(parsed.grantedMemberIds) ? parsed : undefined;
+  } catch { return undefined; }
+};
 
 const operationId = (key: string) => {
   const storageKey = `potomac.v2.generic.operation.${key}`;
@@ -59,6 +69,7 @@ export function V2ModulesApp({ initialCredential, initialModuleId, onExit }: { i
   const [entities, setEntities] = useState<Entity[]>([]); const [selectedEntityId, setSelectedEntityId] = useState(''); const [allowedCommandIds, setAllowedCommandIds] = useState<string[]>([]); const [commandsLoading, setCommandsLoading] = useState(false);
   const [reactions, setReactions] = useState<ReactionProjection[]>([]);
   const [players, setPlayers] = useState<EnrolledPlayer[]>([]); const [grantMemberId, setGrantMemberId] = useState(''); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  const [preparationRecovery, setPreparationRecovery] = useState<PreparationRecovery | undefined>(() => readPreparationRecovery());
   const selected = lock ? modules.find(module => module.id === lock.lock.rootModule.id && module.version === lock.lock.rootModule.version && module.digest === lock.lock.rootModule.digest) : modules.find(module => module.id === selectedId);
   const entity = entities.find(item => item.entityId === selectedEntityId);
   const uiCatalog = useMemo<UiDescriptorCatalog>(() => selected ? ({ entities: selected.entities, commands: selected.commands, workflows: selected.workflows }) : ({ entities: [], commands: [], workflows: [] }), [selected]);
@@ -99,22 +110,50 @@ export function V2ModulesApp({ initialCredential, initialModuleId, onExit }: { i
   const connect = (event: React.FormEvent) => { event.preventDefault(); void connectCredential(credential); };
   useEffect(() => { if (!initialCredential || autoConnected.current) return; autoConnected.current = true; void connectCredential(initialCredential); }, [initialCredential]);
   const pin = async () => { setBusy(true); try { const body = await request('/api/v2/campaign/lock', { method: 'PUT', body: JSON.stringify({ moduleId: selectedId }) }, false); setLock(body); await refresh(body); setMessage(`${selected?.name ?? selectedId} pinned at its exact validated digest.`); } catch (error) { setMessage(error instanceof Error ? error.message : 'Pin failed.'); } finally { setBusy(false); } };
+  const savePreparationRecovery = (value: PreparationRecovery) => { sessionStorage.setItem(preparationRecoveryStorageKey, JSON.stringify(value)); setPreparationRecovery(value); };
+  const clearPreparationRecovery = (key: string) => {
+    if (readPreparationRecovery()?.key !== key) return;
+    sessionStorage.removeItem(preparationRecoveryStorageKey);
+    sessionStorage.removeItem(`potomac.v2.generic.operation.${key}`);
+    sessionStorage.removeItem(`potomac.v2.generic.entity.${key}`);
+    setPreparationRecovery(undefined);
+  };
+  const refreshAuthorizedState = async () => {
+    setBusy(true);
+    try {
+      await refresh();
+      setMessage(preparationRecovery ? 'Authorized state refreshed from the host. Retry the exact original preparation to confirm its receipt, or complete each missing GM grant; the original identity remains reserved.' : 'Authorized state refreshed from the host.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Authorized state refresh failed.'); }
+    finally { setBusy(false); }
+  };
   const createEntity = async (descriptor: CatalogModule['entities'][number], submission: CreationRequest, assignedMembers: string[] = []) => {
     if (!selected || !lock) return; setBusy(true);
     const key = `create:${selected.id}:${descriptor.typeId}`;
+    const memberIds = [...new Set(assignedMembers.filter(Boolean))];
     let createdEntityId: string | undefined;
     let grantsComplete = false;
     try {
+      const existingAttempt = readPreparationRecovery();
+      if (!existingAttempt) savePreparationRecovery({ key, entityTypeId: descriptor.typeId, assignedMemberIds: memberIds, grantedMemberIds: [] });
       const body = await request('/api/v2/entities', { method: 'POST', body: JSON.stringify({ operationId: operationId(key), entityId: stableEntityId(key), typeId: descriptor.typeId, visibility: submission.visibility, ...(submission.ownerPrincipalId ? { ownerPrincipalId: submission.ownerPrincipalId } : {}), data: submission.data }) });
       createdEntityId = body.entityId;
-      for (const memberId of [...new Set(assignedMembers.filter(Boolean))]) await request(`/api/v2/entities/${encodeURIComponent(body.entityId)}/grants`, { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) });
+      const attempt = readPreparationRecovery();
+      if (attempt?.key === key) savePreparationRecovery({ ...attempt, entityId: body.entityId });
+      for (const memberId of memberIds) {
+        await request(`/api/v2/entities/${encodeURIComponent(body.entityId)}/grants`, { method: 'POST', body: JSON.stringify({ memberId, permissions: ['read', 'act'] }) });
+        const current = readPreparationRecovery();
+        if (current?.key === key) savePreparationRecovery({ ...current, entityId: body.entityId, grantedMemberIds: [...new Set([...current.grantedMemberIds, memberId])] });
+      }
       grantsComplete = true;
       await refresh();
       setSelectedEntityId(body.entityId);
-      sessionStorage.removeItem(`potomac.v2.generic.operation.${key}`); sessionStorage.removeItem(`potomac.v2.generic.entity.${key}`);
+      clearPreparationRecovery(key);
       setMessage(`${descriptor.typeId} prepared by the host and read/act access granted to the selected players.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : '';
+      if (createdEntityId && !grantsComplete) {
+        try { await refresh(); setSelectedEntityId(createdEntityId); } catch { /* Preserve the attempt when the projection is unavailable. */ }
+      }
       setMessage(createdEntityId
         ? grantsComplete
           ? `The entity and player grants are committed, but the authorized state refresh failed. Use Refresh authorized state or retry with the same form values; the original operation is retained to prevent a duplicate. ${detail}`
@@ -128,7 +167,22 @@ export function V2ModulesApp({ initialCredential, initialModuleId, onExit }: { i
     catch (error) { setMessage(error instanceof Error ? error.message : 'Enrollment failed.'); } finally { setBusy(false); }
   };
   const grantPlayer = async () => {
-    if (!entity || !grantMemberId) return; setBusy(true); try { await request(`/api/v2/entities/${encodeURIComponent(entity.entityId)}/grants`, { method: 'POST', body: JSON.stringify({ memberId: grantMemberId, permissions: ['read', 'act'] }) }); await refresh(); setMessage('Read and act grant committed for the selected enrolled player.'); }
+    if (!entity || !grantMemberId) return; setBusy(true); try {
+      await request(`/api/v2/entities/${encodeURIComponent(entity.entityId)}/grants`, { method: 'POST', body: JSON.stringify({ memberId: grantMemberId, permissions: ['read', 'act'] }) });
+      await refresh();
+      const current = readPreparationRecovery();
+      if (current?.entityId === entity.entityId && current.assignedMemberIds.includes(grantMemberId)) {
+        const grantedMemberIds = [...new Set([...current.grantedMemberIds, grantMemberId])];
+        const updated = { ...current, grantedMemberIds };
+        if (current.assignedMemberIds.every(memberId => grantedMemberIds.includes(memberId))) {
+          clearPreparationRecovery(current.key);
+          setMessage('All assigned player grants were confirmed by the host. The recovered preparation is complete; a new preparation can now be created.');
+        } else {
+          savePreparationRecovery(updated);
+          setMessage('Read and act grant committed for the selected player. The original preparation remains pending until every assigned player is granted.');
+        }
+      } else setMessage('Read and act grant committed for the selected enrolled player.');
+    }
     catch (error) { setMessage(error instanceof Error ? error.message : 'Grant failed.'); } finally { setBusy(false); }
   };
   const decideReaction = async (reaction: ReactionProjection, actionId: string, decision: 'accept' | 'decline', input: JsonValue) => {
@@ -136,7 +190,7 @@ export function V2ModulesApp({ initialCredential, initialModuleId, onExit }: { i
     const key = `reaction:${reaction.windowId}:${actionId}:${decision}`;
     try {
       await request(`/api/v2/reactions/${encodeURIComponent(reaction.windowId)}/${decision === 'accept' ? 'decisions' : 'decline'}`, { method: 'POST', body: JSON.stringify({ operationId: operationId(key), actionId, input, ...(decision === 'accept' ? { decision } : {}) }) });
-      sessionStorage.removeItem(`potomac.v2.generic.operation.${key}`); await refresh(); setMessage(`Reaction ${decision} committed by the host.`);
+      await refresh(); sessionStorage.removeItem(`potomac.v2.generic.operation.${key}`); setMessage(`Reaction ${decision} committed by the host.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Reaction response was rejected.'); }
     finally { setBusy(false); }
   };
@@ -167,10 +221,11 @@ export function V2ModulesApp({ initialCredential, initialModuleId, onExit }: { i
     {!lock && !isGm && <section className="v2-setup-card"><h2>Waiting for GM</h2><p>The GM must choose a catalog module for this fresh campaign.</p></section>}
     {lock && !selected && <section className="v2-setup-card" role="alert"><h2>Required module unavailable</h2><p>The pinned trusted implementation is missing from this host catalog. The campaign lock was preserved; no substitute is selected.</p></section>}
     {lock && selected && <><section className="v2-setup-card"><h2>Immutable campaign module</h2><p>{lock.lock.rootModule.id}@{lock.lock.rootModule.version} · {lock.lock.rootModule.digest}</p>{isGm && <><button disabled={busy} onClick={() => void enrollPlayer()}>Enroll a player</button>{players.map(player => <p key={player.memberId}>{player.credential ? <output>{player.displayName}: {player.credential}</output> : <span>{player.displayName} · enrolled</span>}</p>)}</>}</section>
+      {isGm && preparationRecovery && <section className="v2-setup-card" aria-label="Preparation recovery" role="status"><h2>Preparation recovery</h2>{preparationRecovery.entityId ? <><p>{preparationRecovery.entityTypeId} exists as {preparationRecovery.entityId}. Confirmed grants: {preparationRecovery.grantedMemberIds.map(id => players.find(player => player.memberId === id)?.displayName ?? 'enrolled player').join(', ') || 'none'}.</p><p>Still required: {preparationRecovery.assignedMemberIds.filter(id => !preparationRecovery.grantedMemberIds.includes(id)).map(id => players.find(player => player.memberId === id)?.displayName ?? 'enrolled player').join(', ') || 'none'}. Select this entity below and grant each remaining player, or retry the exact original preparation.</p><button type="button" disabled={busy} onClick={() => setSelectedEntityId(preparationRecovery.entityId!)}>Open recovered entity</button></> : <p>The preparation outcome is uncertain. Retry the exact original form values; its saved operation identity will prevent duplicate creation. This attempt cannot be cleared until the host confirms its result.</p>}</section>}
       {reactions.map(reaction => <section className="v2-setup-card" key={reaction.windowId} aria-label="Authorized reaction"><h3>Pending reaction</h3><p>Window {reaction.windowId} · expires {new Date(reaction.expiresAt).toLocaleString()}</p>{reaction.permissions.submit && reaction.availableActions.map(action => <div key={action.actionId}><V2EntitySchemaForm schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-accept`} disabled={busy} submitLabel={`Accept ${action.actionId}`} onSubmit={input => decideReaction(reaction, action.actionId, 'accept', input)} /><V2EntitySchemaForm schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-decline`} disabled={busy} submitLabel={`Decline ${action.actionId}`} onSubmit={input => decideReaction(reaction, action.actionId, 'decline', input)} /></div>)}{reaction.permissions.adjudicate && <><button disabled={busy} onClick={() => void adjudicateReaction(reaction, 'accept')}>GM adjudicate: accept</button><button disabled={busy} onClick={() => void adjudicateReaction(reaction, 'decline')}>GM adjudicate: decline</button></>}{reaction.permissions.expire && <button disabled={busy || Date.parse(reaction.expiresAt) > Date.now()} onClick={() => void expireReaction(reaction)}>Expire after deadline</button>}</section>)}
       {isGm && selected.entities.filter(descriptor => descriptor.creationRoles.includes('gm')).map(descriptor => <EntityCreationPanel key={`${selected.id}:${descriptor.typeId}`} moduleId={selected.id} descriptor={descriptor} preparation={selected.preparation?.find(form => form.entityTypeId === descriptor.typeId)} players={players} busy={busy} onCreate={(submission, assignedMembers) => createEntity(descriptor, submission, assignedMembers)} />)}
       {entities.length > 0 && <section className="v2-setup-card"><label htmlFor="v2-entity-picker">Authorized entities</label><select id="v2-entity-picker" value={entity?.entityId ?? ''} onChange={event => setSelectedEntityId(event.target.value)}>{entities.map(item => <option key={item.entityId} value={item.entityId}>{item.entityId}</option>)}</select>{entity && <><p>Entity revision {entity.revision}</p>{isGm && players.length > 0 && <div className="v2-grant-controls"><label htmlFor="v2-grant-member">Grant read and act</label><select id="v2-grant-member" value={grantMemberId} onChange={event => setGrantMemberId(event.target.value)}><option value="">Choose an enrolled player</option>{players.map(player => <option key={player.memberId} value={player.memberId}>{player.displayName}</option>)}</select><button disabled={busy || !grantMemberId} onClick={() => void grantPlayer()}>Grant selected player read/act</button></div>}{commandsLoading && <p role="status" aria-live="polite">Loading available module actions…</p>}{!commandsLoading && uiRegistry && selected.contributions.filter(contribution => contribution.entityTypeId === entity.typeId).map(contribution => <V2UiContributionView key={contribution.contributionId} experimentalEnabled registry={uiRegistry} contributionId={contribution.contributionId} entity={entity} host={{ lock: lock.lock, principalId, allowedCommandIds, submitCommand }} />)}{!commandsLoading && allowedCommandIds.length === 0 && selected.contributions.some(contribution => contribution.entityTypeId === entity.typeId && contribution.commands.length > 0) && <p role="status">No module actions are currently authorized for this account.</p>}</>}</section>}
     </>}
-    <button type="button" onClick={() => void refresh()}>Refresh authorized state</button>
+    <button type="button" disabled={busy} onClick={() => void refreshAuthorizedState()}>Refresh authorized state</button>
   </main>;
 }

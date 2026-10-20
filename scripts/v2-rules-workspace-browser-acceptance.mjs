@@ -137,6 +137,50 @@ try {
   assert.equal((afterExactRetry.entities ?? afterExactRetry)[0].entityId, committedEntityId, 'exact retry selected the original entity');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM actor_grants WHERE actor_id=?').get(grantActorId).n, 2, 'replayed grants remain unique');
   assert.equal(await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`), null, 'operation identity clears after authoritative entity refresh succeeds');
+
+  // Fail the second independent grant after entity creation and Player A's grant
+  // have committed. The same identity must remain unresolved across restart.
+  await setLabeledValue('gm', 'Encounter name', 'Stone Harbor');
+  await ev('gm', `(()=>{const previous=fetch.bind(window);window.__failPlayerBGrant=true;window.fetch=async(url,init={})=>{if(window.__failPlayerBGrant&&String(url).includes('/api/v2/entities/')&&String(url).endsWith('/grants')&&init.method==='POST'&&JSON.parse(init.body).memberId===${JSON.stringify(b.principalId)}){window.__failPlayerBGrant=false;return new Response(JSON.stringify({error:'injected Player B grant failure'}),{status:503,headers:{'content-type':'application/json'}})}return previous(url,init)}})()`);
+  await click('gm', 'Prepare encounter and assign players');
+  await waitFor('gm', `document.body.innerText.includes('player access could not be confirmed')`, 'partial grant failure after entity and Player A grant');
+  const secondAttemptOperation = await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`);
+  const recoveryBeforeRestart = await ev('gm', `JSON.parse(sessionStorage.getItem('potomac.v2.generic.preparation-recovery')||'null')`);
+  assert.ok(secondAttemptOperation, 'operation identity retained during incomplete grants');
+  assert.equal(recoveryBeforeRestart?.assignedMemberIds.length, 2, 'recovery records the exact expected assignment set');
+  const afterPartialGrant = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.equal((afterPartialGrant.entities ?? afterPartialGrant).length, 2, 'partial grant failure leaves exactly one new entity');
+  const partialEntity = (afterPartialGrant.entities ?? afterPartialGrant).find(row => row.data.title === 'Stone Harbor');
+  assert.ok(partialEntity, 'partially assigned entity is present');
+  const partialGrantActorId = `v2:${lock.lock.campaignId}:${partialEntity.entityId}`;
+  assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM actor_grants WHERE actor_id=?').get(partialGrantActorId).n, 1, 'only Player A grant committed before injected failure');
+
+  await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
+  await cdp('Page.reload', {}, sessions.gm);
+  await waitFor('gm', `Boolean(document.querySelector('.campaign-home'))`, 'Campaign Home after partial-grant host restart');
+  await click('gm', '⚙ Rules');
+  await waitFor('gm', `document.body.innerText.includes('Preparation recovery') && document.body.innerText.includes('Player B')`, 'recovered pending manual grant after restart');
+  assert.equal(await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`), secondAttemptOperation, 'unresolved create identity survives restart');
+  await click('gm', 'Open recovered entity');
+  await setValue('gm', '#v2-grant-member', b.principalId);
+  await click('gm', 'Grant selected player read/act');
+  await waitFor('gm', `document.body.innerText.includes('All assigned player grants were confirmed by the host')`, 'manual grant recovery completion');
+  assert.equal(await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`), null, 'completed manual recovery retires the prior operation identity');
+  assert.equal(await ev('gm', `sessionStorage.getItem('potomac.v2.generic.preparation-recovery')`), null, 'completed manual recovery retires the recovery record');
+  assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM actor_grants WHERE actor_id=?').get(partialGrantActorId).n, 2, 'manual recovery commits exactly one missing grant without duplicating Player A');
+
+  await setLabeledValue('gm', 'Encounter name', 'Cinder Watch');
+  await setLabeledValue('gm', 'Player A character name', 'CinderA');
+  await setLabeledValue('gm', 'Assign Player A', a.principalId);
+  await setLabeledValue('gm', 'Player B character name', 'CinderB');
+  await setLabeledValue('gm', 'Assign Player B', b.principalId);
+  await setLabeledValue('gm', 'Opponent name', 'Ash Knight');
+  await click('gm', 'Prepare encounter and assign players');
+  await waitFor('gm', `document.body.innerText.includes('Cinder Watch') && document.body.innerText.includes('prepared by the host and read/act access granted to the selected players')`, 'new preparation accepted after confirmed manual grant recovery');
+  const afterNewPreparation = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.equal((afterNewPreparation.entities ?? afterNewPreparation).length, 3, 'confirmed recovery permits a genuinely new entity after the original operation keys are retired');
+  await setValue('gm', '#v2-entity-picker', committedEntityId);
+
   await waitFor('gm', `document.querySelectorAll('progress[aria-label="Hit points 1"]').length === 1`, 'per-character hit point resources');
   const revisedEntities = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   const encounterId = (revisedEntities.entities ?? revisedEntities)[0].entityId;
@@ -145,7 +189,7 @@ try {
   const initCapture = await ev('gm', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.initialize')`); assert.equal(initCapture.status, 200, JSON.stringify(initCapture)); assert.equal(initCapture.response.status, 'applied', JSON.stringify(initCapture));
   await waitFor('gm', `document.body.innerText.includes('example.revised5e.initialize committed by the host.') && document.body.innerText.includes('active')`, 'host-confirmed initiative result');
 
-  await ordinaryPlayer('playerA', a); await installCommandCapture('playerA');
+  await ordinaryPlayer('playerA', a); await setValue('playerA', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerA');
   await waitFor('playerA', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]')) && document.body.innerText.includes('Asha')`, 'Player A authorized contribution and projection');
   const gmPrincipalId = (await (await api('/api/v2/session', 'local-gm')).json()).principalId;
   assert.equal((await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`)), false, 'player UI does not render GM-only principal fields');
@@ -159,7 +203,7 @@ try {
   assert.equal((await retry(a, attackA.request)).status, 200, 'exact command retry replays the committed receipt');
   assert.equal((await retry(a, { ...attackA.request, input: { actorId: 'player-a', targetId: 'player-b' } })).status, 409, 'altered payload with the same operation ID conflicts');
   assert.equal((await retry(a, { ...attackA.request, operationId: `${attackA.request.operationId}-stale`, expectedRevision: attackA.request.expectedRevision - 1 })).status, 409, 'stale revision is rejected');
-  await ordinaryPlayer('playerB', b); await installCommandCapture('playerB');
+  await ordinaryPlayer('playerB', b); await setValue('playerB', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerB');
   await waitFor('playerB', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'Player B authorized contribution');
   await commandForm('playerB', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
   await waitFor('playerB', `document.body.innerText.includes('host denied this action')`, 'cross-player attack denial feedback');
