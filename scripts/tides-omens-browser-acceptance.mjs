@@ -57,7 +57,9 @@ try {
   const listed = await (await api('/api/v2/modules')).json(); const module = listed.modules.find(row => row.id === 'example.tides-omens'); assert.ok(module, 'Tides & Omens appears in the trusted catalog'); assert.equal(module.digest, digest);
   await setValue('gm', '#v2-module-picker', module.id); await click('gm', 'Pin exact module lock'); await waitFor('gm', `document.body.innerText.includes('Immutable campaign module')`, 'exact pin');
   let pin = await (await api('/api/v2/campaign/lock')).json(); assert.equal(pin.lock.rootModule.digest, digest); assert.equal(pin.lock.entries.length, 5);
+  await waitFor('gm', `(()=>{const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Enroll a player');return Boolean(button&&!button.disabled)})()`, 'Player A enrollment control enabled');
   await click('gm', 'Enroll a player'); await waitFor('gm', `document.querySelectorAll('output').length>=1`, 'Player A enrollment');
+  await waitFor('gm', `(()=>{const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Enroll a player');return Boolean(button&&!button.disabled)})()`, 'Player B enrollment control enabled');
   await click('gm', 'Enroll a player'); await waitFor('gm', `document.querySelectorAll('output').length>=2`, 'Player B enrollment');
   const players = await evaluate('gm', `(()=>[...document.querySelectorAll('output')].map(o=>{const text=o.textContent,sep=': ';return {name:text.slice(0,text.indexOf(sep)),credential:text.slice(text.indexOf(sep)+sep.length)}}))()`);
   assert.equal(players.length, 2); for (const player of players) player.memberId = (await (await api('/api/v2/session', player.credential)).json()).principalId;
