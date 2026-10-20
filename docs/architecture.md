@@ -104,6 +104,12 @@ The normal Campaign Home setup flow can list the host's bundled trusted V2 catal
 
 This is an onboarding integration, not general V2 multi-campaign support. The current local host still supports one configured campaign. The UI therefore permits V2 creation only on a fresh host and refuses to replace V1 data or an existing V1/V2 ruleset. Supporting multiple normal campaigns requires a durable campaign registry and selection/routing, campaign-scoped membership and authority, isolation of every query/event/asset/backup path, and explicit lifecycle/restore semantics. Until that host work is implemented, separate host data directories remain the supported boundary. Offline V2 command queues, remote exposure, and module upgrades are unsupported.
 
+## V2 encounter-to-Table handoff boundary
+
+For a pinned V2 campaign, the generic Rules workspace can hand a selected entity to the ordinary Table navigation by its stable entity ID. Table re-reads the current lock, authenticated session, trusted catalog, authorized entity list, and entity projection from the local host; it never receives or stores a copied rules state. The entity type, schema version, and full entity capability reference must match the exact trusted module descriptor and lock entry before the view is rendered. Display and resource nodes reuse the bounded declarative contribution contract in read-only form. Spatial rendering is structural: a declared grid plus participant-array position fields produce a grid view, while non-grid schemas get an authorized participant roster. All fields are already permission-filtered by the host.
+
+Rules remains the only place for module commands, workflow transitions, and reactions. Open in Rules returns to the same stable entity reference; Table can explicitly refresh its host projection, and authorization failures fail closed. This is an encounter projection/navigation handoff, not a V2 session lifecycle: it does not activate a V1 encounter, create another encounter record, add combat behavior, or merge V2 state into V1 Table/session history. The existing V1 Table and session workflow remain unchanged. This route inherits the experimental default-off, loopback-only V2 host boundary and single-configured-campaign limitation. Browser automation verifies the path; human playtesting remains outstanding under #110.
+
 ## Open engineering risks
 
 - Browser offline reopening and secure origins for remote/localhost use.

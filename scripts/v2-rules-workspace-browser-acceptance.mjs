@@ -158,6 +158,7 @@ try {
   await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
   await cdp('Page.reload', {}, sessions.gm);
   await waitFor('gm', `Boolean(document.querySelector('.campaign-home'))`, 'Campaign Home after partial-grant host restart');
+  await waitFor('gm', ` [...document.querySelectorAll('.app-rail nav button')].some(button=>button.textContent.trim()==='⚙ Rules')`, 'V2 lock discovery and Rules navigation after restart');
   await click('gm', '⚙ Rules');
   await waitFor('gm', `document.body.innerText.includes('Preparation recovery') && document.body.innerText.includes('Player B')`, 'recovered pending manual grant after restart');
   assert.equal(await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`), secondAttemptOperation, 'unresolved create identity survives restart');
@@ -183,7 +184,7 @@ try {
 
   await waitFor('gm', `document.querySelectorAll('progress[aria-label="Hit points 1"]').length === 1`, 'per-character hit point resources');
   const revisedEntities = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
-  const encounterId = (revisedEntities.entities ?? revisedEntities)[0].entityId;
+  const encounterId = committedEntityId;
   await installCommandCapture('gm'); await click('gm', 'Roll initiative and begin', '[aria-label="example.revised5e.combat"]');
   await waitFor('gm', `window.__potomacCommands.some(item=>item.request.commandId==='example.revised5e.initialize')`, 'initiative command request');
   const initCapture = await ev('gm', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.initialize')`); assert.equal(initCapture.status, 200, JSON.stringify(initCapture)); assert.equal(initCapture.response.status, 'applied', JSON.stringify(initCapture));
@@ -215,6 +216,32 @@ try {
   assert.deepEqual((await lockFor()).lock, lock.lock, 'exact root and full module capability closure survive host restart');
   assert.equal((await retry(a, attackA.request)).status, 200, 'completed receipt remains idempotent after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(attackA.request.operationId).n, 1, 'one effect event exists for the UI command');
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Participants and spatial view') && document.body.innerText.includes('Grid · 8 × 5')`, 'GM opens the exact V2 encounter in Table with its grid');
+  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(encounterId)})`), true, 'Table route retains the original stable entity reference');
+  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(lock.lock.rootModule.digest)})`), true, 'Table displays the exact pinned module provenance');
+  assert.equal(await ev('gm', `document.querySelectorAll('.v2-table-grid').length`), 1, 'declared grid and actor positions render as a spatial table');
+  await click('gm', 'Refresh authorized state');
+  await waitFor('gm', `document.body.innerText.includes('Authorized encounter state loaded from the host') && document.body.innerText.includes('Grid · 8 × 5')`, 'Table refresh reloads the latest authoritative projection');
+  await click('gm', 'Open in Rules');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'return to Rules preserves selected encounter');
+  await click('playerA', 'Open in Table');
+  await waitFor('playerA', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'Player A opens an authorized host-filtered encounter in Table');
+  assert.equal(await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Table never renders GM-only actor ownership principals');
+  assert.equal(await ev('playerA', `Boolean(document.querySelector('.v2-table-grid'))`), true, 'authorized player receives the declared spatial projection');
+  await click('playerA', 'Open in Rules');
+  await waitFor('playerA', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'player returns to Rules with the same encounter selected');
+  await cdp('Page.reload', {}, sessions.playerA);
+  await waitFor('playerA', `Boolean(document.querySelector('.campaign-home'))`, 'player reconnects after page reload');
+  await click('playerA', '▦ Table');
+  await waitFor('playerA', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'normal Table navigation reconnects to the same authorized entity');
+  assert.equal(await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'reconnected Table projection remains privacy filtered');
+  await click('playerB', 'Open in Table');
+  await waitFor('playerB', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'Player B opens the same authorized encounter in Table');
+  assert.equal(await ev('playerB', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Player B Table projection excludes GM-only actor ownership');
+  await click('playerB', 'Open in Rules');
+  await waitFor('playerB', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'Player B returns to Rules with the same stable entity reference');
+  console.log('PASS Revised 5e Rules-to-Table: stable entity handoff, exact lock provenance, schema-declared grid/positions, authorized GM and Player A projection, owner-principal filtering, Rules return and reconnect persistence.');
   console.log('PASS Revised 5e normal Rules: ordinary Campaign Home setup, exact trusted lock closure, guided character and encounter forms with roster assignment, host-confirmed initiative and player attacks, per-actor HP resources, two isolated player contexts, cross-player denial, nested owner-field filtering, exact/altered/stale retries, and restart persistence.');
 
   // Separate fresh host and browser profiles provide a module-neutral Dice-pool scene/action/reaction walkthrough.
@@ -234,6 +261,12 @@ try {
   await waitFor('diceGm', `document.body.innerText.includes('Lantern Bridge') && Boolean(document.querySelector('[aria-label="example.dicepool.scene-ui"]'))`, 'Dice-pool scene contribution in ordinary Rules');
   const diceScenes = await (await api('/api/v2/entities?typeId=example.dicepool.scene', 'local-gm', { headers: { 'x-v2-lock-digest': diceLock.digest } })).json();
   const sceneId = (diceScenes.entities ?? diceScenes)[0].entityId;
+  await click('diceGm', 'Open in Table');
+  await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('No grid is declared') && document.body.innerText.includes('Asha')`, 'Dice-pool uses generic non-grid Table roster');
+  assert.equal(await ev('diceGm', `Boolean(document.querySelector('.v2-table-grid'))`), false, 'non-grid module is not presented as a battle map');
+  assert.equal(await ev('diceGm', `document.body.innerText.includes(${JSON.stringify(sceneId)})`), true, 'Dice-pool Table handoff retains the original scene entity ID');
+  await click('diceGm', 'Open in Rules');
+  await waitFor('diceGm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(sceneId)}`, 'Dice-pool Rules return retains the same scene');
   await ordinaryPlayer('diceA', diceA); await installCommandCapture('diceA');
   await commandForm('diceA', 'Resolve skill challenge', { actorId: 'player-a', difficulty: '8', push: 'false' });
   await waitFor('diceA', `document.body.innerText.includes('example.dicepool.skill-challenge committed by the host.')`, 'Dice-pool authorized skill action');
