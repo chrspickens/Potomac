@@ -77,6 +77,7 @@ async function commandForm(name, label, values) {
   const selector = `form[aria-label=${JSON.stringify(label)}]`;
   await waitFor(name, `(()=>{const f=document.querySelector(${JSON.stringify(selector)});return Boolean(f&&${JSON.stringify(Object.keys(values))}.every(field=>f.elements.namedItem(field)))})()`, `${label} form and declared fields`);
   for (const [field, value] of Object.entries(values)) {
+    await waitFor(name, `(()=>{const e=document.querySelector(${JSON.stringify(selector)})?.elements.namedItem(${JSON.stringify(field)});return Boolean(e&&e.tagName)})()`, `${label}.${field} field remains mounted`);
     const setBy = await ev(name, `(()=>{const f=document.querySelector(${JSON.stringify(selector)});const e=f?.elements.namedItem(${JSON.stringify(field)});return e?e.tagName.toLowerCase():''})()`);
     assert.ok(setBy, `${label}.${field} exists`);
     if (setBy === 'select') await setValue(name, `${selector} [name=${JSON.stringify(field)}]`, value, true);
