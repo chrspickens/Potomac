@@ -24,6 +24,11 @@ const setValue = async (name, selector, value, selectText = false) => {
   const result = await ev(name, `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return {ok:false,reason:'missing'};if(e instanceof HTMLSelectElement){const o=[...e.options].find(x=>x.value===${JSON.stringify(String(value))}||x.textContent.trim()===${JSON.stringify(String(value))});if(!o)return {ok:false,reason:'option',options:[...e.options].map(x=>[x.value,x.textContent.trim()])};Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,o.value)}else{const p=Object.getPrototypeOf(e),s=Object.getOwnPropertyDescriptor(p,'value')?.set;if(s)s.call(e,${JSON.stringify(String(value))});else e.value=${JSON.stringify(String(value))}}e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return {ok:true}})()`);
   assert.equal(result.ok, true, `set ${selector}=${value}: ${JSON.stringify(result)}${selectText ? '' : ''}`);
 };
+const setLabeledValue = async (name, label, value) => {
+  const id = await ev(name, `(()=>[...document.querySelectorAll('label')].find(item=>item.textContent.trim()===${JSON.stringify(label)})?.htmlFor)()`);
+  assert.ok(id, `guided preparation control ${label}`);
+  await setValue(name, `#${id}`, value);
+};
 const api = (url, token = 'local-gm', init = {}) => fetch(`http://127.0.0.1:${hostPort}${url}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } });
 async function startHost(databaseName, campaignId) { host = createHost({ databasePath: join(scratch, databaseName), campaignId, enableV2Api: true, v2RandomInt: (_min, max) => max - 1 }); await host.listen(hostPort); }
 async function page(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`); }
@@ -44,11 +49,6 @@ async function enrollTwo(name) {
   const second = await ev(name, `(()=>{const t=[...document.querySelectorAll('output')].at(-1).textContent;const i=t.indexOf(': ');return {name:t.slice(0,i),credential:t.slice(i+2)}})()`);
   for (const player of [first, second]) player.principalId = (await (await api('/api/v2/session', player.credential)).json()).principalId;
   return [first, second];
-}
-async function grant(name, principalId) {
-  await setValue(name, '#v2-grant-member', principalId);
-  await click(name, 'Grant selected player read/act');
-  await waitFor(name, 'document.body.innerText.includes("Read and act grant committed")', `grant ${principalId}`);
 }
 async function ordinaryPlayer(name, player) {
   await page(name);
@@ -80,7 +80,7 @@ try {
   let info; for (let i = 0; i < 200; i++) { try { info = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json(); break; } catch { await delay(100); } } assert.ok(info?.webSocketDebuggerUrl);
   socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.id && pending.has(message.id)) { const done = pending.get(message.id); pending.delete(message.id); done(message); } });
 
-  // Revised 5e begins at ordinary Campaign Home and creates its module-defined encounter with the generic schema form.
+  // Revised 5e begins at ordinary Campaign Home and uses its trusted guided preparation profile.
   await normalSetup('gm', 'example.revised5e', 'Issue 166 Revised 5e');
   const [a, b] = await enrollTwo('gm');
   const lock = await lockFor(); assert.equal(lock.lock.rootModule.id, 'example.revised5e'); assert.equal(lock.lock.rootModule.version, '1.2.0'); assert.equal(lock.lock.rootModule.digest, lock.lock.entries.find(item => item.id === 'example.revised5e').digest);
@@ -88,25 +88,18 @@ try {
   const completeClosure = [{ id: provider.id, apiVersion: '1.0.0', implementationVersion: provider.version, digest: provider.digest }, ...provider.capabilities];
   assert.deepEqual(completeClosure.map(({ id, apiVersion, implementationVersion, digest }) => `${id}@${apiVersion}@${implementationVersion}:${digest}`).sort(), lock.lock.entries.map(item => `${item.id}@${item.apiVersion}@${item.implementationVersion}:${item.digest}`).sort());
   assert.ok(provider.contributions.some(item => item.contributionId === 'example.revised5e.combat' && JSON.stringify(item).includes('example.revised5e.rules.hit-points')));
-  const encounterForm = '.v2-entity-create-form';
-  const findInput = async suffix => { const id = await ev('gm', `(()=>[...document.querySelectorAll(${JSON.stringify(`${encounterForm} input, ${encounterForm} select`)} )].find(item=>item.id.includes(${JSON.stringify(suffix)}) )?.id)()`); assert.ok(id, `entity field ${suffix}`); return `#${id}`; };
-  await setValue('gm', await findInput('Entity-title'), 'Ash Bridge');
-  for (const [index, player, id, name] of [[0, a, 'player-a', 'Asha'], [1, b, 'player-b', 'Borin'], [2, null, 'enemy', 'Warden']]) {
-    await setValue('gm', await findInput(`actors-${index}--id`), id);
-    await setValue('gm', await findInput(`actors-${index}--name`), name);
-    await setValue('gm', await findInput(`actors-${index}--maximumHitPoints`), '20');
-    await setValue('gm', await findInput(`actors-${index}--currentHitPoints`), '20');
-    await setValue('gm', await findInput(`actors-${index}--armorClass`), '10');
-    if (index === 2) await setValue('gm', await findInput(`actors-${index}--position-x`), '1');
-    if (player) await setValue('gm', await findInput(`actors-${index}--ownerPrincipalId`), player.principalId);
-    else await setValue('gm', await findInput(`actors-${index}--kind`), 'enemy', true);
-  }
-  await click('gm', 'Create example.revised5e.encounter');
+  assert.equal(provider.preparation[0].entityTypeId, 'example.revised5e.encounter');
+  await setLabeledValue('gm', 'Encounter name', 'Ash Bridge');
+  await setLabeledValue('gm', 'Player A character name', 'Asha');
+  await setLabeledValue('gm', 'Assign Player A', a.principalId);
+  await setLabeledValue('gm', 'Player B character name', 'Borin');
+  await setLabeledValue('gm', 'Assign Player B', b.principalId);
+  await setLabeledValue('gm', 'Opponent name', 'Warden');
+  await click('gm', 'Prepare encounter and assign players');
   await waitFor('gm', `document.body.innerText.includes('Ash Bridge') && Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'created Revised 5e encounter and generic contribution');
   await waitFor('gm', `document.querySelectorAll('progress[aria-label="Hit points 1"]').length === 1`, 'per-character hit point resources');
   const revisedEntities = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   const encounterId = (revisedEntities.entities ?? revisedEntities)[0].entityId;
-  await grant('gm', a.principalId); await grant('gm', b.principalId);
   await installCommandCapture('gm'); await click('gm', 'Roll initiative and begin', '[aria-label="example.revised5e.combat"]');
   await waitFor('gm', `window.__potomacCommands.some(item=>item.request.commandId==='example.revised5e.initialize')`, 'initiative command request');
   const initCapture = await ev('gm', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.initialize')`); assert.equal(initCapture.status, 200, JSON.stringify(initCapture)); assert.equal(initCapture.response.status, 'applied', JSON.stringify(initCapture));
@@ -134,11 +127,11 @@ try {
   await commandForm('playerB', 'Attack', { actorId: 'player-b', targetId: 'enemy' }); await waitFor('playerB', `document.body.innerText.includes('example.revised5e.attack committed by the host.')`, 'Player B permitted attack');
   const attackB = await ev('playerB', `window.__potomacCommands.filter(item=>item.request.commandId==='example.revised5e.attack').at(-1)`); assert.equal(attackB.status, 200);
   await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
-  for (const [name, principal] of [['gm', 'gm'], ['playerA', a], ['playerB', b]]) { await click(name, 'Refresh authorized state'); await waitFor(name, `document.body.innerText.includes('Ash Bridge') && document.body.innerText.includes('active')`, `${name} Revised 5e state after host restart`); }
+  for (const [name, principal] of [['gm', 'gm'], ['playerA', a], ['playerB', b]]) { await click(name, 'Refresh authorized state'); await waitFor(name, `document.body.innerText.includes('Ash Bridge') && document.body.innerText.includes('complete')`, `${name} completed Revised 5e state after host restart`); }
   assert.deepEqual((await lockFor()).lock, lock.lock, 'exact root and full module capability closure survive host restart');
   assert.equal((await retry(a, attackA.request)).status, 200, 'completed receipt remains idempotent after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(attackA.request.operationId).n, 1, 'one effect event exists for the UI command');
-  console.log('PASS Revised 5e normal Rules: ordinary Campaign Home setup, exact trusted lock closure, generic entity creation, host-confirmed initiative and player attacks, per-actor HP resources, two isolated player contexts, cross-player denial, nested owner-field filtering, exact/altered/stale retries, and restart persistence.');
+  console.log('PASS Revised 5e normal Rules: ordinary Campaign Home setup, exact trusted lock closure, guided character and encounter forms with roster assignment, host-confirmed initiative and player attacks, per-actor HP resources, two isolated player contexts, cross-player denial, nested owner-field filtering, exact/altered/stale retries, and restart persistence.');
 
   // Separate fresh host and browser profiles provide a module-neutral Dice-pool scene/action/reaction walkthrough.
   for (const context of contexts.splice(0)) try { await cdp('Target.disposeBrowserContext', { browserContextId: context }); } catch {}
@@ -149,19 +142,14 @@ try {
   const diceLock = await lockFor(); assert.equal(diceLock.lock.rootModule.id, 'example.dicepool');
   const diceCatalog = await (await api('/api/v2/modules')).json(); const diceModule = diceCatalog.modules.find(item => item.id === 'example.dicepool');
   assert.ok(diceModule.contributions.some(item => item.contributionId === 'example.dicepool.scene-ui' && JSON.stringify(item).includes('characters.*.stress')));
-  const sceneForm = '.v2-entity-create-form';
-  const findDiceInput = async suffix => { const id = await ev('diceGm', `(()=>[...document.querySelectorAll(${JSON.stringify(`${sceneForm} input, ${sceneForm} select`)} )].find(item=>item.id.includes(${JSON.stringify(suffix)}) )?.id)()`); assert.ok(id, `Dice-pool field ${suffix}`); return `#${id}`; };
-  await setValue('diceGm', await findDiceInput('Entity-title'), 'Lantern Bridge'); await setValue('diceGm', await findDiceInput('Entity-obstacle'), 'Flooded arch');
-  for (const [index, player, actorId, name] of [[0, diceA, 'player-a', 'Asha'], [1, diceB, 'player-b', 'Borin']]) {
-    await setValue('diceGm', await findDiceInput(`characters-${index}--id`), actorId);
-    await setValue('diceGm', await findDiceInput(`characters-${index}--name`), name);
-    await setValue('diceGm', await findDiceInput(`characters-${index}--ownerPrincipalId`), player.principalId);
-  }
-  await click('diceGm', 'Create example.dicepool.scene');
+  assert.equal(diceModule.preparation[0].entityTypeId, 'example.dicepool.scene');
+  await setLabeledValue('diceGm', 'Scene name', 'Lantern Bridge'); await setLabeledValue('diceGm', 'Scene challenge', 'Flooded arch');
+  await setLabeledValue('diceGm', 'Player A character name', 'Asha'); await setLabeledValue('diceGm', 'Assign Player A', diceA.principalId);
+  await setLabeledValue('diceGm', 'Player B character name', 'Borin'); await setLabeledValue('diceGm', 'Assign Player B', diceB.principalId);
+  await click('diceGm', 'Prepare encounter and assign players');
   await waitFor('diceGm', `document.body.innerText.includes('Lantern Bridge') && Boolean(document.querySelector('[aria-label="example.dicepool.scene-ui"]'))`, 'Dice-pool scene contribution in ordinary Rules');
   const diceScenes = await (await api('/api/v2/entities?typeId=example.dicepool.scene', 'local-gm', { headers: { 'x-v2-lock-digest': diceLock.digest } })).json();
   const sceneId = (diceScenes.entities ?? diceScenes)[0].entityId;
-  await grant('diceGm', diceA.principalId); await grant('diceGm', diceB.principalId);
   await ordinaryPlayer('diceA', diceA); await installCommandCapture('diceA');
   await commandForm('diceA', 'Resolve skill challenge', { actorId: 'player-a', difficulty: '8', push: 'false' });
   await waitFor('diceA', `document.body.innerText.includes('example.dicepool.skill-challenge committed by the host.')`, 'Dice-pool authorized skill action');
@@ -192,6 +180,6 @@ try {
   await click('diceB', 'Refresh authorized state'); await waitFor('diceB', `document.body.innerText.includes('Lantern Bridge') && document.body.innerText.includes('resolved')`, 'Dice-pool continuation result persists after second host start');
   assert.deepEqual((await lockFor()).lock, diceLock.lock, 'Dice-pool exact lock is unchanged after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_reaction_windows WHERE parent_operation_id=? AND status=?').get(contest.request.operationId, 'resolved').n, 1, 'reaction resolution persists exactly once');
-  console.log('PASS Dice-pool normal Rules: separate fresh host, exact root lock, generic scene and resource contribution, authorized skill action, GM-only field filtering, pending continuation, authorized Player B one-time reaction, unauthorized Player A rejection, parent-effect exactly-once retry and restart persistence.');
+  console.log('PASS Dice-pool normal Rules: separate fresh host, exact root lock, guided scene form with roster assignment, generic resource contribution, authorized skill action, GM-only field filtering, pending continuation, authorized Player B one-time reaction, unauthorized Player A rejection, parent-effect exactly-once retry and restart persistence.');
 } catch (error) { console.error(error); console.error(children.map(item => item.output).join('\n')); process.exitCode = 1; }
 finally { try { host?.close(); } catch {} for (const context of contexts) try { await cdp('Target.disposeBrowserContext', { browserContextId: context }); } catch {} try { await cdp('Browser.close'); } catch {} try { socket?.close(); } catch {} for (const item of children) try { if (item.proc.exitCode === null) item.proc.kill(); } catch {} await Promise.all(children.map(item => item.proc.exitCode !== null ? Promise.resolve() : new Promise(resolveExit => { item.proc.once('exit', resolveExit); setTimeout(resolveExit, 1500); }))); await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }

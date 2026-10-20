@@ -1,0 +1,177 @@
+{
+  "formatVersion": 1,
+  "moduleId": "example.revised5e",
+  "moduleVersion": "1.2.0",
+  "moduleDigest": "sha256:c7a4b28a88161825b8f788cb4290388084cb168900778734fc02876508c95192",
+  "forms": [
+    {
+      "entityTypeId": "example.revised5e.encounter",
+      "title": "Prepare a Revised 5e encounter",
+      "description": "Name the encounter and assign the two player characters. A ready-to-use fighter and enemy are supplied as starter values.",
+      "template": {
+        "title": "New encounter",
+        "status": "setup",
+        "actors": [
+          {
+            "id": "player-a",
+            "name": "Player A character",
+            "kind": "player",
+            "ownerPrincipalId": "",
+            "position": {
+              "x": 2,
+              "y": 2
+            },
+            "speed": 30,
+            "movementRemaining": 30,
+            "meleeReach": 5,
+            "reactionAvailable": true,
+            "disengaged": false,
+            "bonusActionAvailable": true,
+            "classId": "fighter",
+            "classLevel": 1,
+            "secondWindMaximum": 2,
+            "secondWindUses": 2,
+            "abilityModifiers": {
+              "strength": 3,
+              "dexterity": 1
+            },
+            "proficiencyBonus": 2,
+            "armorClass": 14,
+            "maximumHitPoints": 12,
+            "currentHitPoints": 12,
+            "initiativeModifier": 1,
+            "weapon": {
+              "name": "Shortsword",
+              "damageDie": 6,
+              "damageType": "piercing",
+              "attackAbility": "strength",
+              "proficient": true
+            }
+          },
+          {
+            "id": "player-b",
+            "name": "Player B character",
+            "kind": "player",
+            "ownerPrincipalId": "",
+            "position": {
+              "x": 1,
+              "y": 4
+            },
+            "speed": 30,
+            "movementRemaining": 30,
+            "meleeReach": 5,
+            "reactionAvailable": true,
+            "disengaged": false,
+            "bonusActionAvailable": true,
+            "classId": "fighter",
+            "classLevel": 1,
+            "secondWindMaximum": 2,
+            "secondWindUses": 2,
+            "abilityModifiers": {
+              "strength": 3,
+              "dexterity": 1
+            },
+            "proficiencyBonus": 2,
+            "armorClass": 14,
+            "maximumHitPoints": 12,
+            "currentHitPoints": 12,
+            "initiativeModifier": 1,
+            "weapon": {
+              "name": "Shortsword",
+              "damageDie": 6,
+              "damageType": "piercing",
+              "attackAbility": "strength",
+              "proficient": true
+            }
+          },
+          {
+            "id": "enemy",
+            "name": "Training opponent",
+            "kind": "enemy",
+            "ownerPrincipalId": "gm",
+            "position": {
+              "x": 3,
+              "y": 2
+            },
+            "speed": 30,
+            "movementRemaining": 30,
+            "meleeReach": 5,
+            "reactionAvailable": true,
+            "disengaged": false,
+            "bonusActionAvailable": true,
+            "classId": "not-modeled",
+            "classLevel": 0,
+            "secondWindMaximum": 0,
+            "secondWindUses": 0,
+            "abilityModifiers": {
+              "strength": 2,
+              "dexterity": 0
+            },
+            "proficiencyBonus": 2,
+            "armorClass": 12,
+            "maximumHitPoints": 22,
+            "currentHitPoints": 22,
+            "initiativeModifier": 0,
+            "weapon": {
+              "name": "Club",
+              "damageDie": 4,
+              "damageType": "bludgeoning",
+              "attackAbility": "strength",
+              "proficient": true
+            }
+          }
+        ],
+        "grid": {
+          "width": 8,
+          "height": 5,
+          "squareFeet": 5,
+          "blocked": []
+        },
+        "initiativeOrder": [],
+        "initiativeRolls": [],
+        "currentTurnIndex": 0,
+        "round": 0,
+        "actionsUsed": [],
+        "shortRestCount": 0,
+        "combatLog": [],
+        "movementLog": []
+      },
+      "fields": [
+        {
+          "path": "title",
+          "label": "Encounter name",
+          "type": "text"
+        },
+        {
+          "path": "actors.0.name",
+          "label": "Player A character name",
+          "type": "text"
+        },
+        {
+          "path": "actors.0.ownerPrincipalId",
+          "label": "Assign Player A",
+          "type": "member"
+        },
+        {
+          "path": "actors.1.name",
+          "label": "Player B character name",
+          "type": "text"
+        },
+        {
+          "path": "actors.1.ownerPrincipalId",
+          "label": "Assign Player B",
+          "type": "member"
+        },
+        {
+          "path": "actors.2.name",
+          "label": "Opponent name",
+          "type": "text"
+        }
+      ],
+      "assignmentPaths": [
+        "actors.0.ownerPrincipalId",
+        "actors.1.ownerPrincipalId"
+      ]
+    }
+  ]
+}

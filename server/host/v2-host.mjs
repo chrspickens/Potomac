@@ -139,7 +139,15 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
     listModules(principalId, authorityToken) {
       return begin(db, 'DEFERRED', () => {
         if (!authenticate(principalId, { campaignId, authorityToken })) throw Object.assign(new Error('authenticated campaign member required'), { code: 'unauthorized' });
-        return providers.map(provider => ({ id: provider.id, name: provider.manifest.name, version: provider.version, digest: provider.digest, contentDigest: provider.contentDigest, capabilities: provider.moduleRefs.map(({ id, apiVersion, implementationVersion, digest }) => ({ id, apiVersion, implementationVersion, digest })), entities: provider.entities.map(({ typeId, schemaVersion, schema, capability, creationRoles, visibility, ownership }) => ({ typeId, schemaVersion, schema, capability, creationRoles, visibility, ownership })), commands: provider.commands.map(({ commandId, entityTypeId, capability, inputSchema, permission }) => ({ commandId, entityTypeId, capability, inputSchema, permission })), workflows: provider.workflows, contributions: provider.ui }));
+        return providers.map(provider => ({ id: provider.id, name: provider.manifest.name, version: provider.version, digest: provider.digest, contentDigest: provider.contentDigest, capabilities: provider.moduleRefs.map(({ id, apiVersion, implementationVersion, digest }) => ({ id, apiVersion, implementationVersion, digest })), entities: provider.entities.map(({ typeId, schemaVersion, schema, capability, creationRoles, visibility, ownership }) => ({ typeId, schemaVersion, schema, capability, creationRoles, visibility, ownership })), commands: provider.commands.map(({ commandId, entityTypeId, capability, inputSchema, permission }) => ({ commandId, entityTypeId, capability, inputSchema, permission })), workflows: provider.workflows, contributions: provider.ui, preparation: provider.preparation }));
+      });
+    },
+    listMembers(principalId, authorityToken) {
+      return begin(db, 'DEFERRED', () => {
+        const member = authenticate(principalId, { campaignId, authorityToken });
+        if (!member) throw Object.assign(new Error('authenticated campaign member required'), { code: 'unauthorized' });
+        if (member.role !== 'gm') throw Object.assign(new Error('GM authority required'), { code: 'forbidden' });
+        return db.prepare('SELECT id AS memberId, display_name AS displayName FROM members WHERE revoked_at IS NULL ORDER BY created_at,id').all();
       });
     },
     getLock(principalId, authorityToken) {

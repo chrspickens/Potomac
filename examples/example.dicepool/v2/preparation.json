@@ -1,0 +1,76 @@
+{
+  "formatVersion": 1,
+  "moduleId": "example.dicepool",
+  "moduleVersion": "1.1.0",
+  "moduleDigest": "sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc",
+  "forms": [
+    {
+      "entityTypeId": "example.dicepool.scene",
+      "title": "Prepare a Dice-pool scene",
+      "description": "Name the scene and assign its two player characters. A ready scene with a small dice pool is supplied as a starting point.",
+      "template": {
+        "title": "New scene",
+        "status": "ready",
+        "obstacle": "A difficult crossing",
+        "characters": [
+          {
+            "id": "player-a",
+            "name": "Player A character",
+            "ownerPrincipalId": "",
+            "pool": 2,
+            "stress": 0,
+            "push": 1,
+            "role": "Scout"
+          },
+          {
+            "id": "player-b",
+            "name": "Player B character",
+            "ownerPrincipalId": "",
+            "pool": 2,
+            "stress": 0,
+            "push": 1,
+            "role": "Guide"
+          }
+        ],
+        "log": [],
+        "gmNote": ""
+      },
+      "fields": [
+        {
+          "path": "title",
+          "label": "Scene name",
+          "type": "text"
+        },
+        {
+          "path": "obstacle",
+          "label": "Scene challenge",
+          "type": "text"
+        },
+        {
+          "path": "characters.0.name",
+          "label": "Player A character name",
+          "type": "text"
+        },
+        {
+          "path": "characters.0.ownerPrincipalId",
+          "label": "Assign Player A",
+          "type": "member"
+        },
+        {
+          "path": "characters.1.name",
+          "label": "Player B character name",
+          "type": "text"
+        },
+        {
+          "path": "characters.1.ownerPrincipalId",
+          "label": "Assign Player B",
+          "type": "member"
+        }
+      ],
+      "assignmentPaths": [
+        "characters.0.ownerPrincipalId",
+        "characters.1.ownerPrincipalId"
+      ]
+    }
+  ]
+}
