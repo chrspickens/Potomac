@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS v2_reaction_submissions (
 CREATE TABLE IF NOT EXISTS v2_reaction_events (
  event_id TEXT PRIMARY KEY, window_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
  kind TEXT NOT NULL, visibility TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v2_reaction_adjudications (
+ operation_id TEXT PRIMARY KEY, window_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
+ principal_id TEXT NOT NULL, request_hash TEXT NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL
 );`;
 
 const validateWindow = window => {
@@ -93,10 +97,30 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
     const stored = row(windowId); if (!stored) fail('missing', 'reaction window unavailable'); const window = decode(stored); if (!authenticate(principalId, { windowId, campaignId: window.campaignId, authorityToken }) || !authorizeExpiry({ principalId, window, authorityToken })) fail('unauthorized', 'unauthorized reaction expiry');
     const current = row(windowId); const currentWindow = decode(current); if (current.status !== 'pending') return view(windowId, principalId); if (Date.parse(currentWindow.expiresAt) > Date.parse(now())) fail('conflict', 'reaction window has not expired'); return transition(currentWindow, 'expired', principalId, { decision: 'decline' });
   };
-  const adjudicateWork = (windowId, principalId, decision = 'accept', authorityToken) => {
+  const adjudicateWork = (windowId, principalId, adjudication, authorityToken) => {
     const stored = row(windowId); if (!stored) fail('conflict', 'reaction window is not pending'); const window = decode(stored);
     if (!authenticate(principalId, { windowId, campaignId: window.campaignId, authorityToken }) || !authorizeGm({ principalId, windowId, campaignId: window.campaignId, window, authorityToken })) fail('unauthorized', 'unauthorized GM adjudication');
-    if (stored.status !== 'pending') fail('conflict', 'reaction window is not pending'); return transition(window, decision === 'decline' ? 'declined' : 'resolved', principalId, { decision });
+    if (!adjudication || !ID.test(adjudication.operationId) || !['accept', 'decline'].includes(adjudication.decision) || adjudication.actionId !== undefined && !ID.test(adjudication.actionId)) fail('invalid', 'malformed GM adjudication');
+    const request = { ...adjudication, windowId, principalId };
+    const requestHash = hash(request);
+    const prior = db.prepare('SELECT window_id, principal_id, request_hash, response FROM v2_reaction_adjudications WHERE operation_id=?').get(adjudication.operationId);
+    if (prior) {
+      if (prior.window_id !== windowId || prior.principal_id !== principalId || prior.request_hash !== requestHash) fail('idempotency_conflict', 'operation ID is bound to another adjudication');
+      return JSON.parse(prior.response);
+    }
+    if (stored.status !== 'pending') fail('conflict', 'reaction window is not pending');
+    let decisions = [];
+    if (adjudication.decision === 'accept') {
+      const candidates = window.eligible.flatMap(eligible => eligible.actions.filter(action => adjudication.actionId === undefined || action.actionId === adjudication.actionId).map(action => ({ eligible, action })));
+      if (candidates.length !== 1) fail('invalid', candidates.length ? 'GM adjudication must select one unambiguous eligible action' : 'GM adjudication action is not eligible');
+      const [{ eligible, action }] = candidates;
+      const input = adjudication.input ?? {};
+      validateInput(input, action.inputSchema);
+      decisions = [{ principalId: eligible.principalId, actionId: action.actionId, input, decision: 'accept' }];
+    } else if (adjudication.actionId !== undefined || adjudication.input !== undefined) fail('invalid', 'declined GM adjudication cannot include an action');
+    const response = transition(window, adjudication.decision === 'decline' ? 'declined' : 'resolved', principalId, adjudication, decisions);
+    db.prepare('INSERT INTO v2_reaction_adjudications VALUES(?,?,?,?,?,?,?)').run(adjudication.operationId, windowId, window.campaignId, principalId, requestHash, JSON.stringify(response), now());
+    return response;
   };
   const standalone = work => { requireOwnedTransaction(db); try { const result = work(); db.exec('COMMIT;'); return result; } catch (error) { try { db.exec('ROLLBACK;'); } catch {} throw error; } };
   const inHostTransaction = work => { requireHostTransaction(db); return work(); };
@@ -104,10 +128,10 @@ export function createV2ReactionKernel({ db, authenticate, authorizeResponder, a
   const open = (window, principalId, authorityToken) => standalone(() => openWork(window, principalId, authorityToken));
   const submit = (submission, authorityToken) => standalone(() => submitWork(submission, authorityToken));
   const expire = (windowId, principalId, authorityToken) => standalone(() => expireWork(windowId, principalId, authorityToken));
-  const adjudicate = (windowId, principalId, decision = 'accept', authorityToken) => standalone(() => adjudicateWork(windowId, principalId, decision, authorityToken));
+  const adjudicate = (windowId, principalId, adjudication, authorityToken) => standalone(() => adjudicateWork(windowId, principalId, adjudication, authorityToken));
   const openInTransaction = (window, principalId, authorityToken) => inHostTransaction(() => openWork(window, principalId, authorityToken, false));
   const submitInTransaction = (submission, authorityToken) => inHostTransaction(() => submitWork(submission, authorityToken));
   const expireInTransaction = (windowId, principalId, authorityToken) => inHostTransaction(() => expireWork(windowId, principalId, authorityToken));
-  const adjudicateInTransaction = (windowId, principalId, decision = 'accept', authorityToken) => inHostTransaction(() => adjudicateWork(windowId, principalId, decision, authorityToken));
+  const adjudicateInTransaction = (windowId, principalId, adjudication, authorityToken) => inHostTransaction(() => adjudicateWork(windowId, principalId, adjudication, authorityToken));
   return { open, submit, expire, adjudicate, view, openInTransaction, submitInTransaction, expireInTransaction, adjudicateInTransaction };
 }

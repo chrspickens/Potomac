@@ -284,7 +284,7 @@ test('reaction authority revocation, stale lock and stale source revisions fail 
   staleLock.setLock({ ...lock, entries: lock.entries.filter(entry => entry.id !== starshipRefs.workflow.id) });
   assert.throws(() => staleLock.kernel.submitReaction({ operationId: 'stale-lock', windowId: lockWindow.windowId, principalId: 'player-a', actionId: 'narrative-interrupt', input: { choice: 'accept' }, decision: 'accept' }), error => error.code === 'unsupported');
   assert.equal(staleLock.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'pending', 'a stale-lock player submission records no choice');
-  staleLock.kernel.adjudicateReaction(lockWindow.windowId, 'gm-1', 'decline');
+  staleLock.kernel.adjudicateReaction(lockWindow.windowId, 'gm-1', { operationId: 'stale-lock-adjudicate', decision: 'decline' });
   assert.equal(staleLock.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get('route-1').status, 'conflicted', 'host GM adjudication terminalizes the stale command without effects');
   staleLock.db.close();
 

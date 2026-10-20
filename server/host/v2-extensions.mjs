@@ -663,7 +663,7 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   const reactionCampaign = windowId => db.prepare('SELECT campaign_id FROM v2_reaction_windows WHERE window_id=?').get(windowId)?.campaign_id;
   const submitReaction = (submission, authorityToken) => hostReactionTransaction(submission?.campaignId ?? reactionCampaign(submission?.windowId), () => { const result = reactionKernel.submitInTransaction(submission, authorityToken); if (failureAt === 'after-reaction-submission') fail('injected', 'failure after reaction submission'); return result; });
   const expireReaction = (windowId, principalId, authorityToken) => hostReactionTransaction(reactionCampaign(windowId), () => reactionKernel.expireInTransaction(windowId, principalId, authorityToken));
-  const adjudicateReaction = (windowId, principalId, decision = 'accept', authorityToken) => hostReactionTransaction(reactionCampaign(windowId), () => reactionKernel.adjudicateInTransaction(windowId, principalId, decision, authorityToken));
+  const adjudicateReaction = (windowId, principalId, adjudication, authorityToken) => hostReactionTransaction(reactionCampaign(windowId), () => reactionKernel.adjudicateInTransaction(windowId, principalId, adjudication, authorityToken));
   const viewReaction = (windowId, principalId, authorityToken) => transaction(() => reactionKernel.view(windowId, principalId, authorityToken));
   const listReactions = (campaignId, principalId, authorityToken) => transaction(() => {
     const member = principal(principalId, campaignId, authorityToken); lockFor(campaignId);

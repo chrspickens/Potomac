@@ -43,8 +43,17 @@ export function commandResultFeedback(result: unknown): { status: 'applied' | 'p
 
 function defaultFieldValue(field: SchemaProperty, value: JsonValue | undefined): string {
   if (value === undefined || value === null) return '';
+  if (field.type === 'array') return JSON.stringify(value);
   if (field.enum) return String(field.enum.findIndex(option => JSON.stringify(option) === JSON.stringify(value)));
   return String(value);
+}
+
+function arrayExample(field: SchemaProperty): string {
+  if (field.items?.type === 'object') {
+    const item = Object.fromEntries(Object.entries(field.items.properties).map(([name, child]) => [name, child.type === 'string' ? 'value' : child.type === 'boolean' ? true : 1]));
+    return JSON.stringify([item]);
+  }
+  return '[]';
 }
 
 function commandAttempt(entity: UiEntityProjection, host: UiHostContext, commandId: string, input: Record<string, JsonValue>, workflow?: CommandAttempt['workflow']): { key: string; attempt?: CommandAttempt; mismatch: boolean } {
@@ -165,7 +174,7 @@ function commandErrorMessage(error: unknown): string {
   return 'The host did not confirm this action. Check access and connection, then retry.';
 }
 
-type SchemaProperty = { type: 'string' | 'integer' | 'number' | 'boolean'; title?: string; description?: string; enum?: JsonValue[]; required?: never; minimum?: number; maximum?: number; minLength?: number; maxLength?: number };
+type SchemaProperty = { type: 'string' | 'integer' | 'number' | 'boolean' | 'array'; title?: string; description?: string; enum?: JsonValue[]; required?: never; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; items?: { type: 'object'; properties: Record<string, { type: 'string' | 'integer' | 'number' | 'boolean' }>; required?: string[]; additionalProperties?: boolean } };
 type InputSchema = { properties: Record<string, SchemaProperty>; required?: string[] };
 
 function inputSchema(contribution: UiContribution, commandId: string): InputSchema {
@@ -191,6 +200,10 @@ function parseForm(form: HTMLFormElement, schema: InputSchema): { input?: Record
       const index = Number(raw);
       if (!Number.isInteger(index) || index < 0 || index >= field.enum.length) return { error: `Choose a valid ${fieldLabel(name, field).toLowerCase()}.` };
       value = field.enum[index];
+    } else if (field.type === 'array') {
+      try { value = JSON.parse(raw) as JsonValue; }
+      catch { return { error: `Enter valid JSON for ${fieldLabel(name, field).toLowerCase()}.` }; }
+      if (!Array.isArray(value)) return { error: `${fieldLabel(name, field)} must be a JSON array.` };
     } else if (field.type === 'integer' || field.type === 'number') {
       const number = Number(raw);
       if (!Number.isFinite(number) || field.type === 'integer' && !Number.isInteger(number) || field.minimum !== undefined && number < field.minimum || field.maximum !== undefined && number > field.maximum) return { error: `Enter a valid ${fieldLabel(name, field).toLowerCase()}${field.minimum !== undefined || field.maximum !== undefined ? ` (${field.minimum ?? 'any'}–${field.maximum ?? 'any'}).` : '.'}` };
@@ -242,7 +255,9 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
       const required = schema.required?.includes(name) ?? false;
       return <div className="v2-ui-input" key={name}><label htmlFor={id}>{label}{required ? ' *' : ''}</label>{field.enum || field.type === 'boolean'
         ? <select id={id} name={name} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending}><option value="" disabled>Choose {label.toLowerCase()}</option>{(field.enum ?? [true, false]).map((item, index) => <option key={index} value={field.enum ? String(index) : String(item)}>{String(item)}</option>)}</select>
-        : <input id={id} name={name} type={field.type === 'integer' || field.type === 'number' ? 'number' : 'text'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={field.description ? `${id}-description` : undefined} />}{field.description && <small id={`${id}-description`}>{field.description}</small>}</div>;
+        : field.type === 'array'
+          ? <textarea id={id} name={name} rows={3} placeholder={arrayExample(field)} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={`${id}-description`} />
+        : <input id={id} name={name} type={field.type === 'integer' || field.type === 'number' ? 'number' : 'text'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={field.description ? `${id}-description` : undefined} />}{field.type === 'array' && <small id={`${id}-description`}>Enter a JSON array that matches the module schema, for example <code>{arrayExample(field)}</code>.</small>}{field.description && field.type !== 'array' && <small id={`${id}-description`}>{field.description}</small>}</div>;
     })}
     <button type="submit" disabled={pending || needsWorkflow && !workflow}>{pending ? 'Submitting…' : node.label}</button>
     {needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}
