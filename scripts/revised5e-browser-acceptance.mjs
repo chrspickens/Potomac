@@ -157,7 +157,7 @@ try {
   await wait('playerB', `document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('1 / 2 uses')`, 'Second Wind resource decremented');
   await wait('playerB', `document.querySelector('.v2-audit')?.innerText.includes('second-wind-healing: d10 [8]')`, 'Player B sees the host-audited healing die');
   await submitActorForm('playerA', 'Use Second Wind (Bonus Action)', 'player-a');
-  await wait('playerA', `document.querySelector('form[aria-label="Use Second Wind (Bonus Action)"] [role="alert"]')?.textContent.includes('not accepted')`, 'host rejects a second Bonus Action on this turn');
+  await wait('playerA', `document.querySelector('.v2-message[role="status"]')?.textContent.includes('Second Wind is not legal for this actor or turn') && document.querySelector('[data-actor-id="player-a"]')?.innerText.includes('1 / 2 uses')`, 'host rejects a second Bonus Action without spending another use');
   const secondWindCapture = await evaluate('playerA', `window.__v2Commands.find(item=>item.body.commandId==='example.revised5e.second-wind'&&item.response?.status==='applied')`);
   assert.ok(secondWindCapture, 'the successful Second Wind command was sent over authenticated HTTP');
   let playerAAttacked = false;

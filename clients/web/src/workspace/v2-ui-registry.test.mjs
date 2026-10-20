@@ -72,3 +72,23 @@ test('host-projected data reads only supplied fields; missing private fields are
   assert.equal(readUiPath(visible, 'gmNotes'), undefined);
   assert.equal(readUiPath(visible, 'gmNotes.private'), undefined);
 });
+
+test('bounded descriptors can validate and read resource paths across authorized arrays', () => {
+  const contribution = structuredClone(d20ActorSheetProbe);
+  contribution.entitySchema = { type: 'object', properties: { actors: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'object', properties: { name: { type: 'string' }, hp: { type: 'integer' }, maximumHp: { type: 'integer' } }, required: ['name', 'hp', 'maximumHp'], additionalProperties: false } } }, required: ['actors'], additionalProperties: false };
+  contribution.nodes = [
+    { kind: 'display', id: 'probe.d20.actors', path: 'actors.*.name', label: 'Actors' },
+    { kind: 'resource', id: 'probe.d20.hit-points', label: 'Hit points', currentPath: 'actors.*.hp', maximumPath: 'actors.*.maximumHp' },
+  ];
+  const catalog = structuredClone(d20UiCatalog);
+  catalog.entities[0].schema = contribution.entitySchema;
+  const lock = probeUiLock('d20-array-probe', contribution.entityCapability, contribution.capability, contribution.commands[0].capability);
+  const registry = new UiContributionRegistry(lock, 'd20-array-probe', catalog);
+  registry.register(contribution);
+  const projected = { actors: [{ name: 'A', hp: 7, maximumHp: 10 }, { name: 'B', hp: 4, maximumHp: 8 }] };
+  assert.deepEqual(readUiPath(projected, 'actors.*.name'), ['A', 'B']);
+  assert.deepEqual(readUiPath(projected, 'actors.*.hp'), [7, 4]);
+  const invalid = structuredClone(contribution);
+  invalid.nodes[1].currentPath = 'actors.*.unknown';
+  assert.throws(() => validateUiContribution(invalid, lock, 'd20-array-probe', catalog), /invalid resource fields/);
+});

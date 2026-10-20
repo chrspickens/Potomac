@@ -133,6 +133,28 @@ try {
   assert.equal(submitted.expectedRevision, 4, 'command carries the host projection revision');
   assert.ok(submitted.operationId, 'command has an operation identity');
 
+  await evaluate(sessionId, `(()=>{window.__v2ResponseStatus = 'pending'; const subsystem = document.querySelector('#permitted select[name="subsystem"]'); subsystem.value = '0'; subsystem.dispatchEvent(new Event('change', { bubbles: true })); const amount = document.querySelector('#permitted input[name="amount"]'); amount.value = '13'; amount.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#permitted form').requestSubmit()})()`);
+  await waitFor(sessionId, 'window.__v2Submissions.length === 2 && document.querySelector("#permitted form [role=status]")?.textContent.includes("effects are not committed yet")', 'durable pending feedback without claiming commit');
+  const pendingSubmission = await evaluate(sessionId, 'window.__v2Submissions[1]');
+  assert.equal(pendingSubmission.input.amount, 13);
+  const pendingText = await evaluate(sessionId, 'document.querySelector("#permitted form").innerText');
+  assert.match(pendingText, /effects are not committed yet/);
+  assert.doesNotMatch(pendingText, /committed by the host/);
+
+  await evaluate(sessionId, `(()=>{const amount = document.querySelector('#permitted input[name="amount"]'); amount.value = '14'; amount.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#permitted form').requestSubmit()})()`);
+  await waitFor(sessionId, 'document.querySelector("#permitted form [role=alert]")?.textContent.includes("Retry its exact inputs")', 'changed input blocked while prior command outcome is unknown');
+  assert.equal(await evaluate(sessionId, 'window.__v2Submissions.length'), 2, 'changed input cannot create a second operation while the pending receipt is unresolved');
+
+  await evaluate(sessionId, `sessionStorage.setItem('harnessRevision', '5'); window.location.reload()`);
+  await waitFor(sessionId, 'window.__v2Ready === true && window.__v2Submissions.length === 2', 'restore pending exact intent after refreshed revision');
+  assert.equal(await evaluate(sessionId, 'document.querySelector("#permitted input[name=amount]").value'), '13', 'pending input is retained across renderer restart');
+  await evaluate(sessionId, `document.querySelector('#permitted form').requestSubmit()`);
+  await waitFor(sessionId, 'window.__v2Submissions.length === 3 && document.querySelector("#permitted form [role=status]")?.textContent.includes("committed by the host")', 'exact retry replays the original intent');
+  const exactRetry = await evaluate(sessionId, 'window.__v2Submissions[2]');
+  assert.equal(exactRetry.operationId, pendingSubmission.operationId, 'retry after refresh preserves the original operation id');
+  assert.equal(exactRetry.expectedRevision, pendingSubmission.expectedRevision, 'retry after refresh preserves original expected revision');
+  assert.deepEqual(exactRetry.input, pendingSubmission.input, 'retry after refresh preserves exact command payload');
+
   await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, sessionId);
   const narrow = await evaluate(sessionId, '({width:document.documentElement.clientWidth,scrollWidth:document.documentElement.scrollWidth,formWidth:document.querySelector("#permitted form").getBoundingClientRect().width})');
   assert.ok(narrow.scrollWidth <= narrow.width, `V2 contribution introduces no horizontal overflow at 390px: ${JSON.stringify(narrow)}`);

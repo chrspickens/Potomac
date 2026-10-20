@@ -16,17 +16,47 @@ type Props = {
   composition?: Record<string, Record<string, string[]>>;
 };
 
-function stableOperationId(entity: UiEntityProjection, commandId: string): string {
-  const key = `potomac.v2.ui.operation.${entity.campaignId}:${entity.entityId}:${commandId}:${entity.revision}`;
-  const existing = sessionStorage.getItem(key);
-  if (existing) return existing;
-  const value = `v2-ui-${crypto.randomUUID()}`;
-  sessionStorage.setItem(key, value);
-  return value;
+type CommandAttempt = { operationId: string; expectedRevision: number; input: Record<string, JsonValue>; workflow?: NonNullable<Parameters<UiHostContext['submitCommand']>[0]['workflow']> };
+
+function operationAttemptKey(entity: UiEntityProjection, host: UiHostContext, commandId: string): string {
+  return `potomac.v2.ui.attempt.${entity.campaignId}:${host.principalId}:${entity.entityId}:${commandId}`;
 }
 
-function clearOperationId(entity: UiEntityProjection, commandId: string): void {
-  sessionStorage.removeItem(`potomac.v2.ui.operation.${entity.campaignId}:${entity.entityId}:${commandId}:${entity.revision}`);
+function readCommandAttempt(key: string): CommandAttempt | undefined {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return undefined;
+    const attempt = JSON.parse(raw) as CommandAttempt;
+    return typeof attempt.operationId === 'string' && Number.isInteger(attempt.expectedRevision) && attempt.input && typeof attempt.input === 'object' ? attempt : undefined;
+  } catch { return undefined; }
+}
+
+function clearCommandAttempt(key: string): void { sessionStorage.removeItem(key); }
+
+export function commandResultFeedback(result: unknown): { status: 'applied' | 'pending' | 'conflicted' | 'unknown'; message: string } {
+  const status = result && typeof result === 'object' && 'status' in result ? String(result.status) : '';
+  if (status === 'applied') return { status, message: 'Command committed by the host.' };
+  if (status === 'pending') return { status, message: 'Command is waiting for its authorized reaction; its effects are not committed yet.' };
+  if (status === 'conflicted') return { status, message: 'The host recorded a terminal conflict; no command effects were committed.' };
+  return { status: 'unknown', message: 'The host response did not confirm a committed result. Refresh and review state before trying again.' };
+}
+
+function defaultFieldValue(field: SchemaProperty, value: JsonValue | undefined): string {
+  if (value === undefined || value === null) return '';
+  if (field.enum) return String(field.enum.findIndex(option => JSON.stringify(option) === JSON.stringify(value)));
+  return String(value);
+}
+
+function commandAttempt(entity: UiEntityProjection, host: UiHostContext, commandId: string, input: Record<string, JsonValue>, workflow?: CommandAttempt['workflow']): { key: string; attempt?: CommandAttempt; mismatch: boolean } {
+  const key = operationAttemptKey(entity, host, commandId);
+  const existing = readCommandAttempt(key);
+  if (existing) {
+    const sameIntent = JSON.stringify(existing.input) === JSON.stringify(input) && JSON.stringify(existing.workflow ?? null) === JSON.stringify(workflow ?? null);
+    return { key, attempt: existing, mismatch: !sameIntent };
+  }
+  const attempt: CommandAttempt = { operationId: `v2-ui-${crypto.randomUUID()}`, expectedRevision: entity.revision, input, ...(workflow ? { workflow } : {}) };
+  sessionStorage.setItem(key, JSON.stringify(attempt));
+  return { key, attempt, mismatch: false };
 }
 
 export function V2UiContributionView(props: Props) {
@@ -81,14 +111,20 @@ function NodeView({ node, contribution, entity, host }: { node: UiNode; contribu
   if (node.kind === 'slot') return <div className="v2-ui-slot" data-slot={node.slotId} aria-label={node.slotId} />;
   if (node.kind === 'display') {
     const value = readUiPath(entity.data, node.path);
-    return value === undefined ? null : <dl className="v2-ui-display"><dt>{node.label}</dt><dd>{valueText(value)}</dd></dl>;
+    return value === undefined ? null : <dl className="v2-ui-display"><dt>{node.label}</dt><dd>{Array.isArray(value) ? value.map(valueText).join(' · ') : valueText(value)}</dd></dl>;
   }
   if (node.kind === 'resource') {
     const current = readUiPath(entity.data, node.currentPath);
     const maximum = readUiPath(entity.data, node.maximumPath);
-    if (typeof current !== 'number' || typeof maximum !== 'number') return null;
-    const value = Math.max(0, Math.min(maximum, current));
-    return <div className="v2-ui-resource"><label>{node.label}<progress value={value} max={Math.max(1, maximum)} aria-label={node.label} /> <output>{current} / {maximum}</output></label></div>;
+    const currents = Array.isArray(current) ? current : [current];
+    const maximums = Array.isArray(maximum) ? maximum : [maximum];
+    if (currents.length !== maximums.length || currents.some(value => typeof value !== 'number') || maximums.some(value => typeof value !== 'number')) return null;
+    return <div className="v2-ui-resource">{currents.map((currentValue, index) => {
+      const maximumValue = maximums[index] as number;
+      const value = Math.max(0, Math.min(maximumValue, currentValue as number));
+      const label = currents.length > 1 ? `${node.label} ${index + 1}` : node.label;
+      return <label key={index}>{label}<progress value={value} max={Math.max(1, maximumValue)} aria-label={label} /> <output>{valueText(currentValue)} / {maximumValue}</output></label>;
+    })}</div>;
   }
   if (node.kind === 'workflow-status') { const workflow = currentWorkflow(contribution, entity, host, node.workflowTypeId); return workflow ? <p className="v2-ui-workflow-status" role="status" aria-live="polite">{node.label}: {workflow.state.replaceAll('.', ' ')} · {workflow.status}</p> : <p role="status">{node.label}: no active workflow.</p>; }
   if (!host.allowedCommandIds.includes(node.commandId)) return null;
@@ -98,19 +134,35 @@ function NodeView({ node, contribution, entity, host }: { node: UiNode; contribu
 
 function CommandButton({ node, contribution, entity, host }: { node: Extract<UiNode, { kind: 'command' }>; contribution: UiContribution; entity: UiEntityProjection; host: UiHostContext }) {
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const workflow = node.workflowTypeId ? currentWorkflow(contribution, entity, host, node.workflowTypeId) : undefined;
   const needsWorkflow = Boolean(node.workflowTypeId);
   const submit = async () => {
-    setPending(true); setError('');
+    setPending(true); setMessage('');
     try {
-      await host.submitCommand({ operationId: stableOperationId(entity, node.commandId), campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: entity.revision, input: {}, ...(workflow ? { workflow: { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } } : {}) });
-      clearOperationId(entity, node.commandId);
-    } catch {
-      setError('The command was not accepted. Check access and connection, then retry.');
+      const workflowRequest = workflow ? { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } : undefined;
+      const intent = commandAttempt(entity, host, node.commandId, {}, workflowRequest);
+      if (intent.mismatch || !intent.attempt) { setMessage('A previous request has an unknown outcome. Retry that exact action or refresh and review the host state first.'); return; }
+      const result = await host.submitCommand({ operationId: intent.attempt.operationId, campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: intent.attempt.expectedRevision, input: intent.attempt.input, ...(intent.attempt.workflow ? { workflow: intent.attempt.workflow } : {}) });
+      const feedback = commandResultFeedback(result);
+      if (feedback.status === 'applied' || feedback.status === 'conflicted') clearCommandAttempt(intent.key);
+      setMessage(feedback.message);
+    } catch (error) {
+      const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
+      if (status >= 400 && status < 500) clearCommandAttempt(operationAttemptKey(entity, host, node.commandId));
+      setMessage(commandErrorMessage(error));
     } finally { setPending(false); }
   };
-  return <div className="v2-ui-command"><button type="button" disabled={pending || needsWorkflow && !workflow} onClick={() => void submit()}>{pending ? 'Working…' : node.label}</button>{needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}{error && <p role="alert">{error}</p>}</div>;
+  return <div className="v2-ui-command"><button type="button" disabled={pending || needsWorkflow && !workflow} onClick={() => void submit()}>{pending ? 'Working…' : node.label}</button>{needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}{message && <p role={message.startsWith('Command committed') || message.startsWith('Command is waiting') ? 'status' : 'alert'} aria-live="polite">{message}</p>}</div>;
+}
+
+function commandErrorMessage(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+  const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
+  if (status === 403 || code === 'unauthorized' || code === 'forbidden') return 'The host denied this action for your account or selected character.';
+  if (status === 409 || code === 'conflict' || code === 'stale_revision') return 'The campaign changed before this action completed. Refresh the entity and review the current state.';
+  if (status === 404) return 'The selected entity or command is no longer available to this account.';
+  return 'The host did not confirm this action. Check access and connection, then retry.';
 }
 
 type SchemaProperty = { type: 'string' | 'integer' | 'number' | 'boolean'; title?: string; description?: string; enum?: JsonValue[]; required?: never; minimum?: number; maximum?: number; minLength?: number; maxLength?: number };
@@ -159,6 +211,10 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
   const schema = inputSchema(contribution, node.commandId);
   const workflow = node.workflowTypeId ? currentWorkflow(contribution, entity, host, node.workflowTypeId) : undefined;
   const needsWorkflow = Boolean(node.workflowTypeId);
+  const workflowRequest = workflow ? { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } : undefined;
+  const attemptKey = operationAttemptKey(entity, host, node.commandId);
+  const savedAttempt = readCommandAttempt(attemptKey);
+  const savedIntentMatchesWorkflow = savedAttempt && JSON.stringify(savedAttempt.workflow ?? null) === JSON.stringify(workflowRequest ?? null);
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (pending) return;
@@ -167,12 +223,16 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
     if (parsed.error) { setMessage(parsed.error); return; }
     setPending(true); setMessage('');
     try {
-      await host.submitCommand({ operationId: stableOperationId(entity, node.commandId), campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: entity.revision, input: parsed.input!, ...(workflow ? { workflow: { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } } : {}) });
-      clearOperationId(entity, node.commandId);
-      form.reset();
-      setMessage('Command accepted by the host.');
-    } catch {
-      setMessage('The command was not accepted. Check access and connection, then retry.');
+      const intent = commandAttempt(entity, host, node.commandId, parsed.input!, workflowRequest);
+      if (intent.mismatch || !intent.attempt) { setMessage('A previous request has an unknown outcome. Retry its exact inputs or refresh and review the host state before starting another action.'); return; }
+      const result = await host.submitCommand({ operationId: intent.attempt.operationId, campaignId: entity.campaignId, principalId: host.principalId, commandId: node.commandId, entityId: entity.entityId, expectedRevision: intent.attempt.expectedRevision, input: intent.attempt.input, ...(intent.attempt.workflow ? { workflow: intent.attempt.workflow } : {}) });
+      const feedback = commandResultFeedback(result);
+      if (feedback.status === 'applied' || feedback.status === 'conflicted') { clearCommandAttempt(intent.key); if (feedback.status === 'applied') form.reset(); }
+      setMessage(feedback.message);
+    } catch (error) {
+      const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
+      if (status >= 400 && status < 500) clearCommandAttempt(attemptKey);
+      setMessage(commandErrorMessage(error));
     } finally { setPending(false); }
   };
   return <form className="v2-ui-form" aria-label={node.label} noValidate onSubmit={onSubmit}>
@@ -181,11 +241,11 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
       const label = fieldLabel(name, field);
       const required = schema.required?.includes(name) ?? false;
       return <div className="v2-ui-input" key={name}><label htmlFor={id}>{label}{required ? ' *' : ''}</label>{field.enum || field.type === 'boolean'
-        ? <select id={id} name={name} defaultValue="" required={required} disabled={pending}><option value="" disabled>Choose {label.toLowerCase()}</option>{(field.enum ?? [true, false]).map((item, index) => <option key={index} value={field.enum ? String(index) : String(item)}>{String(item)}</option>)}</select>
-        : <input id={id} name={name} type={field.type === 'integer' || field.type === 'number' ? 'number' : 'text'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} required={required} disabled={pending} aria-describedby={field.description ? `${id}-description` : undefined} />}{field.description && <small id={`${id}-description`}>{field.description}</small>}</div>;
+        ? <select id={id} name={name} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending}><option value="" disabled>Choose {label.toLowerCase()}</option>{(field.enum ?? [true, false]).map((item, index) => <option key={index} value={field.enum ? String(index) : String(item)}>{String(item)}</option>)}</select>
+        : <input id={id} name={name} type={field.type === 'integer' || field.type === 'number' ? 'number' : 'text'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={field.description ? `${id}-description` : undefined} />}{field.description && <small id={`${id}-description`}>{field.description}</small>}</div>;
     })}
     <button type="submit" disabled={pending || needsWorkflow && !workflow}>{pending ? 'Submitting…' : node.label}</button>
     {needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}
-    {message && <p role={message.startsWith('The command') || message.endsWith('required.') || message.startsWith('Enter ') || message.startsWith('Choose ') ? 'alert' : 'status'} aria-live="polite">{message}</p>}
+    {message && <p role={message.startsWith('Command committed') || message.startsWith('Command is waiting') ? 'status' : 'alert'} aria-live="polite">{message}</p>}
   </form>;
 }
