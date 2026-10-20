@@ -34,7 +34,7 @@ test('guided preparation catalog refuses stale module digest bindings', async ()
     const preparationPath = join(moduleSource, 'preparation.json'); const profile = JSON.parse(await readFile(preparationPath, 'utf8'));
     profile.moduleDigest = `sha256:${'0'.repeat(64)}`; await writeFile(preparationPath, JSON.stringify(profile, null, 2) + '\n');
     const preparationDigest = await canonicalFileDigest(moduleSource, ['preparation.json'], false);
-    await writeFile(catalogFile, JSON.stringify({ formatVersion: 1, modules: [{ id: 'example.revised5e', version: '1.2.0', source: './module', entry: 'extensions.mjs', authoring: true, intentAuthorizerExport: 'revised5eAuthorizeIntent', preparationFile: 'preparation.json', preparationDigest }] }));
+    await writeFile(catalogFile, JSON.stringify({ formatVersion: 1, modules: [{ id: 'example.revised5e', version: '1.2.1', source: './module', entry: 'extensions.mjs', authoring: true, intentAuthorizerExport: 'revised5eAuthorizeIntent', preparationFile: 'preparation.json', preparationDigest }] }));
     await assert.rejects(loadTrustedV2Catalog({ catalogFile }), /preparation metadata does not match the exact trusted module digest/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

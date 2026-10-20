@@ -629,7 +629,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
             }
             if (req.method === 'POST' && encodedWindowId && operation) {
               const body = await readBody(req);
-              const allowed = operation === 'decisions' ? ['operationId', 'actionId', 'input', 'decision'] : operation === 'decline' ? ['operationId', 'actionId', 'input'] : operation === 'adjudicate' ? ['decision'] : [];
+              const allowed = operation === 'decisions' ? ['operationId', 'actionId', 'input', 'decision'] : operation === 'decline' ? ['operationId', 'actionId', 'input'] : operation === 'adjudicate' ? ['operationId', 'decision', 'actionId', 'input'] : [];
               if (Object.keys(body).some(key => !allowed.includes(key)) || Object.hasOwn(body, 'principalId') || Object.hasOwn(body, 'campaignId')) return json(res, 400, { error: 'Reaction authority and continuation state are host-derived', reasonCode: 'invalid' });
               const windowId = decodeURIComponent(encodedWindowId);
               if (operation === 'decisions') {
@@ -642,8 +642,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
                 return json(res, 200, v2Api.expireReaction(auth.principalId, proof, windowId));
               }
               if (operation === 'adjudicate') {
-                if (!['accept', 'decline'].includes(body.decision)) return json(res, 400, { error: 'GM adjudication decision must be accept or decline', reasonCode: 'invalid' });
-                return json(res, 200, v2Api.adjudicateReaction(auth.principalId, proof, windowId, body.decision));
+                if (!['accept', 'decline'].includes(body.decision) || typeof body.operationId !== 'string' || body.decision === 'accept' && body.actionId !== undefined && typeof body.actionId !== 'string' || body.decision === 'decline' && (body.actionId !== undefined || body.input !== undefined)) return json(res, 400, { error: 'GM adjudication requires an operation ID and an eligible accepted action', reasonCode: 'invalid' });
+                return json(res, 200, v2Api.adjudicateReaction(auth.principalId, proof, windowId, body));
               }
             }
           }

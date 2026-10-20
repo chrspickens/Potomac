@@ -571,6 +571,44 @@
   },
   "commands": [
     {
+      "commandId": "example.revised5e.move",
+      "capability": {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actorId": {
+            "type": "string",
+            "enum": [
+              "player-a",
+              "player-b",
+              "enemy"
+            ]
+          },
+          "path": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "properties": {
+                "x": { "type": "integer", "minimum": 0, "maximum": 19 },
+                "y": { "type": "integer", "minimum": 0, "maximum": 19 }
+              },
+              "required": ["x", "y"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["actorId", "path"],
+        "additionalProperties": false
+      }
+    },
+    {
       "commandId": "example.revised5e.initialize",
       "capability": {
         "id": "example.revised5e.commands",
@@ -791,6 +829,12 @@
           "id": "example.revised5e.rules.initialize",
           "commandId": "example.revised5e.initialize",
           "label": "Roll initiative and begin"
+        },
+        {
+          "kind": "form",
+          "id": "example.revised5e.rules.move",
+          "commandId": "example.revised5e.move",
+          "label": "Move"
         },
         {
           "kind": "form",

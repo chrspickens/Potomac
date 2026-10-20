@@ -191,7 +191,7 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
       return kernel.submitReaction({ ...submission, campaignId, principalId }, authorityToken);
     },
     expireReaction(principalId, authorityToken, windowId) { return kernel.expireReaction(windowId, principalId, authorityToken); },
-    adjudicateReaction(principalId, authorityToken, windowId, decision) { return kernel.adjudicateReaction(windowId, principalId, decision, authorityToken); },
+    adjudicateReaction(principalId, authorityToken, windowId, adjudication) { return kernel.adjudicateReaction(windowId, principalId, adjudication, authorityToken); },
     declineReaction(principalId, authorityToken, windowId, operationId, actionId, input) { return kernel.submitReaction({ operationId, windowId, actionId, input, decision: 'decline', campaignId, principalId }, authorityToken); },
     listReactions(campaignIdValue, principalId, authorityToken) { return kernel.listReactions(campaignIdValue, principalId, authorityToken); },
     viewReaction(windowId, principalId, authorityToken) { return kernel.viewReaction(windowId, principalId, authorityToken); },

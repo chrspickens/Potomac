@@ -19,8 +19,21 @@ type V2Reaction = { windowId: string; expiresAt: string; availableActions: Array
 type Encounter = UiEntityProjection & { revision: number; data: { title: string; status: string; shortRestCount: number; grid: { width: number; height: number; squareFeet: number; blocked: Position[] }; actors: Actor[]; initiativeOrder: string[]; initiativeRolls: number[]; currentTurnIndex: number; round: number; actionsUsed: string[]; combatLog: Array<Record<string, unknown>>; movementLog: Array<Record<string, unknown>> } };
 function makeContribution(): UiContribution {
   const source = contributionSource as unknown as { contractVersion: 1; contributionId: string; contributionVersion: '1.0.0'; kind: UiContribution['kind']; slots: string[]; workflows: []; nodes: UiContribution['nodes'] };
+  // This legacy acceptance page owns a tactical-grid movement control below. Keep
+  // the module-authored generic Move form on the normal Rules workspace only.
+  const withoutGenericMove = (nodes: UiContribution['nodes']): UiContribution['nodes'] => {
+    const result: UiContribution['nodes'] = [];
+    for (const node of nodes) {
+      if (node.id === 'example.revised5e.rules.move') continue;
+      if (node.kind === 'group' || node.kind === 'section') {
+        result.push({ ...node, children: withoutGenericMove(node.children) });
+      } else result.push(node);
+    }
+    return result;
+  };
   return {
     ...source,
+    nodes: withoutGenericMove(source.nodes),
     capability: revised5eRefs.ui,
     entityTypeId: revised5eEncounter.typeId,
     entityCapability: revised5eEncounter.capability,

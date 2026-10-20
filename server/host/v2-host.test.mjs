@@ -377,7 +377,7 @@ test('Revised 5e HTTP encounter authenticates actor ownership, audits host rolls
 test('Revised 5e opportunity attack resumes the exact movement after restart through authenticated HTTP', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-5e-movement-'));
   const databasePath = join(directory, 'host.sqlite');
-  const draws = [20, 1, 1, 20, 4, 4]; let drawCount = 0, host, baseUrl, lockDigest;
+  const draws = [20, 1, 1, 20, 4, 4, 20, 1, 1]; let drawCount = 0, host, baseUrl, lockDigest;
   const launch = async () => { host = createHost({ databasePath, campaignId: 'campaign-v2-5e-movement', enableV2Api: true, v2RandomInt: (min, max) => { const value = draws[drawCount++]; assert.ok(value >= min && value < max); return value; } }); const address = await host.listen(0); baseUrl = `http://127.0.0.1:${address.port}`; };
   const request = (path, token = 'local-gm', options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers } });
   const send = (path, body, token = 'local-gm', method = 'POST', headers = {}) => request(path, token, { method, body: JSON.stringify(body), headers });
@@ -411,8 +411,11 @@ test('Revised 5e opportunity attack resumes the exact movement after restart thr
     host.close(); await launch();
     const windows = await (await request('/api/v2/reactions', 'local-gm', { headers: proof() })).json(); assert.ok(windows.some(item => item.windowId === suspended.windowId), 'GM sees the durable window after restart');
     assert.ok([403, 404].includes((await send(`/api/v2/reactions/${suspended.windowId}/decisions`, { operationId: 'wrong-responder', actionId: 'example.revised5e.opportunity-attack', input: {}, decision: 'accept' }, playerB.credential, 'POST', proof())).status));
+    assert.equal((await send(`/api/v2/reactions/${suspended.windowId}/adjudicate`, { operationId: 'gm-invalid-opportunity-action', actionId: 'example.revised5e.attack', input: {}, decision: 'accept' }, 'local-gm', 'POST', proof())).status, 400, 'GM cannot accept an action not eligible in the pinned reaction descriptor');
+    assert.equal(host.db.prepare('SELECT status FROM v2_reaction_windows WHERE window_id=?').get(suspended.windowId).status, 'pending', 'rejected adjudication leaves the durable window pending');
     const decision = { operationId: 'gm-opportunity-attack', actionId: 'example.revised5e.opportunity-attack', input: {}, decision: 'accept' };
-    const resolvedResponse = await send(`/api/v2/reactions/${suspended.windowId}/decisions`, decision, 'local-gm', 'POST', proof()); assert.equal(resolvedResponse.status, 200);
+    const adjudication = { operationId: 'gm-opportunity-adjudication', actionId: decision.actionId, input: {}, decision: 'accept' };
+    const resolvedResponse = await send(`/api/v2/reactions/${suspended.windowId}/adjudicate`, adjudication, 'local-gm', 'POST', proof()); assert.equal(resolvedResponse.status, 200);
     const resolved = await resolvedResponse.json(); assert.equal(resolved.status, 'resolved'); assert.equal(drawCount, 6);
     state = await (await request(`/api/v2/entities/${entityId}`, playerB.credential, { headers: proof() })).json();
     assert.equal(state.revision, 3); assert.deepEqual(state.data.actors.find(actor => actor.id === 'player-a').position, { x: 1, y: 2 });
@@ -422,9 +425,27 @@ test('Revised 5e opportunity attack resumes the exact movement after restart thr
     const resumed = events.find(event => event.kind === 'command.resumed' && event.operationId === move.operationId);
     assert.deepEqual(resumed.payload.randomness.map(item => item.values), [[20], [4, 4]], 'public OA dice are host-generated and audited');
     assert.equal(resumed.payload.resolutionTranscript, undefined);
-    const retry = await send(`/api/v2/reactions/${suspended.windowId}/decisions`, decision, 'local-gm', 'POST', proof()); assert.equal(retry.status, 200);
+    const retry = await send(`/api/v2/reactions/${suspended.windowId}/adjudicate`, adjudication, 'local-gm', 'POST', proof()); assert.equal(retry.status, 200);
     assert.equal(drawCount, 6, 'exact decision retry does not reroll or replay movement');
+    assert.equal((await send(`/api/v2/reactions/${suspended.windowId}/adjudicate`, { ...adjudication, input: { changed: true } }, 'local-gm', 'POST', proof())).status, 409, 'changed adjudication retry conflicts');
     assert.equal(host.db.prepare('SELECT revision FROM v2_effect_entities WHERE campaign_id=? AND entity_id=?').get('campaign-v2-5e-movement', entityId).revision, 3);
+
+    const declinedEntityId = 'movement-decline-encounter';
+    assert.equal((await send('/api/v2/entities', { ...createBody, operationId: 'declined-movement-create', entityId: declinedEntityId, data: { ...createBody.data, actors: structuredClone(actors) } }, 'local-gm', 'POST', proof())).status, 201);
+    for (const member of [playerA, playerB]) assert.equal((await send(`/api/v2/entities/${declinedEntityId}/grants`, { memberId: member.memberId, permissions: ['act'] }, 'local-gm', 'POST', proof())).status, 201);
+    assert.equal((await send('/api/v2/commands', { operationId: 'declined-movement-init', commandId: 'example.revised5e.initialize', entityId: declinedEntityId, expectedRevision: 1, input: {} }, 'local-gm', 'POST', proof())).status, 200);
+    assert.equal(drawCount, 9, 'the second initiative uses only its host-generated initiative dice');
+    const declinedMove = await (await send('/api/v2/commands', { operationId: 'declined-movement-parent', commandId: 'example.revised5e.move', entityId: declinedEntityId, expectedRevision: 2, input: { actorId: 'player-a', path: [{ x: 1, y: 2 }] } }, playerA.credential, 'POST', proof())).json();
+    assert.equal(declinedMove.status, 'pending');
+    const declined = await send(`/api/v2/reactions/${declinedMove.windowId}/adjudicate`, { operationId: 'gm-declined-opportunity', decision: 'decline' }, 'local-gm', 'POST', proof());
+    assert.equal(declined.status, 200); assert.equal((await declined.json()).status, 'declined');
+    assert.equal(drawCount, 9, 'declining the opportunity draws no OA dice');
+    const declinedState = await (await request(`/api/v2/entities/${declinedEntityId}`, playerA.credential, { headers: proof() })).json();
+    assert.equal(declinedState.revision, 3, 'declined OA and continued movement commit one revision');
+    assert.deepEqual(declinedState.data.actors.find(actor => actor.id === 'player-a').position, { x: 1, y: 2 });
+    assert.equal(declinedState.data.actors.find(actor => actor.id === 'player-a').currentHitPoints, 12);
+    assert.equal(declinedState.data.actors.find(actor => actor.id === 'enemy').reactionAvailable, true, 'declining does not consume the enemy reaction');
+    assert.equal(declinedState.data.combatLog.some(entry => String(entry.kind).startsWith('opportunity-')), false, 'declined OA adds no attack log entry');
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -479,7 +500,7 @@ test('authenticated HTTP reaction routes recover, authorize and resume a generic
     assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/expire`, {}, playerB.credential, lock)).status, 403, 'player cannot force host expiry');
     assert.equal((await request(`/api/members/${playerB.memberId}`, 'local-gm', { method: 'DELETE' })).status, 200, 'GM can revoke the responder membership');
     assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/decisions`, { operationId: 'revoked-responder-choice', actionId: 'example.interruption.choose', input: { choice: 'accept' }, decision: 'accept' }, playerB.credential, lock)).status, 401, 'revoked responder cannot use a previously eligible reaction');
-    assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/adjudicate`, { decision: 'accept' }, 'local-gm', lock)).status, 200, 'authorized GM adjudication resumes after responder revocation');
+    assert.equal((await send(`/api/v2/reactions/${revokedWindowId}/adjudicate`, { operationId: 'revoked-gm-adjudication', actionId: 'example.interruption.choose', input: { choice: 'accept' }, decision: 'accept' }, 'local-gm', lock)).status, 200, 'authorized GM adjudication records the terminal conflict after responder revocation');
     assert.equal(host.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get(revokedCommand.operationId).status, 'conflicted', 'authority changed since suspension, so GM adjudication records only a terminal conflict');
     assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_effect_receipts WHERE operation_id=?').get(revokedCommand.operationId).count, 0, 'revoked responder authority cannot resume parent effects');
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }

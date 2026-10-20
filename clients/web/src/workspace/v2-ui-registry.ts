@@ -121,7 +121,7 @@ export function validateUiContribution(contribution: UiContribution, lock: Capab
     if (!declaredCommand || declaredCommand.entityTypeId !== contribution.entityTypeId || !sameRef(declaredCommand.capability, command.capability) || canonical(declaredCommand.inputSchema) !== canonical(command.inputSchema)) fail(`command ${command.commandId} is missing or incompatible with its declared extension contract`);
     validateSchema(command.inputSchema, `commands.${command.commandId}.inputSchema`);
     const fields = (command.inputSchema as { properties: Record<string, JsonValue> }).properties;
-    if (Object.values(fields).some(field => !field || typeof field !== 'object' || Array.isArray(field) || !['string', 'integer', 'number', 'boolean'].includes(String(field.type)))) fail(`commands.${command.commandId} has a form field type the host renderer cannot collect`);
+    if (Object.values(fields).some(field => !field || typeof field !== 'object' || Array.isArray(field) || !['string', 'integer', 'number', 'boolean', 'array'].includes(String(field.type)))) fail(`commands.${command.commandId} has a form field type the host renderer cannot collect`);
   }
   validateNodes(contribution.nodes, contribution, commandIds);
   return structuredClone(contribution);

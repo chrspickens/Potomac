@@ -1,4 +1,4 @@
-# Revised 5e Encounter module, version 1.2.0
+# Revised 5e Encounter module, version 1.2.1
 
 This is a separate, bundled V2 module. It is not discovered by the legacy V1 module loader. The host selects it only when the GM explicitly pins `example.revised5e` on the default-off V2 API. Its exact lock digest covers the manifest, rules/extension source and declarative combat contribution.
 

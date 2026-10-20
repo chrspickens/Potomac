@@ -4,13 +4,13 @@
     "extensions.mjs",
     "ui/combat.json"
   ],
-  "contentDigest": "sha256:c7a4b28a88161825b8f788cb4290388084cb168900778734fc02876508c95192",
+  "contentDigest": "sha256:49101fb3814ec240b6e3763ed159642ec4bacf66d537654b0ed713828695825a",
   "hostDigestFiles": [
     "manifest.json",
     "extensions.mjs",
     "ui/combat.json"
   ],
-  "hostDigest": "sha256:c7a4b28a88161825b8f788cb4290388084cb168900778734fc02876508c95192",
+  "hostDigest": "sha256:49101fb3814ec240b6e3763ed159642ec4bacf66d537654b0ed713828695825a",
   "legacyBundledReferences": true,
   "uiFiles": [
     "ui/combat.json"

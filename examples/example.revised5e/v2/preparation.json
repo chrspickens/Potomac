@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "moduleId": "example.revised5e",
-  "moduleVersion": "1.2.0",
-  "moduleDigest": "sha256:c7a4b28a88161825b8f788cb4290388084cb168900778734fc02876508c95192",
+  "moduleVersion": "1.2.1",
+  "moduleDigest": "sha256:49101fb3814ec240b6e3763ed159642ec4bacf66d537654b0ed713828695825a",
   "forms": [
     {
       "entityTypeId": "example.revised5e.encounter",

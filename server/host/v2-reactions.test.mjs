@@ -12,9 +12,9 @@ const lock = { lockVersion: 1, campaignId: 'campaign-1', entries: [{ id: resolve
 const action = (id, visibility = 'public') => ({ actionId: id, inputSchema: { type: 'object', properties: { choice: { type: 'string' } }, required: ['choice'], additionalProperties: false }, visibility });
 const windowFor = (overrides = {}) => ({ windowId: 'window-1', parentOperationId: 'attack-1', campaignId: 'campaign-1', resolver, lock, eligible: [{ principalId: 'player-a', priority: 10, actions: [action('shield')] }, { principalId: 'player-b', priority: 10, actions: [action('dodge')] }], ordering: 'simultaneous', expiresAt: '2026-10-18T00:00:00.000Z', continuation: { step: 1, hidden: 'gm-only' }, visibility: 'public', ...overrides });
 const make = ({ ordering = 'simultaneous', failureAt, authenticate = () => true, authorizeResponder = () => true, authorizeGm = () => true, validateLock = (campaignId, value) => { if (campaignId !== value.campaignId || value.rootModule.id !== resolver.id) throw new Error('lock mismatch'); } } = {}) => {
-  const path = join(mkdtempSync(join(tmpdir(), 'potomac-v2-reactions-')), 'host.sqlite'); const db = new DatabaseSync(path); let clock = '2026-10-17T00:00:00.000Z';
-  const kernel = createV2ReactionKernel({ db, authenticate, authorizeResponder, authorizeGm, authorizeView: ({ principalId, window }) => ({ role: principalId === 'gm-1' ? 'gm' : window.eligible.some(item => item.principalId === principalId) ? 'responder' : window.visibility === 'public' ? 'public' : null }), authorizeExpiry: ({ principalId }) => principalId === 'gm-1', validateLock, validateInput: (input, schema) => { if (!input || typeof input.choice !== 'string' || !schema.required.includes('choice')) throw new Error('invalid action input'); }, now: () => clock, failureAt, complete: ({ decisions }) => ({ effects: decisions.some(decision => decision.decision === 'accept') ? [{ effectId: 'defense-effect', visibility: 'public' }] : [] }), applyEffects: (effects, context) => { assert.equal(Object.hasOwn(context, 'db'), false, 'reaction completion callbacks are not handed the database'); db.exec('CREATE TABLE IF NOT EXISTS reaction_effects(effect_id TEXT PRIMARY KEY, payload TEXT NOT NULL)'); for (const effect of effects) db.prepare('INSERT INTO reaction_effects VALUES(?,?)').run(effect.effectId, JSON.stringify(effect)); }, });
-  return { db, kernel, path, setTime: value => { clock = value; } };
+  const path = join(mkdtempSync(join(tmpdir(), 'potomac-v2-reactions-')), 'host.sqlite'); const db = new DatabaseSync(path); let clock = '2026-10-17T00:00:00.000Z'; const completed = [];
+  const kernel = createV2ReactionKernel({ db, authenticate, authorizeResponder, authorizeGm, authorizeView: ({ principalId, window }) => ({ role: principalId === 'gm-1' ? 'gm' : window.eligible.some(item => item.principalId === principalId) ? 'responder' : window.visibility === 'public' ? 'public' : null }), authorizeExpiry: ({ principalId }) => principalId === 'gm-1', validateLock, validateInput: (input, schema) => { if (!input || typeof input.choice !== 'string' || !schema.required.includes('choice')) throw new Error('invalid action input'); }, now: () => clock, failureAt, complete: input => { completed.push(structuredClone(input)); return { effects: input.decisions.some(decision => decision.decision === 'accept') ? [{ effectId: 'defense-effect', visibility: 'public' }] : [] }; }, applyEffects: (effects, context) => { assert.equal(Object.hasOwn(context, 'db'), false, 'reaction completion callbacks are not handed the database'); db.exec('CREATE TABLE IF NOT EXISTS reaction_effects(effect_id TEXT PRIMARY KEY, payload TEXT NOT NULL)'); for (const effect of effects) db.prepare('INSERT INTO reaction_effects VALUES(?,?)').run(effect.effectId, JSON.stringify(effect)); }, });
+  return { db, kernel, path, completed, setTime: value => { clock = value; } };
 };
 
 test('persists windows, accepts simultaneous responders deterministically, and restores after restart', () => {
@@ -40,7 +40,40 @@ test('rejects unauthorized responders/GM, invalid actions, stale retries and hid
 test('retries are idempotent and transaction failures roll back submissions, effects and terminal state', () => {
   const kernel = make(); kernel.kernel.open(windowFor(), 'gm-1'); const submission = { operationId: 'retry-1', windowId: 'window-1', principalId: 'player-a', actionId: 'shield', input: { choice: 'x' }, decision: 'accept' }; kernel.kernel.submit(submission); assert.throws(() => kernel.kernel.submit({ ...submission, operationId: 'retry-duplicate' }), /already decided/); assert.deepEqual(kernel.kernel.submit(submission), kernel.kernel.view('window-1', 'player-a')); kernel.kernel.submit({ operationId: 'retry-2', windowId: 'window-1', principalId: 'player-b', actionId: 'dodge', input: { choice: 'y' }, decision: 'accept' }); assert.throws(() => kernel.kernel.submit({ ...submission, input: { choice: 'changed' } }), /another submission/);
   const failed = make({ failureAt: 'after-submission' }); failed.kernel.open(windowFor(), 'gm-1'); assert.throws(() => failed.kernel.submit({ ...submission, operationId: 'failure-1' }), /failure after submission/); assert.equal(failed.db.prepare('SELECT COUNT(*) AS count FROM v2_reaction_submissions').get().count, 0); assert.equal(failed.kernel.view('window-1', 'gm-1').status, 'pending');
-  const adjudicated = make(); adjudicated.kernel.open(windowFor({ windowId: 'gm-window' }), 'gm-1'); assert.equal(adjudicated.kernel.adjudicate('gm-window', 'gm-1').status, 'resolved');
+  const adjudicated = make(); adjudicated.kernel.open(windowFor({ windowId: 'gm-window', eligible: [{ principalId: 'gm-1', priority: 1, actions: [action('shield')] }] }), 'gm-1'); assert.equal(adjudicated.kernel.adjudicate('gm-window', 'gm-1', { operationId: 'gm-accept', decision: 'accept', input: { choice: 'yes' } }).status, 'resolved');
+});
+
+test('GM acceptance supplies the one eligible action to the resolver and adjudication retries are idempotent', () => {
+  const value = make();
+  value.kernel.open(windowFor({ windowId: 'gm-accept-window', eligible: [{ principalId: 'gm-1', priority: 1, actions: [action('opportunity-attack')] }] }), 'gm-1');
+  const adjudication = { operationId: 'gm-accept-op', decision: 'accept', actionId: 'opportunity-attack', input: { choice: 'strike' } };
+  const first = value.kernel.adjudicate('gm-accept-window', 'gm-1', adjudication);
+  assert.equal(first.status, 'resolved');
+  assert.deepEqual(value.completed[0].decisions, [{ principalId: 'gm-1', actionId: 'opportunity-attack', input: { choice: 'strike' }, decision: 'accept' }]);
+  assert.equal(value.db.prepare('SELECT COUNT(*) AS count FROM reaction_effects').get().count, 1);
+  assert.deepEqual(value.kernel.adjudicate('gm-accept-window', 'gm-1', adjudication), first);
+  assert.equal(value.completed.length, 1, 'an exact lost-ack retry does not run completion again');
+  assert.equal(value.db.prepare('SELECT COUNT(*) AS count FROM reaction_effects').get().count, 1);
+  assert.throws(() => value.kernel.adjudicate('gm-accept-window', 'gm-1', { ...adjudication, input: { choice: 'changed' } }), error => error.code === 'idempotency_conflict');
+});
+
+test('GM decline resumes without an accepted action; invalid or ambiguous accepts leave the window pending', () => {
+  const declined = make();
+  declined.kernel.open(windowFor({ windowId: 'gm-decline-window', eligible: [{ principalId: 'gm-1', priority: 1, actions: [action('opportunity-attack')] }] }), 'gm-1');
+  assert.equal(declined.kernel.adjudicate('gm-decline-window', 'gm-1', { operationId: 'gm-decline-op', decision: 'decline' }).status, 'declined');
+  assert.deepEqual(declined.completed[0].decisions, []);
+  assert.equal(declined.db.prepare('SELECT COUNT(*) AS count FROM reaction_effects').get().count, 0);
+
+  const invalid = make();
+  invalid.kernel.open(windowFor({ windowId: 'gm-invalid-window', eligible: [{ principalId: 'gm-1', priority: 1, actions: [action('opportunity-attack')] }] }), 'gm-1');
+  assert.throws(() => invalid.kernel.adjudicate('gm-invalid-window', 'gm-1', { operationId: 'gm-invalid-op', decision: 'accept', actionId: 'unknown', input: { choice: 'strike' } }), error => error.code === 'invalid');
+  assert.throws(() => invalid.kernel.adjudicate('gm-invalid-window', 'gm-1', { operationId: 'gm-invalid-op-2', decision: 'accept', actionId: 'opportunity-attack', input: {} }), /invalid action input/);
+  assert.equal(invalid.kernel.view('gm-invalid-window', 'gm-1').status, 'pending');
+
+  const ambiguous = make();
+  ambiguous.kernel.open(windowFor({ windowId: 'gm-ambiguous-window', eligible: [{ principalId: 'gm-1', priority: 1, actions: [action('first'), action('second')] }] }), 'gm-1');
+  assert.throws(() => ambiguous.kernel.adjudicate('gm-ambiguous-window', 'gm-1', { operationId: 'gm-ambiguous-op', decision: 'accept', input: { choice: 'strike' } }), /select one unambiguous eligible action/);
+  assert.equal(ambiguous.kernel.view('gm-ambiguous-window', 'gm-1').status, 'pending');
 });
 
 test('supports contrasting narrative interruption and dice-pool decisions through the same contract', () => {
@@ -106,7 +139,7 @@ test('transaction-aware failures after creation, decision, expiry and completion
     if (phase !== 'open') value.kernel.openInTransaction(windowFor(), 'gm-1');
     assert.throws(() => phase === 'open' ? value.kernel.openInTransaction(windowFor(), 'gm-1') : phase === 'submit'
       ? value.kernel.submitInTransaction({ operationId: 'fail-submit', windowId: 'window-1', principalId: 'player-a', actionId: 'shield', input: { choice: 'x' }, decision: 'accept' })
-      : value.kernel.adjudicateInTransaction('window-1', 'gm-1'), /failure after/);
+      : value.kernel.adjudicateInTransaction('window-1', 'gm-1', { operationId: 'gm-failure', decision: 'accept', actionId: 'shield', input: { choice: 'yes' } }), /failure after/);
     assert.equal(value.db.isTransaction, true, `${phase}: caller still owns transaction`);
     value.db.exec('ROLLBACK');
     assert.equal(value.db.isTransaction, false);

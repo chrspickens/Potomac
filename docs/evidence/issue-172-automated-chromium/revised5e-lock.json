@@ -1,0 +1,110 @@
+{
+  "lock": {
+    "lockVersion": 1,
+    "campaignId": "campaign-issue-166-revised5e",
+    "rootModule": {
+      "id": "example.revised5e",
+      "version": "1.2.1",
+      "digest": "sha256:49101fb3814ec240b6e3763ed159642ec4bacf66d537654b0ed713828695825a"
+    },
+    "entries": [
+      {
+        "id": "example.revised5e",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.2.1",
+        "digest": "sha256:49101fb3814ec240b6e3763ed159642ec4bacf66d537654b0ed713828695825a",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:fb0755fcd4da6a662d151c97a37745a28e5120b80c4c2f18eb26930f4da73d52",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.initiative-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:1bb7a6a6491b93c62ab3ece968d6b97b0dcd4382a4dcc3bd807bad5c18cad3a4",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.encounter-state",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:be939a00e5f080b573b149a00a889747d0d887c565ba75a1d4599ba7f1cc7b11",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.attack-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:7a52f081b97c843573830f0ab41c810b3f56a93d4438c33d2508c4eaf82aa3b1",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.movement-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:eaf765e4a74995d52e4e51a652a3105e14d14f897343b3c6b38f288ec5da9f6c",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.disengage-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:843e1773e4d83758e7b94ad73949c15f2cdde8b25fe085b32c928b5d1eb8a3d9",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.end-turn-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:4dc866df96e074893baab0401eb2a37c2781dd402e090cc7eac7a8d431ebc88f",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.second-wind-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:8f84f9f6b984b02b51c7067dce6a632a9da26373130429cd9d8ad6be06c34e3d",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.short-rest-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:0eaf4ff91d8fce2f4189eadd05c166b33691ae54d93db41e62423ba84e53cd76",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.encounter",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:4dbfc9e1bf26568d9a5d31ca4ee80c2e79ad2763210f1c21dd2fcb95da76f583",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.revised5e.combat-ui",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:278838eb75ffef4c3ed442eb6135ac58c2b4fac17f5d199c0372b9f355a6abca",
+        "source": "bundled",
+        "optional": false
+      }
+    ]
+  },
+  "digest": "sha256:2787f808a3a39511eeedb9c79c587c492437872dc21e212ca427780181b16ecb"
+}
