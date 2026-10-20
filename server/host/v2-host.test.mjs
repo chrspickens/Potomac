@@ -46,6 +46,11 @@ test('gated V2 HTTP routes pin exact locks and transact membership, projections,
     const playerA = await enrolledAResponse.json();
     const playerB = await enrolledBResponse.json();
 
+    const rosterResponse = await request('/api/v2/members'); assert.equal(rosterResponse.status, 200);
+    const roster = await rosterResponse.json(); assert.deepEqual(roster.members.map(member => member.memberId), [playerA.memberId, playerB.memberId]);
+    assert.ok(roster.members.every(member => !Object.hasOwn(member, 'credential') && !Object.hasOwn(member, 'credentialHash') && !Object.hasOwn(member, 'credential_hash')));
+    assert.equal((await request('/api/v2/members', playerA.credential)).status, 403, 'players cannot enumerate campaign membership through the assignment roster');
+
     assert.equal((await jsonRequest('/api/v2/campaign/lock', { moduleId: 'example.starship.system' }, 'local-gm', 'PUT')).status, 201);
     const v1AgainstV2 = await request('/api/campaign', 'local-gm', { method: 'PUT', body: JSON.stringify({ name: 'Locked V2', systemModuleId: 'example.system-a', systemModuleVersion: '0.1.0', baseRevision: 1 }) });
     assert.equal(v1AgainstV2.status, 409, 'V1 rules cannot be pinned after the immutable V2 campaign lock');

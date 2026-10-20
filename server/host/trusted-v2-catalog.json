@@ -2,9 +2,9 @@
   "formatVersion": 1,
   "modules": [
     { "id": "example.starship.system", "version": "1.0.0", "source": "../../examples/example.starship/v2", "entry": "extensions.mjs", "authoring": true },
-    { "id": "example.revised5e", "version": "1.2.0", "source": "../../examples/example.revised5e/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "revised5eAuthorizeIntent" },
+    { "id": "example.revised5e", "version": "1.2.0", "source": "../../examples/example.revised5e/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "revised5eAuthorizeIntent", "preparationFile": "preparation.json", "preparationDigest": "sha256:14cc6417813fc64267f11a8bf1fd5277175c5b08cf4af1144f46eaaa03e8a506" },
     { "id": "example.interruption", "version": "1.0.0", "source": "../../examples/example.interruption/v2", "entry": "extensions.mjs", "authoring": true },
-    { "id": "example.dicepool", "version": "1.1.0", "source": "../../examples/example.dicepool/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "dicepoolAuthorizeIntent", "reactionPrincipalExport": "dicepoolReactionPrincipal" },
+    { "id": "example.dicepool", "version": "1.1.0", "source": "../../examples/example.dicepool/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "dicepoolAuthorizeIntent", "reactionPrincipalExport": "dicepoolReactionPrincipal", "preparationFile": "preparation.json", "preparationDigest": "sha256:80634923d3e70d081b4a03f597a63161d87cc07934e65c19481588805d214637" },
     { "id": "example.starter", "version": "1.0.0", "source": "../../examples/module-starter/v2", "entry": "extensions.mjs", "authoring": true },
     { "id": "example.generic-entity-setup", "version": "1.0.0", "source": "../../examples/example.generic-entity-setup/v2", "entry": "extensions.mjs", "authoring": true },
     { "id": "example.tides-omens", "version": "1.0.0", "source": "../../examples/tides-omens/v2", "entry": "extensions.mjs", "authoring": true }

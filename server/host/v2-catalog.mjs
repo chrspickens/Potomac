@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { validateModule } from '../../scripts/v2-module.mjs';
 import { validateCapabilityManifest } from '../../packages/module-registry/src/v2.ts';
 import { UiContributionRegistry } from '../../clients/web/src/workspace/v2-ui-registry.ts';
+import { validateV2JsonSchema } from './v2-effects.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(here, '../..');
@@ -24,6 +25,46 @@ const allRefs = exports => {
   };
   for (const value of Object.values(exports)) visit(value);
   return [...result.values()];
+};
+
+const schemaAtPath = (schema, valuePath) => valuePath.split('.').reduce((current, part) => {
+  if (!current) return undefined;
+  if (/^\d+$/.test(part)) return current.type === 'array' ? current.items : undefined;
+  return current.type === 'object' ? current.properties?.[part] : undefined;
+}, schema);
+const valueAtPath = (value, valuePath) => valuePath.split('.').reduce((current, part) => current?.[part], value);
+const setAtPath = (value, valuePath, nextValue) => {
+  const parts = valuePath.split('.'); let current = value;
+  for (const part of parts.slice(0, -1)) current = current[part];
+  current[parts.at(-1)] = nextValue;
+};
+const validatePreparationProfiles = (profiles, providers) => {
+  if (!profiles || profiles.formatVersion !== 1 || !Array.isArray(profiles.modules)) fail('invalid preparation profile catalog');
+  const seen = new Set();
+  for (const profile of profiles.modules) {
+    const provider = providers.find(item => item.id === profile.moduleId && item.version === profile.moduleVersion);
+    if (!provider || provider.digest !== profile.moduleDigest || !Array.isArray(profile.forms)) fail(`${profile.moduleId}: preparation metadata does not match the exact trusted module digest`);
+    if (seen.has(profile.moduleId)) fail(`${profile.moduleId}: duplicate preparation profile`);
+    seen.add(profile.moduleId);
+    for (const form of profile.forms) {
+      const entity = provider.entities.find(item => item.typeId === form.entityTypeId);
+      if (!entity || typeof form.title !== 'string' || typeof form.description !== 'string' || !form.template || !Array.isArray(form.fields) || !Array.isArray(form.assignmentPaths)) fail(`${profile.moduleId}: invalid preparation form`);
+      const data = structuredClone(form.template);
+      for (const assignmentPath of form.assignmentPaths) {
+        const assignmentSchema = schemaAtPath(entity.schema, assignmentPath);
+        const field = form.fields.find(item => item.path === assignmentPath && item.type === 'member');
+        if (!assignmentSchema || assignmentSchema.type !== 'string' || !field) fail(`${profile.moduleId}: assignment field is outside the entity schema`);
+        setAtPath(data, assignmentPath, 'catalog-member-placeholder');
+      }
+      for (const field of form.fields) {
+        const schema = schemaAtPath(entity.schema, field.path);
+        const expectedType = field.type === 'member' || field.type === 'text' ? 'string' : field.type;
+        if (!schema || schema.type !== expectedType || typeof field.label !== 'string' || !field.label.trim() || valueAtPath(data, field.path) === undefined) fail(`${profile.moduleId}: preparation field ${field.path} is incompatible with its entity schema`);
+      }
+      try { validateV2JsonSchema(data, entity.schema); } catch (error) { fail(`${profile.moduleId}: invalid starter values for ${form.entityTypeId}: ${error.message}`); }
+    }
+  }
+  return new Map(profiles.modules.map(profile => [profile.moduleId, profile.forms]));
 };
 
 export async function loadTrustedV2Catalog({ catalogFile = configFile } = {}) {
@@ -63,6 +104,14 @@ export async function loadTrustedV2Catalog({ catalogFile = configFile } = {}) {
       capabilityById.set(key, capability);
     }
     const rootDigest = verification.rootDigest;
+    let preparation;
+    if (item.preparationFile !== undefined || item.preparationDigest !== undefined) {
+      if (typeof item.preparationFile !== 'string' || typeof item.preparationDigest !== 'string' || path.isAbsolute(item.preparationFile)) fail(`${item.id}: preparation file and digest must both be pinned`);
+      const preparationPath = path.resolve(root, item.preparationFile);
+      if (!preparationPath.startsWith(`${root}${path.sep}`)) fail(`${item.id}: preparation file escapes its module source`);
+      if (await digestFiles(root, [item.preparationFile]) !== item.preparationDigest) fail(`${item.id}: preparation metadata digest mismatch`);
+      preparation = await readJson(preparationPath);
+    }
     const rootCapability = capabilities?.find(capability => capability.id === item.id && capability.implementationVersion === item.version);
     if (capabilities && (!rootCapability || rootCapability.digest !== rootDigest)) fail(`${item.id}: capability root digest mismatch`);
     const moduleRefs = capabilities ? capabilities.map(capability => ({ id: capability.id, apiVersion: capability.api.apiVersion, implementationVersion: capability.implementationVersion, digest: capability.digest })) : allRefs(source);
@@ -93,10 +142,13 @@ export async function loadTrustedV2Catalog({ catalogFile = configFile } = {}) {
     if (item.intentAuthorizerExport && typeof source[item.intentAuthorizerExport] !== 'function') fail(`${item.id}: configured intent authorizer export is unavailable`);
     if (item.reactionPrincipalExport && typeof source[item.reactionPrincipalExport] !== 'function') fail(`${item.id}: configured reaction principal export is unavailable`);
     providers.push({ ...item, root, manifest, version: item.version, digest: rootDigest, contentDigest: verification.contentDigest, moduleRefs, capabilities, source, entities, commands, resolvers, effectHandlers,
-      workflows: descriptors.filter(value => value?.descriptorVersion === 1 && typeof value.workflowType === 'string'),
+      workflows: descriptors.filter(value => value?.descriptorVersion === 1 && typeof value.workflowType === 'string'), preparationProfile: preparation,
       intentAuthorizers: item.intentAuthorizerExport ? commands.map(command => ({ commandId: command.commandId, authorize: source[item.intentAuthorizerExport] })) : [], reactionPrincipalResolvers: item.reactionPrincipalExport ? commands.map(command => ({ commandId: command.commandId, resolve: source[item.reactionPrincipalExport] })) : [],
       ui: item.authoring ? await Promise.all(((await readJson(path.join(root, 'authoring.json'))).uiFiles ?? []).map(file => readJson(path.join(root, file)))) : [] });
   }
+  const preparationProfiles = { formatVersion: 1, modules: providers.filter(provider => provider.preparationProfile).map(provider => provider.preparationProfile) };
+  const preparations = validatePreparationProfiles(preparationProfiles, providers);
+  for (const provider of providers) provider.preparation = preparations.get(provider.id) ?? [];
   return Object.freeze({ formatVersion: 1, providers: Object.freeze(providers), byId: new Map(providers.map(provider => [provider.id, provider])) });
 }
 

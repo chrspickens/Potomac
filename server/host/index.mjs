@@ -594,6 +594,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         };
         try {
           if (req.method === 'GET' && url.pathname === '/api/v2/session') return json(res, 200, { principalId: auth.principalId, role: auth.role });
+          if (req.method === 'GET' && url.pathname === '/api/v2/members') return json(res, 200, { members: v2Api.listMembers(auth.principalId, proof) });
           if (req.method === 'GET' && url.pathname === '/api/v2/modules') return json(res, 200, { modules: v2Api.listModules(auth.principalId, proof) });
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'GET') return json(res, 200, v2Api.getLock(auth.principalId, proof));
           if (url.pathname === '/api/v2/campaign/lock' && req.method === 'PUT') {
