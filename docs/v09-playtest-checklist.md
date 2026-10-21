@@ -1,8 +1,12 @@
 # Potomac v0.9 human playtest script
 
-Tracks [issue #110](https://github.com/chrspickens/Potomac/issues/110) under the v0.9 tracker [#109](https://github.com/chrspickens/Potomac/issues/109). The existing System A scenario below is retained as its V1/v0.9 baseline. Following PR #164, the next P0 is the ordinary Campaign Home V2 Revised 5e walkthrough plus a contrasting Dice-pool smoke in [`playability-refinement-plan.md`](playability-refinement-plan.md). That plan adds the module-lock checks, GM/A/B evidence matrix, exact/altered retry checks and the current single-campaign host limits. Keep automated evidence separate from human observations; neither replaces the other.
+Tracks [issue #110](https://github.com/chrspickens/Potomac/issues/110) under the v0.9 tracker [#109](https://github.com/chrspickens/Potomac/issues/109). The existing System A scenario below is retained as its V1/v0.9 baseline. For the ordinary Campaign Home V2 Revised 5e walk and a smaller contrasting Dice-pool smoke, use the focused [Revised 5e human playtest runbook](revised5e-human-playtest-runbook.md) and [playability refinement plan](playability-refinement-plan.md). Keep automated evidence separate from human observations; neither replaces the other.
 
-## Current verification record
+## Current Revised 5e playtest baseline
+
+**Verified baseline:** merged main commit `2b9110dd1ea113a485f6e8d85baeea096b3dac54` (PR #179). The exact post-merge main [GitHub Actions Checks run 39537184949](https://github.com/chrspickens/Potomac/actions/runs/39537184949) completed successfully on that SHA. On the same baseline, `pnpm acceptance:v2-rules-workspace-browser` passed three consecutive times, covering the Revised 5e restart/reconnect flow and the separate Dice-pool Finish Session flow; full `pnpm check` also passed. This verifies the automated assertions only. The human GM + Player A + Player B playtest and all human-only observations below remain **PENDING**.
+
+## Historical verification record (PR #117 and earlier local reruns)
 
 **Verification provenance:** PR #117 head `90215db09218e3ba4543dc84ff55e9d78fc4f2cb` had successful GitHub Actions. A separate isolated local rerun on the pre-correction guide revision `20dd631137c76b508773c7438fbb039f89fe9236` was incomplete: Lore acceptance could not reach client readiness, and `pnpm check` stopped during build because offline dependency links were incomplete. Those local results are not passes and do not establish a Lore product regression.
 
