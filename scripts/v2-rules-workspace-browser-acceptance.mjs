@@ -320,18 +320,28 @@ try {
     let last;
     while (Date.now() < until) {
       try {
-        const response = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, token, { headers: { 'x-v2-lock-digest': lock.digest } });
-        last = await response.json();
-        if (response.ok && last.data?.status === 'complete' && last.data.actors?.find(actor => actor.id === 'enemy')?.currentHitPoints === 0) return last;
+        const [entityResponse, reactionsResponse, sessionResponse] = await Promise.all([
+          api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, token, { headers: { 'x-v2-lock-digest': lock.digest } }),
+          api('/api/v2/reactions', token, { headers: { 'x-v2-lock-digest': lock.digest } }),
+          api('/api/v2/session/current', token),
+        ]);
+        const [entity, reactions, session] = await Promise.all([entityResponse.json(), reactionsResponse.json(), sessionResponse.json()]);
+        last = { entityStatus: entityResponse.status, entity, reactionsStatus: reactionsResponse.status, reactionsError: reactions.error, sessionStatus: sessionResponse.status, session: session.status };
+        if (entityResponse.ok && reactionsResponse.ok && sessionResponse.ok && entity.data?.status === 'complete' && entity.data.actors?.find(actor => actor.id === 'enemy')?.currentHitPoints === 0 && session.status === 'live') return last;
       } catch (error) { last = String(error); }
       await delay(100);
     }
     throw new Error(`Host did not restore the completed encounter for ${principal === 'gm' ? 'GM' : 'player'}: ${JSON.stringify(last)}`);
   };
   for (const [name, principal] of [['gm', 'gm'], ['playerA', a], ['playerB', b]]) {
-    await waitForRecoveredHostProjection(principal);
+    const recovered = await waitForRecoveredHostProjection(principal);
+    await ev(name, `(()=>{window.__recoveryRefreshRequests=[];const original=fetch.bind(window);window.fetch=async(url,init={})=>{const response=await original(url,init);let error='';if(!response.ok){try{const body=await response.clone().json();error=String(body.error||body.message||'')}catch{}}window.__recoveryRefreshRequests.push({url:String(url).split('?')[0],status:response.status,error});return response}})()`);
     await click(name, 'Refresh authorized state');
-    await waitFor(name, `document.body.innerText.includes('Authorized state refreshed from the host') && document.body.innerText.includes('Ash Bridge') && document.body.innerText.includes('complete')`, `${name} refreshes and displays the committed completed Revised 5e state after host restart`);
+    await waitFor(name, `(()=>{const message=document.querySelector('.v2-message')?.textContent||'';return message.includes('Authorized state refreshed from the host')||message.includes('Authorized state refresh failed')})()`, `${name} Rules refresh resolves after host restart`);
+    const refreshEvidence = await ev(name, `({message:document.querySelector('.v2-message')?.textContent||'',requests:window.__recoveryRefreshRequests})`);
+    assert.ok(refreshEvidence.message.includes('Authorized state refreshed from the host'), `${name} Rules refresh failed after host restart: ${JSON.stringify(refreshEvidence)}`);
+    const displayedProjection = await ev(name, `({hasRevision:document.body.innerText.includes(${JSON.stringify(`Entity revision ${recovered.entity.revision}`)}),hasCompletedState:document.body.innerText.includes('complete'),entityId:document.querySelector('#v2-entity-picker')?.value||''})`);
+    assert.equal(displayedProjection.hasRevision && displayedProjection.hasCompletedState && displayedProjection.entityId === encounterId, true, `${name} displays the recovered entity revision and completed state after host restart: ${JSON.stringify(displayedProjection)}`);
   }
   assert.deepEqual((await lockFor()).lock, lock.lock, 'exact root and full module capability closure survive host restart');
   const authoritativeAfterRestart = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
