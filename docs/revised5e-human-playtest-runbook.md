@@ -13,21 +13,32 @@ Run only against a fresh local/test database, on loopback, with three independen
 ## Local disposable setup, launch, and reset
 
 1. Check out the verified post-merge `main` commit in a clean working tree. Confirm pnpm is `11.25.0`, then run `pnpm install --frozen-lockfile`. Record commit, OS, browser versions, and date. Do not copy any credentials from earlier runs.
-2. Create a new, empty, run-specific directory outside the repository (for example `%TEMP%\potomac-playtest-<date>-<random>`). Put only the disposable SQLite database there. Do not reuse a path. In the host terminal set `POTOMAC_DB` to that new database path, `POTOMAC_SEED_DEMO=0`, and `POTOMAC_ENABLE_EXPERIMENTAL_V2=1`. The latter is required for the reviewed experimental V2 campaign flow. Keep values in that terminal's environment; never put credentials or personal data in them.
-3. Terminal 1, from the repository root: `pnpm dev:host`. Confirm the printed host address is loopback (`127.0.0.1`) and do not change the bind address. In Terminal 2, set `$env:VITE_POTOMAC_HOST='http://127.0.0.1:4177'`, then run `pnpm dev:web`. Open the printed local web URL in three separate browser profiles (GM, A, B), not three tabs sharing one profile. Keep the default dev GM token (`local-gm`) local to this machine; it is a localhost-only fixture, not an account or production credential. V2 player identities must be separately enrolled in the normal UI.
+2. Create a new, empty, run-specific directory outside the repository (for example `%TEMP%\potomac-playtest-<date>-<random>`). Put the disposable SQLite database and three fresh browser-profile directories (`profiles\gm`, `profiles\player-a`, `profiles\player-b`) inside it. Do not reuse a path or a normal browser profile. In the host terminal set `POTOMAC_DB` to that new database path, `POTOMAC_SEED_DEMO=0`, and `POTOMAC_ENABLE_EXPERIMENTAL_V2=1`. The latter is required for the reviewed experimental V2 campaign flow. Keep values in that terminal's environment; never put credentials or personal data in them.
+3. Terminal 1, from the repository root: `pnpm dev:host`. Confirm the printed host address is loopback (`127.0.0.1`) and do not change the bind address. In Terminal 2, set `$env:VITE_POTOMAC_HOST='http://127.0.0.1:4177'`, then run `pnpm dev:web`. Open the printed local web URL in three separate browser profiles (GM, A, B), not three tabs sharing one profile. Use isolated temporary profile directories under this run directory (for Chromium, pass `--user-data-dir=<runDir>\profiles\gm`, `--user-data-dir=<runDir>\profiles\player-a`, and `--user-data-dir=<runDir>\profiles\player-b` to three browser instances). Keep the default dev GM token (`local-gm`) local to this machine; it is a localhost-only fixture, not an account or production credential. V2 player identities must be separately enrolled in the normal UI.
 4. Start in normal Campaign Home. GM creates a new campaign, selects the reviewed experimental Revised 5e module shown by the UI, and records its exact module ID/version/lock digest in the private run record (never credentials). If the ordinary UI or module is unavailable on the verified baseline, stop and record the exact blocker; do not seed through APIs or switch to a diagnostic page.
 5. GM enrolls Player A and Player B separately in the normal UI. Deliver each generated credential privately to its participant, once. Do not write credentials into this runbook, notes, screenshots, issue comments, shell history, or shared chat. Verify each browser profile shows the intended identity before play.
-6. To reset, finish/close the session, stop both dev processes, close all three browser profiles, and delete only the uniquely named disposable run directory after confirming its resolved path is within the OS temporary directory and matches the run-specific name. This permanently discards this test's campaign and identities. Never reset by pointing at a shared DB, `git clean`, deleting repository data, or clearing another profile's general browser storage. For another run, make a new random directory and enroll fresh identities.
+6. To reset, finish/close the session, stop both dev processes, close the three temporary browser instances so their profile data is released, and delete only the uniquely named disposable run directory after confirming its resolved path is within the OS temporary directory and matches the run-specific name. This removes the test database, generated assets, remembered credentials, and all three browser profiles. Never reset by pointing at a shared DB, `git clean`, deleting repository data, or clearing another profile's general browser storage. For another run, make a new random directory and enroll fresh identities.
 
 PowerShell example for a newly chosen suffix (replace it with a unique random value for every run):
 
 ```powershell
 $runDir = Join-Path $env:TEMP 'potomac-playtest-2026-10-21-a1b2c3'
 New-Item -ItemType Directory -Path $runDir
+New-Item -ItemType Directory -Path (Join-Path $runDir 'profiles\gm'), (Join-Path $runDir 'profiles\player-a'), (Join-Path $runDir 'profiles\player-b') -Force
 $env:POTOMAC_DB = Join-Path $runDir 'playtest.sqlite'
 $env:POTOMAC_SEED_DEMO = '0'
 $env:POTOMAC_ENABLE_EXPERIMENTAL_V2 = '1'
 pnpm dev:host
+```
+
+In Terminal 2, after setting `VITE_POTOMAC_HOST` and starting `pnpm dev:web`, use its printed URL (shown here as an example) with three isolated Chrome profiles:
+
+```powershell
+$chrome = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" # substitute your installed browser executable if needed
+$webUrl = 'http://127.0.0.1:5173' # replace with the URL printed by Vite
+Start-Process -FilePath $chrome -ArgumentList @("--user-data-dir=$(Join-Path $runDir 'profiles\gm')", $webUrl)
+Start-Process -FilePath $chrome -ArgumentList @("--user-data-dir=$(Join-Path $runDir 'profiles\player-a')", $webUrl)
+Start-Process -FilePath $chrome -ArgumentList @("--user-data-dir=$(Join-Path $runDir 'profiles\player-b')", $webUrl)
 ```
 
 For the second Dice-pool run, repeat with a different never-used directory and the same loopback/experimental setup. Do not use shell history to enter or print player credentials.
