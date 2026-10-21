@@ -31,6 +31,20 @@ pnpm dev
 
 The host listens on `http://127.0.0.1:4177`; Vite serves the browser client on its printed local URL. The host loads the example module manifests, schemas, views, and actions from `modules/`; on first GM connection, the client creates the demo actors. Use the role selector to compare the GM and player projections. Set `VITE_POTOMAC_HOST` in the web environment to point the client at another local host URL. `POTOMAC_DB`, `PORT`, `POTOMAC_GM_TOKEN`, and `POTOMAC_PLAYER_TOKEN` configure the host.
 
+### Local launch helpers
+
+The launch helpers require Node.js 22.12 or later and pnpm 11.25.0, matching the current Vite 8 and host requirements and this repository's pinned package manager.
+
+- **Windows:** double-click `start-potomac.bat` for the local host and web app, or `start-playtest.bat` for a fresh V2 Revised 5e playtest. Their console shows the URLs and service output; close it with Ctrl+C. Double-click `stop-potomac.bat` in another window to stop tracked services.
+- **PowerShell:** from the repository folder, run `./start-potomac.bat`, `./start-playtest.bat`, or `./stop-potomac.bat`.
+- **Linux/macOS:** run `./start-potomac.sh`, `./start-playtest.sh`, or `./stop-potomac.sh`. If needed, make the scripts executable with `chmod +x start-potomac.sh start-playtest.sh stop-potomac.sh reset-playtest.sh`.
+
+The regular launcher uses `.potomac-local/data/local-host.sqlite`. Each playtest gets a unique database and browser profile under `.potomac-local/playtests/`; it opens Campaign Home (`/`) in the fresh profile when Chrome or Edge is available. Follow [the Revised 5e human playtest runbook](docs/revised5e-human-playtest-runbook.md) to create the campaign and enroll players through the normal UI. Playtest data is preserved by default. The launcher enables the experimental V2 host API and binds both services to `127.0.0.1`. It tracks only sessions started by these helpers, and refuses to take an occupied port. If a session is already running, use `stop-potomac` before starting another.
+
+To explicitly reset one playtest, copy its ID from the startup output and run `node scripts/local-launch.mjs reset-playtest <playtest-id>` (Windows: `reset-playtest.bat <playtest-id>`; Linux/macOS: `./reset-playtest.sh <playtest-id>`). The reset accepts one generated ID, refuses active sessions and paths outside the playtest folder, and removes only that ID's database, SQLite sidecars, host assets, and browser profile.
+
+**Troubleshooting:** If Vite's package folder exists but its command shim is missing, startup detects that and makes one bounded `pnpm install --filter @potomac/web...` repair attempt. If the shim is still missing, follow the printed command once; the launcher does not repeatedly reinstall or delete dependency folders. If a port is occupied, stop the app using that port or set `POTOMAC_LOCAL_HOST_PORT` / `POTOMAC_LOCAL_WEB_PORT` to free ports. If no browser opens for playtest, open the printed URL manually; the fresh profile location is printed for use with a browser's profile option. If Windows closes the window after a startup error, rerun from PowerShell to keep the error visible.
+
 The current host and browser include the local 0.3 offline path: GM-enrolled member credentials, actor-scoped projections, authorized IndexedDB snapshots, durable queued operations, host revalidation and receipts, and GM review proposals. This remains an experimental localhost workflow; actor validation is limited to the JSON Schema features used by these fixtures, and authentication is not suitable for public hosting. A focused 0.3 end-to-end runner checks reconnect, idempotency, review, and stale dependency behavior.
 
 An unsent queued edit can be canceled locally; once a submission attempt starts, its ID and intent remain for safe retry instead of being misrepresented as canceled. Rejected or conflicted edits can be retained as editable private drafts. Reconciliation never promotes those drafts to committed state without a new explicit operation and host validation. A dependency rebase requires the player to review currently authorized revisions and creates a new operation ID.

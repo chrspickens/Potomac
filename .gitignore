@@ -1,4 +1,5 @@
 node_modules/
+.potomac-local/
 dist/
 .env
 *.sqlite
