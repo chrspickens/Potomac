@@ -78,6 +78,16 @@ async function commandForm(name, label, values) {
   await waitFor(name, `(()=>{const f=document.querySelector(${JSON.stringify(selector)});return Boolean(f&&${JSON.stringify(Object.keys(values))}.every(field=>f.elements.namedItem(field)))})()`, `${label} form and declared fields`);
   for (const [field, value] of Object.entries(values)) {
     await waitFor(name, `(()=>{const e=document.querySelector(${JSON.stringify(selector)})?.elements.namedItem(${JSON.stringify(field)});return Boolean(e&&e.tagName)})()`, `${label}.${field} field remains mounted`);
+    if (field === 'path') {
+      const points = JSON.parse(value);
+      for (const [index, point] of points.entries()) {
+        await click(name, 'Add waypoint');
+        await waitFor(name, `document.querySelectorAll(${JSON.stringify(`${selector} fieldset input[type=number]`)}).length>=${(index + 1) * 2}`, `${label} waypoint ${index + 1} controls`);
+        const fields = ['x', 'y'];
+        for (let axis = 0; axis < fields.length; axis++) await setValue(name, `${selector} .v2-ui-array-item:nth-of-type(${index + 1}) label:nth-of-type(${axis + 1}) input`, point[fields[axis]]);
+      }
+      continue;
+    }
     const setBy = await ev(name, `(()=>{const f=document.querySelector(${JSON.stringify(selector)});const e=f?.elements.namedItem(${JSON.stringify(field)});return e?e.tagName.toLowerCase():''})()`);
     assert.ok(setBy, `${label}.${field} exists`);
     if (setBy === 'select') await setValue(name, `${selector} [name=${JSON.stringify(field)}]`, value, true);
@@ -198,6 +208,7 @@ try {
   assert.equal((afterNewPreparation.entities ?? afterNewPreparation).length, 3, 'confirmed recovery permits a genuinely new entity after the original operation keys are retired');
   await setValue('gm', '#v2-entity-picker', committedEntityId);
   await waitFor('gm', `document.body.innerText.includes('Not started') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Start session')`, 'GM current-session start control');
+  assert.equal(await ev('gm', `(()=>[...document.querySelector('#v2-entity-picker').options].some(option=>option.value===${JSON.stringify(committedEntityId)}&&option.textContent.trim()==='Ash Bridge'))()`), true, 'Rules entity picker shows the projected encounter title while retaining its stable internal ID as value');
   await click('gm', 'Start session');
   await waitFor('gm', `document.body.innerText.includes('Session started from the selected host encounter.') && document.body.innerText.includes('Live · Ash Bridge')`, 'GM session start is confirmed from the host projection');
   const startedSession = await (await api('/api/v2/session/current', 'local-gm')).json();
@@ -227,10 +238,21 @@ try {
   assert.ok(playerProjection.data.actors.every(actor => !Object.hasOwn(actor, 'ownerPrincipalId')), 'nested owner principal fields are filtered before reaching players');
   const movementFormVisible = await ev('playerA', `Boolean(document.querySelector('form[aria-label="Move"]'))`);
   assert.equal(movementFormVisible, true, 'Revised 5e movement command is exposed through the normal Rules contribution');
-  await commandForm('playerA', 'Move', { actorId: 'player-a', path: '[{"x":1,"y":2}]' });
+  assert.equal(await ev('playerA', `(()=>{const form=document.querySelector('form[aria-label="Move"]');const actor=form?.elements.namedItem('actorId');const options=actor?[...actor.options].map(option=>option.textContent.trim()):[];return options.includes('Asha')&&options.includes('Borin')&&options.includes('Warden')&&!options.includes('player-a')&&!options.includes('enemy')&&!form?.querySelector('textarea[name="path"]')&&Boolean(form?.querySelector('.v2-ui-array-field'))})()`), true, 'authorized actor choices use projected character names and movement uses guided waypoint controls');
+  assert.equal(await ev('playerA', `(()=>{const form=document.querySelector('form[aria-label="Attack"]');return [...form.querySelectorAll('select')].map(select=>[...select.options].map(option=>option.textContent.trim())).every(options=>options.includes('Asha')&&options.includes('Warden')&&!options.includes('player-a')&&!options.includes('enemy'))})()`), true, 'attacker and target choices show character names while retaining IDs as submitted values');
+  await ev('playerA', `document.querySelector('form[aria-label="Move"] select[name="actorId"]').focus()`);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, sessions.playerA);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, sessions.playerA);
+  assert.equal(await ev('playerA', `document.activeElement?.textContent?.trim()==='Add waypoint'`), true, 'keyboard Tab moves from character selection to the guided path control');
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, sessions.playerA);
+  assert.equal(await ev('playerA', `(()=>{const path=document.querySelector('.v2-ui-array-field');return Boolean(path&&path.getBoundingClientRect().width<=innerWidth&&document.documentElement.scrollWidth<=innerWidth)})()`), true, 'movement controls fit a narrow Chromium viewport without horizontal page overflow');
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sessions.playerA);
+  await commandForm('playerA', 'Move', { actorId: '0', path: '[{"x":1,"y":2}]' });
   await waitFor('playerA', `document.body.innerText.includes('waiting for its authorized reaction')`, 'movement suspension receipt in Rules');
   const moveA = await ev('playerA', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.move')`);
   assert.equal(moveA.status, 200); assert.equal(moveA.response.status, 'pending');
+  assert.equal(moveA.request.input.actorId, 'player-a', 'human-readable character choice submits its stable module actor ID');
+  assert.deepEqual(moveA.request.input.path, [{ x: 1, y: 2 }], 'guided waypoint controls submit the existing typed movement schema');
   const gmPendingReactions = await (await api('/api/v2/reactions', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.ok((gmPendingReactions.reactions ?? gmPendingReactions).some(item => item.windowId === moveA.response.windowId), `GM host projection contains the movement reaction: ${JSON.stringify(gmPendingReactions)}`);
   const pendingProjection = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } })).json();
@@ -241,11 +263,11 @@ try {
   await waitFor('gm', `document.body.innerText.includes('Authorized state refreshed from the host')`, 'GM reaction projection refresh confirmed');
   const refreshedReactions = await ev('gm', `window.__reactionRefreshes.at(-1)`);
   assert.ok((refreshedReactions.body.reactions ?? refreshedReactions.body).some(item => item.windowId === moveA.response.windowId), `GM browser refresh contains the pending reaction: ${JSON.stringify(refreshedReactions)}`);
-  await waitFor('gm', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='GM adjudicate: accept example.revised5e.opportunity-attack')`, 'GM sees the pending opportunity attack and explicit action after refreshing authorized state');
+  await waitFor('gm', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='GM: Accept Opportunity attack')`, 'GM sees the pending opportunity attack and its human-readable action after refreshing authorized state');
   await screenshot('gm', 'gm-opportunity-attack-pending.png');
   await ev('gm', `(()=>{const original=fetch.bind(window);window.__reactionAdjudications=[];window.fetch=async(url,init={})=>{const response=await original(url,init);if(String(url).includes('/adjudicate'))window.__reactionAdjudications.push({url:String(url),request:JSON.parse(init.body),status:response.status,response:await response.clone().json()});return response}})()`);
-  await click('gm', 'GM adjudicate: accept example.revised5e.opportunity-attack');
-  await waitFor('gm', `document.body.innerText.includes('GM accepted example.revised5e.opportunity-attack')`, 'host-confirmed GM opportunity-attack adjudication');
+  await click('gm', 'GM: Accept Opportunity attack');
+  await waitFor('gm', `document.body.innerText.includes('GM accepted Opportunity attack')`, 'host-confirmed GM opportunity-attack adjudication');
   const movementAdjudication = await ev('gm', `window.__reactionAdjudications.at(-1)`);
   assert.equal(movementAdjudication.status, 200); assert.equal(movementAdjudication.request.actionId, 'example.revised5e.opportunity-attack');
   await click('playerA', 'Refresh authorized state');
@@ -267,7 +289,7 @@ try {
   const resumedMoveEvent = eventBeforeAttack.find(event => event.kind === 'command.resumed' && event.operationId === moveA.request.operationId);
   assert.deepEqual(resumedMoveEvent.payload.randomness.map(item => item.values), [[20], [4, 4]], 'accepted OA randomness is host supplied and auditable');
   assert.equal(resumedMoveEvent.payload.resolutionTranscript, undefined, 'player event excludes the GM-only transcript');
-  await commandForm('playerA', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
+  await commandForm('playerA', 'Attack', { actorId: '0', targetId: '2' });
   await waitFor('playerA', `window.__potomacCommands.some(item=>item.request.commandId==='example.revised5e.attack')`, 'Player A attack request');
   const attackA = await ev('playerA', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(attackA.status, 200, JSON.stringify(attackA)); assert.equal(attackA.response.status, 'applied', JSON.stringify(attackA));
   await waitFor('playerA', `document.body.innerText.includes('example.revised5e.attack committed by the host.')`, 'Player A attack confirmed');
@@ -277,10 +299,10 @@ try {
   assert.equal((await retry(a, { ...attackA.request, operationId: `${attackA.request.operationId}-stale`, expectedRevision: attackA.request.expectedRevision - 1 })).status, 409, 'stale revision is rejected');
   await ordinaryPlayer('playerB', b); await setValue('playerB', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerB');
   await waitFor('playerB', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'Player B authorized contribution');
-  await commandForm('playerB', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
+  await commandForm('playerB', 'Attack', { actorId: '0', targetId: '2' });
   await waitFor('playerB', `document.body.innerText.includes('host denied this action')`, 'cross-player attack denial feedback');
   const denied = await ev('playerB', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(denied.status, 403);
-  await commandForm('playerB', 'Attack', { actorId: 'player-b', targetId: 'enemy' }); await waitFor('playerB', `document.body.innerText.includes('example.revised5e.attack committed by the host.')`, 'Player B permitted attack');
+  await commandForm('playerB', 'Attack', { actorId: '1', targetId: '2' }); await waitFor('playerB', `document.body.innerText.includes('example.revised5e.attack committed by the host.')`, 'Player B permitted attack');
   const attackB = await ev('playerB', `window.__potomacCommands.filter(item=>item.request.commandId==='example.revised5e.attack').at(-1)`); assert.equal(attackB.status, 200);
   await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
   for (const [name, principal] of [['gm', 'gm'], ['playerA', a], ['playerB', b]]) { await click(name, 'Refresh authorized state'); await waitFor(name, `document.body.innerText.includes('Ash Bridge') && document.body.innerText.includes('complete')`, `${name} completed Revised 5e state after host restart`); }
@@ -398,11 +420,11 @@ try {
   const pendingRows = await host.db.prepare("SELECT window_id FROM v2_reaction_windows WHERE parent_operation_id=?").all(contest.request.operationId);
   assert.equal(pendingRows.length, 1, 'one durable reaction window is linked to the parent command'); const windowId = pendingRows[0].window_id;
   await ordinaryPlayer('diceB', diceB); await click('diceB', 'Refresh authorized state');
-  await waitFor('diceB', `document.body.innerText.includes('Pending reaction') && document.body.innerText.includes('Accept example.dicepool.brace')`, 'authorized responder sees the pending reaction');
-  assert.equal(await ev('diceA', ` [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept example.dicepool.brace')`), false, 'unauthorized initiator does not receive responder controls');
+  await waitFor('diceB', `document.body.innerText.includes('Pending reaction') && document.body.innerText.includes('Accept Brace')`, 'authorized responder sees the pending reaction');
+  assert.equal(await ev('diceA', ` [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept Brace')`), false, 'unauthorized initiator does not receive responder controls');
   const unauthorizedReaction = await api(`/api/v2/reactions/${encodeURIComponent(windowId)}/decisions`, diceA.credential, { method: 'POST', body: JSON.stringify({ operationId: 'issue-166-unauthorized-reaction', actionId: 'example.dicepool.brace', decision: 'accept', input: {} }), headers: { 'x-v2-lock-digest': diceLock.digest } });
   assert.ok([403, 404].includes(unauthorizedReaction.status), `unauthorized reaction responder rejected (${unauthorizedReaction.status})`);
-  await click('diceB', 'Accept example.dicepool.brace');
+  await click('diceB', 'Accept Brace');
   await waitFor('diceB', `!document.body.innerText.includes(${JSON.stringify(windowId)})`, 'reaction resolved and continuation projection refreshed');
   const parentEffects = host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(contest.request.operationId).n;
   assert.equal(parentEffects, 1, `continuation commits parent effects once; pending=${JSON.stringify(host.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get(contest.request.operationId))}; window=${JSON.stringify(host.db.prepare('SELECT status FROM v2_reaction_windows WHERE parent_operation_id=?').get(contest.request.operationId))}`);

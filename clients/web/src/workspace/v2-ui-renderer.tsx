@@ -159,22 +159,24 @@ function CommandButton({ node, contribution, entity, host }: { node: Extract<UiN
     } catch (error) {
       const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
       if (status >= 400 && status < 500) clearCommandAttempt(operationAttemptKey(entity, host, node.commandId));
-      setMessage(commandErrorMessage(error));
+      setMessage(commandErrorMessage(error, node.commandId));
     } finally { setPending(false); }
   };
   return <div className="v2-ui-command"><button type="button" disabled={pending || needsWorkflow && !workflow} onClick={() => void submit()}>{pending ? 'Working…' : node.label}</button>{needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}{message && <p role={message.startsWith('Command committed') || message.startsWith('Command is waiting') ? 'status' : 'alert'} aria-live="polite">{message}</p>}</div>;
 }
 
-function commandErrorMessage(error: unknown): string {
+function commandErrorMessage(error: unknown, commandId?: string): string {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
   const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
   if (status === 403 || code === 'unauthorized' || code === 'forbidden') return 'The host denied this action for your account or selected character.';
-  if (status === 409 || code === 'conflict' || code === 'stale_revision') return 'The campaign changed before this action completed. Refresh the entity and review the current state.';
+  if (status === 400 || status === 422 || code === 'invalid' || code === 'invalid_input') return commandId?.endsWith('.move') ? 'The host rejected these waypoints. Check the path and the character’s remaining movement.' : 'The host rejected these details. Check the required fields and allowed values.';
+  if (code === 'stale_revision') return 'The encounter changed before this action completed. Refresh and review its current state.';
+  if (status === 409 || code === 'conflict') return commandId?.endsWith('.move') ? 'The host could not apply this route to the current encounter. Refresh, review remaining movement, and adjust the waypoints.' : 'This action is no longer legal in the current encounter. Refresh and review the latest state.';
   if (status === 404) return 'The selected entity or command is no longer available to this account.';
   return 'The host did not confirm this action. Check access and connection, then retry.';
 }
 
-type SchemaProperty = { type: 'string' | 'integer' | 'number' | 'boolean' | 'array'; title?: string; description?: string; enum?: JsonValue[]; required?: never; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; items?: { type: 'object'; properties: Record<string, { type: 'string' | 'integer' | 'number' | 'boolean' }>; required?: string[]; additionalProperties?: boolean } };
+type SchemaProperty = { type: 'string' | 'integer' | 'number' | 'boolean' | 'array'; title?: string; description?: string; enum?: JsonValue[]; required?: never; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; items?: { type: 'object'; properties: Record<string, SchemaProperty>; required?: string[]; additionalProperties?: boolean } };
 type InputSchema = { properties: Record<string, SchemaProperty>; required?: string[] };
 
 function inputSchema(contribution: UiContribution, commandId: string): InputSchema {
@@ -182,7 +184,25 @@ function inputSchema(contribution: UiContribution, commandId: string): InputSche
 }
 
 function fieldLabel(name: string, schema: SchemaProperty): string {
-  return schema.title || name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ').replace(/^./, value => value.toUpperCase());
+  return schema.title || name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ').replace(/\s+id$/i, '').replace(/^./, value => value.toUpperCase());
+}
+
+function projectedReferenceNames(data: JsonValue): Map<string, string> {
+  const names = new Map<string, string>();
+  let visited = 0;
+  const visit = (value: JsonValue, depth: number): void => {
+    if (depth > 8 || visited++ > 1000 || !value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { for (const child of value) visit(child, depth + 1); return; }
+    const record = value as Record<string, JsonValue>;
+    if (typeof record.id === 'string' && typeof record.name === 'string' && record.name.trim()) names.set(record.id, record.name);
+    for (const child of Object.values(record)) visit(child, depth + 1);
+  };
+  visit(data, 0);
+  return names;
+}
+
+function internalReference(fieldName: string, value: JsonValue): boolean {
+  return fieldName.toLowerCase().endsWith('id') || typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value);
 }
 
 function parseForm(form: HTMLFormElement, schema: InputSchema): { input?: Record<string, JsonValue>; error?: string } {
@@ -204,6 +224,20 @@ function parseForm(form: HTMLFormElement, schema: InputSchema): { input?: Record
       try { value = JSON.parse(raw) as JsonValue; }
       catch { return { error: `Enter valid JSON for ${fieldLabel(name, field).toLowerCase()}.` }; }
       if (!Array.isArray(value)) return { error: `${fieldLabel(name, field)} must be a JSON array.` };
+      if (field.minItems !== undefined && value.length < field.minItems || field.maxItems !== undefined && value.length > field.maxItems) return { error: `${fieldLabel(name, field)} has too few or too many entries.` };
+      if (field.items?.type === 'object') {
+        for (const [index, item] of value.entries()) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return { error: `${fieldLabel(name, field)} waypoint ${index + 1} is incomplete.` };
+          const object = item as Record<string, JsonValue>;
+          for (const key of field.items.required ?? []) if (object[key] === undefined || object[key] === '') return { error: `Waypoint ${index + 1}: ${fieldLabel(key, field.items.properties[key])} is required.` };
+          for (const [key, child] of Object.entries(field.items.properties)) {
+            const childValue = object[key];
+            if (childValue === undefined) continue;
+            if (child.type === 'integer' && (typeof childValue !== 'number' || !Number.isInteger(childValue)) || child.type === 'number' && (typeof childValue !== 'number' || !Number.isFinite(childValue)) || child.type === 'string' && typeof childValue !== 'string' || child.type === 'boolean' && typeof childValue !== 'boolean') return { error: `Waypoint ${index + 1}: enter a valid ${fieldLabel(key, child).toLowerCase()}.` };
+            if (typeof childValue === 'number' && (child.minimum !== undefined && childValue < child.minimum || child.maximum !== undefined && childValue > child.maximum) || typeof childValue === 'string' && (child.minLength !== undefined && childValue.length < child.minLength || child.maxLength !== undefined && childValue.length > child.maxLength) || child.enum && !child.enum.some(option => JSON.stringify(option) === JSON.stringify(childValue))) return { error: `Waypoint ${index + 1}: ${fieldLabel(key, child)} is outside the allowed range.` };
+          }
+        }
+      }
     } else if (field.type === 'integer' || field.type === 'number') {
       const number = Number(raw);
       if (!Number.isFinite(number) || field.type === 'integer' && !Number.isInteger(number) || field.minimum !== undefined && number < field.minimum || field.maximum !== undefined && number > field.maximum) return { error: `Enter a valid ${fieldLabel(name, field).toLowerCase()}${field.minimum !== undefined || field.maximum !== undefined ? ` (${field.minimum ?? 'any'}–${field.maximum ?? 'any'}).` : '.'}` };
@@ -216,6 +250,17 @@ function parseForm(form: HTMLFormElement, schema: InputSchema): { input?: Record
     input[name] = value;
   }
   return { input };
+}
+
+function ArrayObjectField({ id, name, label, field, initial, disabled }: { id: string; name: string; label: string; field: SchemaProperty; initial: JsonValue | undefined; disabled: boolean }) {
+  const initialItems = Array.isArray(initial) ? initial.filter(item => item && typeof item === 'object' && !Array.isArray(item)).slice(0, field.maxItems ?? 20).map(item => Object.fromEntries(Object.entries(field.items?.properties ?? {}).map(([key, child]) => [key, (item as Record<string, JsonValue>)[key] ?? (child.type === 'integer' || child.type === 'number' ? child.minimum ?? 0 : '')]))) as Array<Record<string, JsonValue>> : [];
+  const [items, setItems] = useState<Array<Record<string, JsonValue>>>(initialItems);
+  const itemSchema = field.items;
+  if (!itemSchema) return <textarea id={id} name={name} rows={3} defaultValue={initial ? JSON.stringify(initial) : ''} disabled={disabled} />;
+  const minimum = field.minItems ?? 0; const maximum = field.maxItems ?? 20;
+  const addItem = () => { if (items.length < maximum) setItems(current => [...current, Object.fromEntries(Object.entries(itemSchema.properties).map(([key, child]) => [key, child.type === 'integer' || child.type === 'number' ? child.minimum ?? 0 : child.type === 'boolean' ? false : '']))]); };
+  const update = (index: number, key: string, raw: string, type: string) => setItems(current => current.map((item, at) => at === index ? { ...item, [key]: type === 'integer' || type === 'number' ? raw === '' ? '' : Number(raw) : type === 'boolean' ? raw === 'true' : raw } : item));
+  return <fieldset className="v2-ui-array-field"><legend>{label}</legend><input type="hidden" name={name} value={JSON.stringify(items)} />{items.map((item, index) => <div className="v2-ui-array-item" key={index}><h4>Waypoint {index + 1}</h4>{Object.entries(itemSchema.properties).map(([key, child]) => { const controlId = `${id}-${index}-${key}`; return <label key={key} htmlFor={controlId}>{fieldLabel(key, child)}{child.enum ? <select id={controlId} value={String(item[key] ?? '')} disabled={disabled} onChange={event => update(index, key, event.target.value, child.type)}>{child.enum.map(option => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : child.type === 'boolean' ? <input id={controlId} type="checkbox" checked={item[key] === true} disabled={disabled} onChange={event => update(index, key, String(event.target.checked), child.type)} /> : <input id={controlId} type={child.type === 'integer' || child.type === 'number' ? 'number' : 'text'} step={child.type === 'integer' ? 1 : child.type === 'number' ? 'any' : undefined} min={'minimum' in child ? child.minimum : undefined} max={'maximum' in child ? child.maximum : undefined} value={String(item[key] ?? '')} disabled={disabled} onChange={event => update(index, key, event.target.value, child.type)} />}</label>; })}<button type="button" disabled={disabled || items.length <= minimum} onClick={() => setItems(current => current.filter((_, at) => at !== index))}>Remove waypoint {index + 1}</button></div>)}<button type="button" disabled={disabled || items.length >= maximum} onClick={addItem}>Add waypoint</button><small>{field.description ?? `Add up to ${maximum} points. The host validates whether the path is legal.`}</small></fieldset>;
 }
 
 function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNode, { kind: 'form' }>; contribution: UiContribution; entity: UiEntityProjection; host: UiHostContext }) {
@@ -245,7 +290,7 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
     } catch (error) {
       const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
       if (status >= 400 && status < 500) clearCommandAttempt(attemptKey);
-      setMessage(commandErrorMessage(error));
+      setMessage(commandErrorMessage(error, node.commandId));
     } finally { setPending(false); }
   };
   return <form className="v2-ui-form" aria-label={node.label} noValidate onSubmit={onSubmit}>
@@ -253,11 +298,13 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
       const id = `${node.id}-${name}`;
       const label = fieldLabel(name, field);
       const required = schema.required?.includes(name) ?? false;
-      return <div className="v2-ui-input" key={name}><label htmlFor={id}>{label}{required ? ' *' : ''}</label>{field.enum || field.type === 'boolean'
-        ? <select id={id} name={name} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending}><option value="" disabled>Choose {label.toLowerCase()}</option>{(field.enum ?? [true, false]).map((item, index) => <option key={index} value={field.enum ? String(index) : String(item)}>{String(item)}</option>)}</select>
+      const referenceNames = projectedReferenceNames(entity.data);
+      const choices = (field.enum ?? [true, false]).map((item, index) => ({ item, index, label: field.enum && referenceNames.get(String(item)) || (field.enum && internalReference(name, item) ? 'Unavailable option' : String(item)) }));
+      return <div className="v2-ui-input" key={name}>{field.type === 'array' && field.items?.type === 'object' ? <ArrayObjectField id={id} name={name} label={`${label}${required ? ' *' : ''}`} field={field} initial={savedIntentMatchesWorkflow ? savedAttempt.input[name] : undefined} disabled={pending} /> : <><label htmlFor={id}>{label}{required ? ' *' : ''}</label>{field.enum || field.type === 'boolean'
+        ? <select id={id} name={name} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending}><option value="" disabled>Choose {label.toLowerCase()}</option>{choices.map(choice => <option key={choice.index} value={field.enum ? String(choice.index) : String(choice.item)} disabled={field.enum && internalReference(name, choice.item) && !referenceNames.has(String(choice.item))}>{String(choice.label)}</option>)}</select>
         : field.type === 'array'
           ? <textarea id={id} name={name} rows={3} placeholder={arrayExample(field)} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={`${id}-description`} />
-        : <input id={id} name={name} type={field.type === 'integer' || field.type === 'number' ? 'number' : 'text'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={field.description ? `${id}-description` : undefined} />}{field.type === 'array' && <small id={`${id}-description`}>Enter a JSON array that matches the module schema, for example <code>{arrayExample(field)}</code>.</small>}{field.description && field.type !== 'array' && <small id={`${id}-description`}>{field.description}</small>}</div>;
+        : <input id={id} name={name} type={field.type === 'integer' || field.type === 'number' ? 'number' : 'text'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={field.description ? `${id}-description` : undefined} />}{field.type === 'array' && <small id={`${id}-description`}>Enter a JSON array that matches the module schema, for example <code>{arrayExample(field)}</code>.</small>}{field.description && field.type !== 'array' && <small id={`${id}-description`}>{field.description}</small>}</>}</div>;
     })}
     <button type="submit" disabled={pending || needsWorkflow && !workflow}>{pending ? 'Submitting…' : node.label}</button>
     {needsWorkflow && !workflow && <p role="status">The matching active workflow is unavailable.</p>}

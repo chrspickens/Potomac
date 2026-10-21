@@ -62,13 +62,18 @@ async function setInput(name, selector, value) {
   assert.equal(result, true, `input ${selector} is present`);
 }
 async function selectActor(name, actorId) {
-  const selected = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="Attack"]'); const fields=form?.querySelectorAll('select'); if(!fields||fields.length!==2)return false; const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set; const values=[${JSON.stringify(actorId)},${JSON.stringify(actorId === 'enemy' ? 'player-a' : 'enemy')}]; for(let index=0;index<2;index++){const option=[...fields[index].options].find(item=>item.textContent===values[index]);if(!option)return false;setter.call(fields[index],option.value);fields[index].dispatchEvent(new Event('change',{bubbles:true}));} return true; })()`);
+  const actorValues = ['player-a', 'player-b', 'enemy'];
+  const actorIndex = actorValues.indexOf(actorId);
+  const targetId = actorId === 'enemy' ? 'player-a' : 'enemy';
+  const targetIndex = actorValues.indexOf(targetId);
+  const selected = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="Attack"]'); const fields=form?.querySelectorAll('select'); if(!fields||fields.length!==2)return false; const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set; const indexes=[${actorIndex},${targetIndex}]; for(let index=0;index<2;index++){const option=fields[index].options[indexes[index]+1];if(!option||option.disabled)return false;setter.call(fields[index],option.value);fields[index].dispatchEvent(new Event('change',{bubbles:true}));} return true; })()`);
   assert.equal(selected, true, 'module actor and target choices are selected');
   const submit = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="Attack"]'); const b=form?.querySelector('button[type="submit"]'); if(!b||b.disabled)return false; b.click(); return true; })()`);
   assert.equal(submit, true, `Attack form is ready for ${actorId}`);
 }
 async function submitActorForm(name, label, actorId) {
-  const submitted = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="${label}"]'); const field=form?.querySelector('select'); if(!field)return false; const option=[...field.options].find(item=>item.textContent===${JSON.stringify(actorId)}); if(!option)return false; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(field,option.value); field.dispatchEvent(new Event('change',{bubbles:true})); const button=form.querySelector('button[type="submit"]'); if(!button||button.disabled)return false; button.click(); return true; })()`);
+  const actorIndex = ['player-a', 'player-b', 'enemy'].indexOf(actorId);
+  const submitted = await evaluate(name, `(() => { const form=document.querySelector('form[aria-label="${label}"]'); const field=form?.querySelector('select'); if(!field)return false; const option=field.options[${actorIndex + 1}]; if(!option||option.disabled)return false; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(field,option.value); field.dispatchEvent(new Event('change',{bubbles:true})); const button=form.querySelector('button[type="submit"]'); if(!button||button.disabled)return false; button.click(); return true; })()`);
   assert.equal(submitted, true, `${label} form submits as ${actorId}`);
 }
 async function page(name) {
