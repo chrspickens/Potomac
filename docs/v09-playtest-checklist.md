@@ -1,6 +1,6 @@
 # Potomac v0.9 human playtest script
 
-Tracks [issue #110](https://github.com/chrspickens/Potomac/issues/110) under the v0.9 tracker [#109](https://github.com/chrspickens/Potomac/issues/109). The existing System A scenario below is retained as its V1/v0.9 baseline. Following PR #164, the next P0 is the ordinary Campaign Home V2 Revised 5e walkthrough plus a contrasting Dice-pool smoke in [`playability-refinement-plan.md`](playability-refinement-plan.md). That plan adds the module-lock checks, GM/A/B evidence matrix, exact/altered retry checks and the current single-campaign host limits. Keep automated evidence separate from human observations; neither replaces the other.
+Tracks [issue #110](https://github.com/chrspickens/Potomac/issues/110) under the v0.9 tracker [#109](https://github.com/chrspickens/Potomac/issues/109). The existing System A scenario below is retained as its V1/v0.9 baseline. For the ordinary Campaign Home V2 Revised 5e walk and a smaller contrasting Dice-pool smoke, use the focused [Revised 5e human playtest runbook](revised5e-human-playtest-runbook.md) and [playability refinement plan](playability-refinement-plan.md). Keep automated evidence separate from human observations; neither replaces the other. The latest main `Checks` run failed after host restart while Player A refreshed; investigate and rerun before treating the complete journey as verified.
 
 ## Current verification record
 
