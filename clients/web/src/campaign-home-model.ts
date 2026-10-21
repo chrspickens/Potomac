@@ -24,10 +24,12 @@ export function lastPreparedEncounter(encounters: Encounter[]): Encounter | null
   return encounters.find(encounter => encounter.status === 'prepared') ?? encounters[0] ?? null
 }
 
-export function campaignHomeIdentity(campaign: CampaignConfig | null, snapshot: Snapshot | null): { name: string; system: string } {
+export function campaignHomeIdentity(campaign: CampaignConfig | null, snapshot: Snapshot | null, v2Ruleset?: { id: string; version: string; name?: string } | null): { name: string; system: string } {
   return {
     name: campaign?.name || snapshot?.context.campaignId || 'Campaign',
-    system: campaign?.systemModuleId && campaign.systemModuleVersion
+    system: v2Ruleset
+      ? `${v2Ruleset.name || v2Ruleset.id} · ${v2Ruleset.version} (experimental V2)`
+      : campaign?.systemModuleId && campaign.systemModuleVersion
       ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}`
       : 'System not configured',
   }

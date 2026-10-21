@@ -69,8 +69,10 @@ try {
   assert.equal((await api(`/api/v2/entities/${records[0].entityId}/grants`, a.credential, { method: 'POST', body: JSON.stringify({ memberId: b.memberId, permissions: ['act'] }), headers: { 'x-v2-lock-digest': digest } })).status, 403);
   const actAs = async (name, who, record, choice, operationId) => {
     await page(name);
-    await ev(name, `window.prompt=()=>${JSON.stringify(who.credential)}`);
     await click(name, 'Use player credential');
+    await waitFor(name, `Boolean(document.querySelector('#player-credential-input'))`, `${name} visible player credential dialog`);
+    await fill(name, '#player-credential-input', who.credential);
+    await click(name, 'Connect as player');
     await waitFor(name, `document.querySelector('.app-rail nav button span')?.textContent==='Rules' || [...document.querySelectorAll('.app-rail nav button')].some(b=>b.textContent.includes('Rules'))`, `${name} normal player navigation`);
     await click(name, '⚙ Rules'); await waitFor(name, `document.body.innerText.includes('${record.data.title}')`, `${name} private entity`);
     assert.equal(await ev(name, `document.body.innerText.includes('${name === 'a' ? 'Beryl Passage' : 'Aster Passage'}')`), false, 'player projection excludes the other principal-owned entity');

@@ -10,6 +10,7 @@ type Props = {
   session?: SessionSnapshot
   v2SessionEnabled?: boolean
   v2Credential?: string
+  v2Ruleset?: { id: string; version: string; name?: string } | null
   error: string
   lore: LoreArticle[]
   maps: MapSceneView[]
@@ -17,7 +18,7 @@ type Props = {
   onCreate: (target: 'character' | 'encounter') => void
 }
 
-export function CampaignHome({ role, snapshot, campaign, connection, session, v2SessionEnabled = false, v2Credential = '', error, lore, maps, onOpen, onCreate }: Props) {
+export function CampaignHome({ role, snapshot, campaign, connection, session, v2SessionEnabled = false, v2Credential = '', v2Ruleset = null, error, lore, maps, onOpen, onCreate }: Props) {
   const [v2Session, setV2Session] = useState<{ status: string; revision: number; encounter?: { entityId: string; title?: string; revision: number } }>()
   const [v2HostStatus, setV2HostStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
   useEffect(() => {
@@ -36,7 +37,7 @@ export function CampaignHome({ role, snapshot, campaign, connection, session, v2
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [v2SessionEnabled, v2Credential, connection])
   const state = campaignHomeState({ snapshot, connection, error, hasContent: lore.length > 0 || maps.length > 0 || Boolean(snapshot?.activity.length) })
-  const identity = campaignHomeIdentity(campaign, snapshot)
+  const identity = campaignHomeIdentity(campaign, snapshot, v2Ruleset)
   const activity: Activity[] = campaignHomeActivity(snapshot, role)
   const preparedEncounter = lastPreparedEncounter(snapshot?.encounters || [])
   const currentSession = v2SessionEnabled ? undefined : session?.current || snapshot?.session?.current

@@ -32,3 +32,8 @@ test('Campaign Home identifies the campaign and continues a prepared encounter',
   assert.equal(lastPreparedEncounter(encounters)?.id, 'p')
   assert.equal(lastPreparedEncounter([]), null)
 })
+
+test('Campaign Home confirms the authoritative V2 lock instead of showing an unconfigured V1 system', () => {
+  const identity = campaignHomeIdentity({ id: 'c', name: 'Test Campaign', systemModuleId: null, systemModuleVersion: null }, snapshot, { id: 'example.revised5e', version: '1.2.1', name: 'Revised 5e Encounter' })
+  assert.equal(identity.system, 'Revised 5e Encounter · 1.2.1 (experimental V2)')
+})

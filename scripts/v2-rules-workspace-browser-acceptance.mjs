@@ -43,6 +43,10 @@ const setLabeledValue = async (name, label, value) => {
   await setValue(name, `#${id}`, value);
 };
 const api = (url, token = 'local-gm', init = {}) => fetch(`http://127.0.0.1:${hostPort}${url}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } });
+async function setTestStartingSquares(name) {
+  await setLabeledValue(name, 'Player B start · X (0–7)', '0');
+  await setLabeledValue(name, 'Player B start · Y (0–4)', '4');
+}
 async function startHost(databaseName, campaignId) { host = createHost({ databasePath: join(scratch, databaseName), campaignId, enableV2Api: true, v2RandomInt: (_min, max) => max - 1 }); await host.listen(hostPort); }
 async function page(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`); }
 async function installCommandCapture(name) { await ev(name, `(()=>{window.__potomacCommands=[];const old=fetch.bind(window);window.fetch=async(url,init={})=>{const response=await old(url,init);if(String(url).endsWith('/api/v2/commands'))window.__potomacCommands.push({request:JSON.parse(init.body),status:response.status,response:await response.clone().json()});return response}})()`); }
@@ -55,19 +59,45 @@ async function normalSetup(name, moduleId, campaignName) {
   await click(name, 'Create fresh experimental V2 campaign');
   await waitFor(name, `Boolean(document.querySelector('.v2-combat-header')) && document.body.innerText.includes('Immutable campaign module')`, 'normal setup into Rules');
   await waitFor(name, `(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Enroll a player');return Boolean(b&&!b.disabled)})()`, 'GM enrollment ready');
+  if (name === 'gm' && moduleId === 'example.revised5e') {
+    await click(name, 'Return to campaign');
+    await waitFor(name, `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Revised 5e Encounter · 1.2.1 (experimental V2)')`, 'Campaign Home confirms exact authoritative V2 ruleset lock');
+    assert.equal(await ev(name, `document.body.innerText.includes('System not configured') || document.body.innerText.includes('Configure campaign in GM setup')`), false, 'a valid V2 lock is not shown as unconfigured');
+    assert.equal(await ev(name, `Boolean(document.querySelector('.campaign-setup[aria-label="Campaign setup"]'))`), false, 'V1 campaign setup is not shown for a valid V2 lock');
+    await screenshot(name, 'gm-campaign-home-revised5e-lock.png');
+    await click(name, '▦ Table');
+    await waitFor(name, `document.body.innerText.includes('Choose a prepared encounter in Rules, then open it in Table')`,'V2 Table explains how to open a prepared encounter');
+    await screenshot(name, 'gm-v2-table-route-help.png');
+    await click(name, 'Open Rules to choose an encounter');
+    await waitFor(name, `Boolean(document.querySelector('.v2-combat-header')) && document.body.innerText.includes('Immutable campaign module')`, 'Rules workspace reopened from Campaign Home');
+    await screenshot(name, 'gm-rules-enrollment.png');
+  }
 }
 async function enrollTwo(name) {
+  await setValue(name, '#v2-player-display-name', 'Avery');
   await click(name, 'Enroll a player'); await waitFor(name, 'document.querySelectorAll("output").length >= 1', 'Player A enrollment');
   const first = await ev(name, `(()=>{const t=document.querySelector('output').textContent;const i=t.indexOf(': ');return {name:t.slice(0,i),credential:t.slice(i+2)}})()`);
-  await click(name, 'Enroll a player'); await waitFor(name, 'document.querySelectorAll("output").length >= 2', 'Player B enrollment');
+  first.principalId = (await (await api('/api/v2/session', first.credential)).json()).principalId;
+  await ev(name, `(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__copiedCredential=value}}})})()`);
+  await click(name, 'Copy credential');
+  await waitFor(name, `window.__copiedCredential===${JSON.stringify(first.credential)}`, 'player credential copy handoff');
+  await click(name, 'Hide credential');
+  assert.equal(await ev(name, `Boolean(document.querySelector('#credential-${first.principalId}'))`), false, 'hidden first credential is removed from the visible UI');
+  await setValue(name, '#v2-player-display-name', 'Morgan');
+  await click(name, 'Enroll a player'); await waitFor(name, 'document.querySelectorAll("output").length >= 1', 'Player B enrollment');
   const second = await ev(name, `(()=>{const t=[...document.querySelectorAll('output')].at(-1).textContent;const i=t.indexOf(': ');return {name:t.slice(0,i),credential:t.slice(i+2)}})()`);
-  for (const player of [first, second]) player.principalId = (await (await api('/api/v2/session', player.credential)).json()).principalId;
+  second.principalId = (await (await api('/api/v2/session', second.credential)).json()).principalId;
+  await click(name, 'Hide credential');
+  assert.equal(await ev(name, `Boolean(document.querySelectorAll('output').length===0)`), true, 'both issued credentials can be hidden after handoff');
+  if (name === 'gm') await screenshot(name, 'gm-player-credentials-handed-off.png');
   return [first, second];
 }
 async function ordinaryPlayer(name, player) {
   await page(name);
-  await ev(name, `window.prompt=()=>${JSON.stringify(player.credential)}`);
   await click(name, 'Use player credential');
+  await waitFor(name, `Boolean(document.querySelector('#player-credential-input'))`, `${name} visible player credential dialog`);
+  await setValue(name, '#player-credential-input', player.credential);
+  await click(name, 'Connect as player');
   await waitFor(name, `document.querySelector('.app-topbar select')?.value==='player' && (()=>{try{return JSON.parse(localStorage.getItem('potomac.identity.v1')||'null')?.credential===${JSON.stringify(player.credential)}}catch{return false}})()`, `${name} authenticated with its issued player credential`);
   await waitFor(name, ` [...document.querySelectorAll('.app-rail nav button')].some(b=>b.textContent.includes('Rules'))`, `${name} Rules navigation`);
   await click(name, '⚙ Rules');
@@ -121,6 +151,7 @@ try {
   await setLabeledValue('gm', 'Player B character name', 'Borin');
   await setLabeledValue('gm', 'Assign Player B', b.principalId);
   await setLabeledValue('gm', 'Opponent name', 'Warden');
+  await setTestStartingSquares('gm');
   // A projection refresh can fail after the entity and grants have committed. The
   // retained idempotency key must make a same-form retry replay that creation.
   await ev('gm', `(()=>{const original=fetch.bind(window);window.__failOneReactionRefresh=true;window.fetch=async(url,init)=>{if(window.__failOneReactionRefresh&&String(url).endsWith('/api/v2/reactions')){window.__failOneReactionRefresh=false;return new Response(JSON.stringify({error:'injected refresh failure'}),{status:503,headers:{'content-type':'application/json'}})}return original(url,init)}})()`);
@@ -130,6 +161,7 @@ try {
   const retainedOperation = await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`);
   assert.ok(retainedOperation, 'create operation remains available after refresh failure');
   const afterRefreshFailure = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.deepEqual((afterRefreshFailure.entities ?? afterRefreshFailure)[0].data.actors.find(actor => actor.id === 'player-b').position, { x: 0, y: 4 }, 'guided preparation start-square controls are committed to the host entity');
   const committedEntityId = (afterRefreshFailure.entities ?? afterRefreshFailure)[0].entityId;
   const grantActorId = `v2:${lock.lock.campaignId}:${committedEntityId}`;
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM actor_grants WHERE actor_id=?').get(grantActorId).n, 2, 'both selected player grants committed before refresh failure');
@@ -156,6 +188,7 @@ try {
   await setLabeledValue('gm', 'Player B character name', 'Borin');
   await setLabeledValue('gm', 'Assign Player B', b.principalId);
   await setLabeledValue('gm', 'Opponent name', 'Warden');
+  await setTestStartingSquares('gm');
   await click('gm', 'Prepare encounter and assign players');
   await waitFor('gm', `document.body.innerText.includes('prepared by the host and read/act access granted to the selected players') && document.body.innerText.includes('Ash Bridge') && Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'created Revised 5e encounter and generic contribution');
   const afterExactRetry = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
@@ -259,11 +292,8 @@ try {
   assert.equal(pendingProjection.revision, initCapture.response.revision, 'suspended movement keeps the committed entity revision');
   assert.deepEqual(pendingProjection.data.actors.find(actor => actor.id === 'player-a').position, { x: 2, y: 2 }, 'suspended movement has no partial position update');
   await ev('gm', `(()=>{const original=fetch.bind(window);window.__reactionRefreshes=[];window.fetch=async(url,init={})=>{const response=await original(url,init);if(String(url).includes('/api/v2/reactions')&&!String(url).includes('/adjudicate'))window.__reactionRefreshes.push({url:String(url),status:response.status,body:await response.clone().json()});return response}})()`);
-  await click('gm', 'Refresh authorized state');
-  await waitFor('gm', `document.body.innerText.includes('Authorized state refreshed from the host')`, 'GM reaction projection refresh confirmed');
-  const refreshedReactions = await ev('gm', `window.__reactionRefreshes.at(-1)`);
-  assert.ok((refreshedReactions.body.reactions ?? refreshedReactions.body).some(item => item.windowId === moveA.response.windowId), `GM browser refresh contains the pending reaction: ${JSON.stringify(refreshedReactions)}`);
-  await waitFor('gm', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='GM: Accept Opportunity attack')`, 'GM sees the pending opportunity attack and its human-readable action after refreshing authorized state');
+  await waitFor('gm', `window.__reactionRefreshes.some(item=>(item.body.reactions ?? item.body).some(reaction=>reaction.windowId===${JSON.stringify(moveA.response.windowId)}))`, 'GM reaction projection updates automatically without manual refresh', 8000);
+  await waitFor('gm', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='GM: Accept Opportunity attack')`, 'GM sees the pending opportunity attack and its human-readable action without manually refreshing', 8000);
   await screenshot('gm', 'gm-opportunity-attack-pending.png');
   await ev('gm', `(()=>{const original=fetch.bind(window);window.__reactionAdjudications=[];window.fetch=async(url,init={})=>{const response=await original(url,init);if(String(url).includes('/adjudicate'))window.__reactionAdjudications.push({url:String(url),request:JSON.parse(init.body),status:response.status,response:await response.clone().json()});return response}})()`);
   await click('gm', 'GM: Accept Opportunity attack');

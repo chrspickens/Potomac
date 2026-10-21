@@ -1,0 +1,70 @@
+{
+  "lock": {
+    "lockVersion": 1,
+    "campaignId": "campaign-issue-166-dicepool",
+    "rootModule": {
+      "id": "example.dicepool",
+      "version": "1.1.0",
+      "digest": "sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc"
+    },
+    "entries": [
+      {
+        "id": "example.dicepool",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.1.0",
+        "digest": "sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.dicepool.commands",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:e8747dd8b444de68fdc3b8a4b5c365b03177be59455d8bdfccca6de24a19cf24",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.dicepool.skill-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:ae1d1dcbf19994e03ef98f2c1feb2a7d6ba301269c1574bebe26bb77f92400f1",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.dicepool.scene-state",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:1ea9a423ad73e17d555e445e88b028e22679f70e135721b9b368ccfeabfb8cda",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.dicepool.contest-resolver",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:254a1e4cc0f81da471771d76416dc06a53db9070b2fcc1e4a07211421f84502b",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.dicepool.scene",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:ea27fa5a54e92dfb0e90aa6f9c5d773054e19316231e8907f76168e58d445caa",
+        "source": "bundled",
+        "optional": false
+      },
+      {
+        "id": "example.dicepool.ui",
+        "apiVersion": "1.0.0",
+        "implementationVersion": "1.0.0",
+        "digest": "sha256:2a8826195a503dce6c585df4f988fbe4715d443ebc31eab8ef80290fb3366595",
+        "source": "bundled",
+        "optional": false
+      }
+    ]
+  },
+  "digest": "sha256:10bc0bba7ab2fe73730c4d39d636d33c159c3b1f270c1c20ba5d41241e9dd716"
+}
