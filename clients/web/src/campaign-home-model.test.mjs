@@ -27,7 +27,12 @@ test('Campaign Home activity requires a role-matched projection and omits GM-onl
 })
 
 test('Campaign Home identifies the campaign and continues a prepared encounter', () => {
-  assert.deepEqual(campaignHomeIdentity(null, snapshot), { name: 'campaign-1', system: 'System not configured' })
+  assert.deepEqual(campaignHomeIdentity(null, snapshot), { name: 'campaign-1', system: 'No game system is pinned' })
+  const pinnedSnapshot = {
+    ...snapshot, modules: [{ manifest: { id: 'example.system-a', version: '0.1.0', name: 'Emberbound' } }],
+  }
+  assert.deepEqual(campaignHomeIdentity({ name: 'Test', systemModuleId: 'example.system-a', systemModuleVersion: '0.1.0' }, pinnedSnapshot), { name: 'Test', system: 'Emberbound · 0.1.0' })
+  assert.deepEqual(campaignHomeIdentity({ name: 'Test', systemModuleId: 'example.system-a', systemModuleVersion: '0.2.0' }, pinnedSnapshot), { name: 'Test', system: 'example.system-a · 0.2.0' })
   const encounters = [{ id: 'a', status: 'active' }, { id: 'p', status: 'prepared' }]
   assert.equal(lastPreparedEncounter(encounters)?.id, 'p')
   assert.equal(lastPreparedEncounter([]), null)

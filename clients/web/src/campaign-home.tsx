@@ -12,9 +12,10 @@ type Props = {
   maps: MapSceneView[]
   onOpen: (target: 'table' | 'characters' | 'encounters' | 'lore' | 'maps', id?: string) => void
   onCreate: (target: 'character' | 'encounter') => void
+  onEnrollPlayer: () => void
 }
 
-export function CampaignHome({ role, snapshot, campaign, connection, session, error, lore, maps, onOpen, onCreate }: Props) {
+export function CampaignHome({ role, snapshot, campaign, connection, session, error, lore, maps, onOpen, onCreate, onEnrollPlayer }: Props) {
   const state = campaignHomeState({ snapshot, connection, error, hasContent: lore.length > 0 || maps.length > 0 || Boolean(snapshot?.activity.length) })
   const identity = campaignHomeIdentity(campaign, snapshot)
   const activity: Activity[] = campaignHomeActivity(snapshot, role)
@@ -36,6 +37,15 @@ export function CampaignHome({ role, snapshot, campaign, connection, session, er
     {state === 'offline' && <p className="home-stale" role="status">Showing this browser’s last authorized snapshot. Details may be stale until the host reconnects.</p>}
     {state === 'empty' && <section className="home-state"><h2>{role === 'gm' ? 'Your campaign is ready to prepare' : 'Your campaign is getting started'}</h2><p>{role === 'gm' ? 'Create a character or prepare an encounter to begin.' : 'No campaign content is currently available to you.'}</p></section>}
 
+    {role === 'gm' && <section className={`home-ruleset${campaign?.systemModuleId ? ' is-pinned' : ' is-unpinned'}`} aria-label="Campaign game system">
+      <div><p className="eyebrow">CAMPAIGN RULESET</p><h2>{campaign?.systemModuleId ? identity.system : 'No game system is pinned'}</h2>
+        {campaign?.systemModuleId && campaign.systemModuleVersion
+          ? <p>Locked to this campaign: <code>{campaign.systemModuleId}@{campaign.systemModuleVersion}</code>. Changing the ruleset requires an explicit migration.</p>
+          : <p>Choose an installed game system in Campaign setup above. Potomac will keep that exact version pinned to this campaign.</p>}
+      </div>
+      {!campaign?.systemModuleId && <span role="status">Setup needed</span>}
+    </section>}
+
     <section className="home-session" aria-label="Current session">
       <div><p className="eyebrow">CURRENT SESSION</p><h2>{sessionLabel}</h2><p>{sessionEncounter ? `Active encounter: ${sessionEncounter.name}` : role === 'gm' ? 'No encounter is active.' : 'No current encounter is available.'}</p></div>
       <div className="home-actions">
@@ -45,6 +55,7 @@ export function CampaignHome({ role, snapshot, campaign, connection, session, er
     </section>
 
     {role === 'gm' ? <section className="home-quick-actions" aria-label="GM quick actions"><h2>Preparation</h2>
+      <button type="button" disabled={connection !== 'connected'} onClick={onEnrollPlayer}>Enroll a player</button>
       <button type="button" onClick={() => onCreate('encounter')}>Create encounter</button>
       <button type="button" onClick={() => onCreate('character')}>Create character</button>
       <button type="button" onClick={() => onOpen('lore')}>Create Lore entry · open Lore</button>

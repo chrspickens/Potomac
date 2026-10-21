@@ -7,7 +7,7 @@ import './maps.css'
 import './maps-controls.css'
 import './maps-responsive.css'
 
-type Props = { role: Role; connection: ConnectionStatus; campaignId: string; actors: Actor[]; encounters: Encounter[]; loreArticles?: LoreArticle[]; hostAvailable: boolean; initialSceneId?: string; cachedScenes?: MapSceneView[]; cachedBackgrounds?: Record<string, Blob>; cacheTimes?: Record<string, number>; onHandoff?: (app: 'encounters' | 'characters' | 'lore', id?: string, originSceneId?: string) => void; onSceneChange?: (scenes: MapSceneView[]) => void; onSelectedSceneChange?: (sceneId: string) => void }
+type Props = { role: Role; connection: ConnectionStatus; campaignId: string; actors: Actor[]; encounters: Encounter[]; loreArticles?: LoreArticle[]; hostAvailable: boolean; initialSceneId?: string; preparationEncounterId?: string; preparationEncounterName?: string; onReturnToPreparation?: () => void; cachedScenes?: MapSceneView[]; cachedBackgrounds?: Record<string, Blob>; cacheTimes?: Record<string, number>; onHandoff?: (app: 'encounters' | 'characters' | 'lore', id?: string, originSceneId?: string) => void; onSceneChange?: (scenes: MapSceneView[]) => void; onSelectedSceneChange?: (sceneId: string) => void }
 const newId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`
 
 export function MapCanvas({ scene, actors, onSelect, onDropPiece, onKeyboardMovePiece, backgroundUrl, showPrivate = false, snapToGrid = false, onSnapToGridChange }: { scene: MapSceneView; actors: Actor[]; onSelect?: (piece: MapPieceView) => void; onDropPiece?: (piece: MapPieceView, point: { x: number; y: number }) => void; onKeyboardMovePiece?: (piece: MapPieceView, point: { x: number; y: number }) => void; backgroundUrl?: string; showPrivate?: boolean; snapToGrid?: boolean; onSnapToGridChange?: (enabled: boolean) => void }) {
@@ -52,7 +52,7 @@ export function MapCanvas({ scene, actors, onSelect, onDropPiece, onKeyboardMove
   </svg></div>
 }
 
-export function MapsApp({ role, connection, campaignId, actors, encounters, loreArticles = [], hostAvailable, initialSceneId, cachedScenes = [], cachedBackgrounds = {}, cacheTimes = {}, onHandoff, onSceneChange, onSelectedSceneChange }: Props) {
+export function MapsApp({ role, connection, campaignId, actors, encounters, loreArticles = [], hostAvailable, initialSceneId, preparationEncounterId, preparationEncounterName: preparationEncounterNameProp, onReturnToPreparation, cachedScenes = [], cachedBackgrounds = {}, cacheTimes = {}, onHandoff, onSceneChange, onSelectedSceneChange }: Props) {
   const [scenes, setScenes] = useState(cachedScenes)
   const [selectedId, setSelectedId] = useState(initialSceneId || cachedScenes[0]?.id || '')
   const [selectedPiece, setSelectedPiece] = useState<MapPieceView>()
@@ -63,6 +63,8 @@ export function MapsApp({ role, connection, campaignId, actors, encounters, lore
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const selected = scenes.find(scene => scene.id === selectedId)
+  const preparationEncounter = encounters.find(encounter => encounter.id === preparationEncounterId)
+  const preparationEncounterName = preparationEncounter?.name || preparationEncounterNameProp || 'encounter'
   const [name, setName] = useState('')
   const [kind, setKind] = useState<'world' | 'battle'>('world')
   const [width, setWidth] = useState(100)
@@ -117,14 +119,52 @@ export function MapsApp({ role, connection, campaignId, actors, encounters, lore
   }
   async function addScene(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError('')
-    try {
-      const input = { id: newId('map'), operationId: newId('op'), baseRevision: 0, campaignId, name: name.trim(), kind, width, height, grid: { type: gridType, size: gridType === 'none' ? 0 : gridSize }, visibility: 'gm' as const }
-      const result = await createMap(role, input); let created = await loadMap(role, result.sceneId)
-      if (backgroundFile) { await uploadMapBackground(created.id, backgroundFile, created.revision); created = await loadMap(role, created.id); setBackgroundFile(undefined) }
-      const next = [...scenes, created]
-      setScenes(next); onSceneChange?.(next); setSelectedId(created.id); onSelectedSceneChange?.(created.id); setName(''); setNotice('Map created on host.')
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Map could not be created') }
-    finally { setBusy(false) }
+    setNotice('')
+    const input = { id: newId('map'), operationId: newId('op'), baseRevision: 0, campaignId, name: name.trim(), kind, width, height, grid: { type: gridType, size: gridType === 'none' ? 0 : gridSize }, visibility: 'gm' as const }
+    let result: Awaited<ReturnType<typeof createMap>>
+    try { result = await createMap(role, input) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Map could not be created'); setBusy(false); return }
+
+    let created: MapSceneView
+    try { created = await loadMap(role, result.sceneId) }
+    catch (cause) { setError(`Map created on the host, but it could not be loaded in Maps: ${cause instanceof Error ? cause.message : 'refresh failed'}`); setBusy(false); return }
+
+    const messages = ['Map created on the host.']
+    if (backgroundFile) {
+      try {
+        await uploadMapBackground(created.id, backgroundFile, created.revision)
+        created = await loadMap(role, created.id)
+        messages[0] = 'Map and background saved on the host.'
+      } catch (cause) {
+        messages.push(`The map exists, but its background could not be saved: ${cause instanceof Error ? cause.message : 'upload failed'}`)
+      }
+      setBackgroundFile(undefined)
+    }
+
+    const publishCreatedMap = (scene: MapSceneView) => {
+      const next = [...scenes.filter(item => item.id !== scene.id), scene]
+      setScenes(next); onSceneChange?.(next); setSelectedId(scene.id); onSelectedSceneChange?.(scene.id)
+    }
+    publishCreatedMap(created)
+    setName('')
+
+    if (preparationEncounterId) {
+      const encounterName = preparationEncounterName
+      let associationCommitted = false
+      try {
+        await commandMap(role, created.id, { operationId: newId('op'), baseRevision: created.revision, command: 'encounter.set', encounterId: preparationEncounterId })
+        associationCommitted = true
+        created = await loadMap(role, created.id)
+        publishCreatedMap(created)
+        messages.push(`Linked to ${encounterName}.`)
+      } catch (cause) {
+        messages.push(associationCommitted
+          ? `The map was linked to ${encounterName}, but Maps could not refresh its details: ${cause instanceof Error ? cause.message : 'refresh failed'}.`
+          : `The map was created, but could not be linked to ${encounterName}: ${cause instanceof Error ? cause.message : 'association failed'}. Use the Encounter selector to link it manually.`)
+      }
+    }
+    setNotice(messages.join(' '))
+    setBusy(false)
   }
   async function savePiece(piece: MapPiece, point: { x: number; y: number }) {
     if (!selected || connection !== 'connected' || role !== 'gm' || (piece.x === point.x && piece.y === point.y)) return
@@ -173,7 +213,7 @@ export function MapsApp({ role, connection, campaignId, actors, encounters, lore
   }
 
   return <main className="maps-page">
-    <div className="page-intro"><div><p className="eyebrow">APPLICATION / MAPS</p><h1>Maps</h1><p>Campaign scenes, encounter layouts, and authorized map pieces.</p></div>{selected && <span className="map-revision">{connection === 'connected' ? `Host revision ${selected.revision}` : `Cached · revision ${selected.revision} · read only`}</span>}</div>
+    <div className="page-intro"><div><p className="eyebrow">APPLICATION / MAPS</p><h1>Maps</h1><p>Campaign scenes, encounter layouts, and authorized map pieces.</p>{preparationEncounterId && <p className="map-preparation-context">Preparing map for <strong>{preparationEncounterName}</strong>.</p>}</div><div className="map-page-actions">{preparationEncounterId && onReturnToPreparation && <button type="button" onClick={onReturnToPreparation}>Return to {preparationEncounterName} preparation</button>}{selected && <span className="map-revision">{connection === 'connected' ? `Host revision ${selected.revision}` : `Cached · revision ${selected.revision} · read only`}</span>}</div></div>
     {connection !== 'connected' && <p className="map-cache-state" role="status">Showing the last authorized map snapshots. Offline maps are read only and may be stale{selected && cacheTimes[selected.id] ? ` · last synced ${new Date(cacheTimes[selected.id]).toLocaleString()}` : ''}.</p>}
     {loading && <p role="status">Loading authorized maps…</p>}{error && <p className="map-error" role="alert">{error}</p>}{notice && <p className="map-notice" role="status">{notice}</p>}
     <div className="maps-layout"><aside className="map-browser"><h2>Scenes</h2><label>Filter scenes<select aria-label="Filter scenes" value={mapFilter} onChange={event => setMapFilter(event.target.value as typeof mapFilter)}><option value="all">All</option><option value="world">World</option><option value="battle">Battle</option></select></label>{scenes.filter(scene => mapFilter === 'all' || scene.kind === mapFilter).length ? scenes.filter(scene => mapFilter === 'all' || scene.kind === mapFilter).map(scene => <button key={scene.id} className={selectedId === scene.id ? 'active' : ''} onClick={() => { setSelectedId(scene.id); onSelectedSceneChange?.(scene.id); setSelectedPiece(undefined) }}><strong>{scene.name}</strong><small>{scene.kind} · {scene.visibility} · {scene.width}×{scene.height}</small></button>) : <p>{connection === 'connected' ? 'No authorized maps yet.' : 'No cached maps.'}</p>}
@@ -183,7 +223,7 @@ export function MapsApp({ role, connection, campaignId, actors, encounters, lore
         {selected.encounterId && <button type="button" onClick={() => onHandoff?.('encounters', selected.encounterId!)}>Open associated encounter</button>}
         {selected.background && !backgroundUrl && <p role="status">{connection === 'connected' ? 'Loading authorized background…' : 'Background unavailable offline unless previously cached.'}</p>}
         <MapCanvas key={selected.id} scene={selected} actors={actors} backgroundUrl={backgroundUrl} showPrivate={role === 'gm'} snapToGrid={snapToGrid} onSnapToGridChange={setSnapToGrid} onSelect={setSelectedPiece} onDropPiece={role === 'gm' && connection === 'connected' ? (piece, point) => void savePiece(piece, point) : undefined} onKeyboardMovePiece={role === 'gm' && connection === 'connected' ? (piece, point) => queueKeyboardMove(piece, point) : undefined} />
-        <div className="map-piece-list"><div><h2>Pieces</h2>{role === 'gm' && connection === 'connected' && <details><summary>{selected.kind === 'world' ? 'Add location pin or actor token' : 'Add actor token or location pin'}</summary><form className="map-add-piece" onSubmit={event => { event.preventDefault(); if (!selected) return; const form = new FormData(event.currentTarget); const actorId = String(form.get('actorId') || ''); const label = String(form.get('label') || '').trim(); const piece: MapPiece = { id: newId('piece'), sceneId: selected.id, kind: actorId ? 'actor' : 'pin', x: selected.width / 2, y: selected.height / 2, visible: false, revision: 1, ...(actorId ? { actorId } : { label: label || 'Pin' }) }; void send(selected, { operationId: newId('op'), baseRevision: selected.revision, command: 'piece.put', piece: { ...piece } }); event.currentTarget.reset() }}><label>Actor<select name="actorId" defaultValue=""><option value="">Place a pin instead</option>{actors.map(actor => <option key={actor.entityId} value={actor.entityId}>{actor.name}</option>)}</select></label><label>Pin label<input name="label" maxLength={200} /></label><button>Add at center · GM only</button></form></details>}</div>
+        <div className="map-piece-list"><div><h2>Pieces</h2>{role === 'gm' && connection === 'connected' && <p className="map-placement-hint">Actor tokens start at the center. Add one, then drag it on the map or edit its X and Y coordinates below.</p>}{role === 'gm' && connection === 'connected' && <details><summary>{selected.kind === 'world' ? 'Add location pin or actor token' : 'Add actor token or location pin'}</summary><form className="map-add-piece" onSubmit={event => { event.preventDefault(); if (!selected) return; const form = new FormData(event.currentTarget); const actorId = String(form.get('actorId') || ''); const label = String(form.get('label') || '').trim(); const piece: MapPiece = { id: newId('piece'), sceneId: selected.id, kind: actorId ? 'actor' : 'pin', x: selected.width / 2, y: selected.height / 2, visible: false, revision: 1, ...(actorId ? { actorId } : { label: label || 'Pin' }) }; void send(selected, { operationId: newId('op'), baseRevision: selected.revision, command: 'piece.put', piece: { ...piece } }); event.currentTarget.reset() }}><label>Actor<select name="actorId" defaultValue=""><option value="">Place a pin instead</option>{actors.map(actor => <option key={actor.entityId} value={actor.entityId}>{actor.name}</option>)}</select></label><label>Pin label<input name="label" maxLength={200} /></label><button>Add at center · GM only</button></form></details>}</div>
           {selected.pieces.map(piece => <div className={`map-piece-row ${selectedPiece?.id === piece.id ? 'active' : ''}`} key={piece.id}><button onClick={() => setSelectedPiece(piece)}><strong>{pieceDisplayLabel(piece, new Map(actors.map(actor => [actor.entityId, actor.name])))}</strong><small>{piece.kind} · {piece.x.toFixed(1)}, {piece.y.toFixed(1)}{piece.visible ? ' · shared' : ' · GM only'}</small></button>{piece.kind === 'actor' && piece.actorId && <button onClick={() => onHandoff?.('characters', piece.actorId)}>Open character</button>}{piece.destination && <button onClick={() => followDestination(piece.destination!)}>{piece.destination.kind === 'map_scene' ? `Go to ${piece.destination.name}` : `Open ${piece.destination.title}`}</button>}{role === 'gm' && connection === 'connected' && <><label>Label<input aria-label={`Label for ${pieceDisplayLabel(piece, new Map(actors.map(actor => [actor.entityId, actor.name])))}`} maxLength={200} defaultValue={piece.label || ''} onBlur={event => { if (piece.kind === 'pin' && event.target.value !== (piece.label || '')) void updatePiece(piece, { label: event.target.value }) }} /></label><label>X<input aria-label={`X coordinate for ${piece.id}`} type="number" min="0" max={selected.width} step="any" defaultValue={piece.x} onBlur={event => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= 0 && value <= selected.width && value !== piece.x) void updatePiece(piece, { x: value }) }} /></label><label>Y<input aria-label={`Y coordinate for ${piece.id}`} type="number" min="0" max={selected.height} step="any" defaultValue={piece.y} onBlur={event => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= 0 && value <= selected.height && value !== piece.y) void updatePiece(piece, { y: value }) }} /></label><label><input type="checkbox" checked={piece.visible} disabled={busy} onChange={event => void updatePiece(piece, { visible: event.target.checked })} /> Shared</label><button disabled={busy} onClick={() => void send(selected, { operationId: newId('op'), baseRevision: selected.revision, command: 'piece.delete', pieceId: piece.id })}>Remove</button></>}</div>)}</div>
         <div className="map-links"><h2>Pin destinations</h2>{selected.pieces.filter(piece => piece.kind === 'pin').map(piece => <div className="map-pin-destination" key={piece.id}><form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void send(selected, { operationId: newId('op'), baseRevision: selected.revision, command: 'link.put', pieceId: piece.id, targetSceneId: String(data.get('targetSceneId')), label: String(data.get('label') || '') }) }}><span>{piece.label || 'Pin'} · Map</span><select aria-label={`Destination for ${piece.label || piece.id}`} name="targetSceneId" defaultValue={piece.destination?.kind === 'map_scene' ? piece.destination.sceneId : ''} disabled={role !== 'gm' || connection !== 'connected'}><option value="" disabled>Select destination</option>{scenes.filter(scene => scene.id !== selected.id).map(scene => <option key={scene.id} value={scene.id}>{scene.name}</option>)}</select><input aria-label="Link label" name="label" placeholder="Handoff label" defaultValue={piece.destination?.label || ''} disabled={role !== 'gm' || connection !== 'connected'} />{role === 'gm' && <><button disabled={busy || connection !== 'connected'}>Save link</button>{piece.destination?.kind === 'map_scene' && <button type="button" disabled={busy || connection !== 'connected'} onClick={() => void send(selected, { operationId: newId('op'), baseRevision: selected.revision, command: 'link.delete', pieceId: piece.id })}>Unlink</button>}</>}</form><form className="map-lore-link" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void send(selected, { operationId: newId('op'), baseRevision: selected.revision, command: 'lore-link.put', pieceId: piece.id, targetLoreEntryId: String(data.get('targetLoreEntryId')), label: String(data.get('label') || '') }) }}><label>Lore destination<select aria-label={`Lore destination for ${piece.label || piece.id}`} name="targetLoreEntryId" defaultValue={piece.destination?.kind === 'lore_entry' ? piece.destination.entryId : ''} disabled={role !== 'gm' || connection !== 'connected'}><option value="">No Lore destination</option>{loreArticles.filter(article => !article.archived).map(article => <option key={article.id} value={article.id}>{article.title}{article.visibility === 'gm' ? ' · GM only' : ''}</option>)}</select></label><label>Lore link label<input aria-label={`Lore link label for ${piece.label || piece.id}`} name="label" placeholder="Optional label" defaultValue={piece.destination?.kind === 'lore_entry' ? piece.destination.label : ''} disabled={role !== 'gm' || connection !== 'connected'} /></label>{role === 'gm' && <><button disabled={busy || connection !== 'connected'}>Save Lore link</button>{piece.destination?.kind === 'lore_entry' && <button type="button" disabled={busy || connection !== 'connected'} onClick={() => void send(selected, { operationId: newId('op'), baseRevision: selected.revision, command: 'lore-link.delete', pieceId: piece.id })}>Remove Lore link</button>}</>}</form></div>)}</div>
         {selectedPiece?.destination && <button className="primary" onClick={() => followDestination(selectedPiece.destination!)}>{selectedPiece.destination.kind === 'map_scene' ? `Travel to ${selectedPiece.destination.name}` : `Open ${selectedPiece.destination.title}`}</button>}

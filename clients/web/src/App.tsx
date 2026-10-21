@@ -21,6 +21,7 @@ import { CampaignSearch } from './campaign-search'
 import { campaignSearchAvailable } from './campaign-search-availability'
 import { CampaignHome } from './campaign-home'
 import './campaign-home.css'
+import './first-run.css'
 
 const profileKey = 'potomac.workspace.demo-profile'
 const newId = () => crypto.randomUUID()
@@ -97,6 +98,14 @@ export default function App() {
   const [dependencyEntityId, setDependencyEntityId] = useState('')
   const dependencyEntityIdRef = useRef('')
   const [issuedCredential, setIssuedCredential] = useState<{ memberId: string; credential: string } | null>(null)
+  const [showEnrollment, setShowEnrollment] = useState(false)
+  const [showCredentialEntry, setShowCredentialEntry] = useState(false)
+  const enrollmentDialogRef = useRef<HTMLDialogElement>(null)
+  const credentialDialogRef = useRef<HTMLDialogElement>(null)
+  const [enrollmentDisplayName, setEnrollmentDisplayName] = useState('')
+  const [credentialDraft, setCredentialDraft] = useState('')
+  const [grantMemberId, setGrantMemberId] = useState('')
+  const [credentialNotice, setCredentialNotice] = useState('')
   const [proposals, setProposals] = useState<ReviewProposal[]>([])
   const [activeProposal, setActiveProposal] = useState<ReviewProposal | null>(null)
   const decisionIds = useRef(new Map<string, string>())
@@ -147,6 +156,16 @@ export default function App() {
     participantIds: string[]
   } | null>(null)
   const [searchReturn, setSearchReturn] = useState<{ section: 'home' | 'dashboard' | 'table' | 'characters' | 'encounters' | 'lore' | 'maps'; actorId: string; mapId?: string; loreId?: string } | null>(null)
+
+  useEffect(() => {
+    if (showEnrollment && enrollmentDialogRef.current && !enrollmentDialogRef.current.open) enrollmentDialogRef.current.showModal()
+    else if (!showEnrollment && enrollmentDialogRef.current?.open) enrollmentDialogRef.current.close()
+  }, [showEnrollment])
+
+  useEffect(() => {
+    if (showCredentialEntry && credentialDialogRef.current && !credentialDialogRef.current.open) credentialDialogRef.current.showModal()
+    else if (!showCredentialEntry && credentialDialogRef.current?.open) credentialDialogRef.current.close()
+  }, [showCredentialEntry])
 
   useEffect(() => {
     let stopped = false
@@ -643,13 +662,17 @@ export default function App() {
     setProfileId(id)
   }
 
-  const usePlayerCredential = async () => {
-    const credential = window.prompt('Enter the credential issued by your GM for this local host')?.trim()
+  const usePlayerCredential = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const credential = credentialDraft.trim()
     if (!credential) return
+    setError(''); setBusy(true)
     try {
       const verified = await connectPlayerCredential(credential)
       setSnapshot(verified); setRole('player'); setIdentityRevision(value => value + 1); setError('')
+      setCredentialDraft(''); setShowCredentialEntry(false)
     } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
   }
   const forgetDevice = async () => {
     if (!configuredHost) return
@@ -661,21 +684,34 @@ export default function App() {
       setSnapshot(null); setLastSyncedAt(null); setIdentityRevision(value => value + 1)
     } catch (cause) { setError(`Could not clear local data: ${displayError(cause)}`) }
   }
-  const enrollPlayer = async () => {
-    const displayName = window.prompt('Player display name')?.trim()
+  const enrollPlayer = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const displayName = enrollmentDisplayName.trim()
     if (!displayName) return
+    setError(''); setCredentialNotice(''); setBusy(true)
     try {
       const enrolled = await enrollLocalPlayer(displayName)
       setIssuedCredential({ memberId: enrolled.memberId, credential: enrolled.credential })
-      setActionState(`Player ${enrolled.displayName} enrolled. Share the credential privately; it is shown here only until dismissed.`)
+      setGrantMemberId(enrolled.memberId)
+      setEnrollmentDisplayName('')
+      setActionState(`Player ${enrolled.displayName} enrolled. Their credential is ready to hand off.`)
     } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
   }
-  const grantSelectedActor = async () => {
+  const grantSelectedActor = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
     if (!selectedActor) return
-    const memberId = window.prompt(`Member ID to grant read/action access to ${selectedActor.name}`, issuedCredential?.memberId || '')?.trim()
+    const memberId = grantMemberId.trim()
     if (!memberId) return
-    try { await grantActorToMember(selectedActor.entityId, memberId); setActionState(`${selectedActor.name} granted to member ${memberId}.`) }
+    setError(''); setBusy(true)
+    try { await grantActorToMember(selectedActor.entityId, memberId); setActionState(`${selectedActor.name} granted to member ${memberId}.`); setGrantMemberId('') }
     catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const copyCredential = async () => {
+    if (!issuedCredential) return
+    try { await navigator.clipboard.writeText(issuedCredential.credential); setCredentialNotice('Credential copied. Share it privately with this player.') }
+    catch { setCredentialNotice('Clipboard access is unavailable. Select and copy the credential below, then share it privately.') }
   }
   const reviewProposal = async (id: string) => {
     try { setActiveProposal(await loadReviewProposal(id)) }
@@ -805,10 +841,40 @@ export default function App() {
     finally { setBusy(false) }
   } }}><LoreTargetContext.Provider value={setLoreTargetId}><LoreRelationsContext.Provider value={loreRelations}><LoreArticlesContext.Provider value={loreArticles}><div className="app-shell">
     <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{campaign?.name || snapshot?.context.campaignId || 'Connecting…'}</strong><small>{campaign?.systemModuleId ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : 'Configure campaign in GM setup'}</small></div><nav aria-label="Applications"><button className={section === 'home' ? 'active' : ''} onClick={() => setSection('home')}>⌂ <span>Home</span></button><button className={section === 'table' ? 'active' : ''} onClick={() => setSection('table')}>▦ <span>Table</span></button><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▤ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><button className={section === 'encounters' ? 'active' : ''} onClick={() => setSection('encounters')}>⚑ <span>Encounters</span></button><button className={section === 'maps' ? 'active' : ''} onClick={() => { setMapTargetId(undefined); setSection('maps') }}>⌖ <span>Maps</span></button><button className={section === 'lore' ? 'active' : ''} onClick={() => { setLoreTargetId(undefined); setSection('lore') }}>▤ <span>Lore</span></button></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
-    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">{section === 'home' ? 'CAMPAIGN' : `WORKSPACE / ${section.toUpperCase()}`}</span><strong>{section === 'home' ? 'Campaign Home' : section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'table' ? 'Table' : section === 'characters' ? 'Characters' : section === 'lore' ? 'Lore' : section === 'maps' ? 'Maps' : 'Encounters'}</strong></div><div className="topbar-right">{searchReturn && <button type="button" onClick={returnFromSearchResult}>Back to origin</button>}{campaignSearchAvailable(host.mode) ? <CampaignSearch key={`${role}:${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} role={role} identityKey={`${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} connected={connection === 'connected' && Boolean(snapshot)} onOpen={openSearchResult} /> : <span className="capability-note" role="status">Campaign search requires a configured host.</span>}<span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => void usePlayerCredential()}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId(''); setSearchReturn(null) }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
+    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">{section === 'home' ? 'CAMPAIGN' : `WORKSPACE / ${section.toUpperCase()}`}</span><strong>{section === 'home' ? 'Campaign Home' : section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'table' ? 'Table' : section === 'characters' ? 'Characters' : section === 'lore' ? 'Lore' : section === 'maps' ? 'Maps' : 'Encounters'}</strong></div><div className="topbar-right">{searchReturn && <button type="button" onClick={returnFromSearchResult}>Back to origin</button>}{campaignSearchAvailable(host.mode) ? <CampaignSearch key={`${role}:${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} role={role} identityKey={`${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} connected={connection === 'connected' && Boolean(snapshot)} onOpen={openSearchResult} /> : <span className="capability-note" role="status">Campaign search requires a configured host.</span>}<span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>{configuredHost && <button onClick={() => { setCredentialDraft(''); setShowCredentialEntry(true) }}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId(''); setSearchReturn(null) }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {role === 'player' && section !== 'home' && <section className="session-strip player-session-focus" aria-label="Your live session"><div><p className="eyebrow">PLAYER SESSION</p><strong>{sessionSnapshot?.current?.status === 'paused' ? 'Session paused' : sessionSnapshot?.current?.status === 'active' ? 'Session live' : 'No live session'}</strong><small>{activeEncounter ? `Current encounter: ${activeEncounter.name}` : 'No current encounter is published.'}{playerCharacter ? ` · Your character: ${playerCharacter.name}` : ' · No authorized character yet.'}</small></div>{section !== 'table' && <button type="button" onClick={returnToTable}>Return to Table</button>}</section>}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
+    {showCredentialEntry && <dialog ref={credentialDialogRef} className="workflow-dialog" aria-labelledby="credential-entry-title" onClose={() => { setShowCredentialEntry(false); setCredentialDraft('') }}>
+      <button type="button" className="workflow-close" onClick={() => { setShowCredentialEntry(false); setCredentialDraft('') }}>Close</button>
+      <h2 id="credential-entry-title">Join this campaign</h2>
+      <p>Enter the player credential your GM shared with you. Potomac remembers it in this browser profile for future visits.</p>
+      {error && <p role="alert">{error}</p>}
+      <form onSubmit={event => void usePlayerCredential(event)}>
+        <label>Player credential<input autoFocus type="password" autoComplete="off" required value={credentialDraft} onChange={event => setCredentialDraft(event.target.value)} /></label>
+        <div className="workflow-actions"><button className="primary" disabled={busy || !credentialDraft.trim()}>Connect as player</button><button type="button" onClick={() => { setShowCredentialEntry(false); setCredentialDraft('') }}>Cancel</button></div>
+      </form>
+    </dialog>}
+    {showEnrollment && <dialog ref={enrollmentDialogRef} className="workflow-dialog" aria-labelledby="enrollment-title" onClose={() => { setShowEnrollment(false); setIssuedCredential(null); setCredentialNotice('') }}>
+      <button type="button" className="workflow-close" onClick={() => { setShowEnrollment(false); setIssuedCredential(null); setCredentialNotice('') }}>Close</button>
+      {!issuedCredential ? <>
+        <h2 id="enrollment-title">Enroll a player</h2>
+        <p>Enter the player’s display name. Potomac creates a reusable player credential for their own browser.</p>
+        {error && <p role="alert">{error}</p>}
+        <form onSubmit={event => void enrollPlayer(event)}>
+          <label>Player name<input autoFocus required maxLength={120} value={enrollmentDisplayName} onChange={event => setEnrollmentDisplayName(event.target.value)} /></label>
+          <div className="workflow-actions"><button className="primary" disabled={busy || connection !== 'connected' || !enrollmentDisplayName.trim()}>Create player credential</button><button type="button" onClick={() => setShowEnrollment(false)}>Cancel</button></div>
+        </form>
+      </> : <>
+        <h2 id="enrollment-title">Player enrolled</h2>
+        <p>Share this credential privately with the player. Potomac shows it only at enrollment, so copy or record it before closing.</p>
+        <label>Member ID<input readOnly value={issuedCredential.memberId} onFocus={event => event.currentTarget.select()} /></label>
+        <label>Player credential (shown once)<input readOnly value={issuedCredential.credential} onFocus={event => event.currentTarget.select()} /></label>
+        <div className="workflow-actions"><button type="button" className="primary" onClick={() => void copyCredential()}>Copy credential</button><button type="button" onClick={() => { setIssuedCredential(null); setCredentialNotice(''); setShowEnrollment(false) }}>Done</button></div>
+        {credentialNotice && <p role="status">{credentialNotice}</p>}
+        <small>To give this player a character, select it in Characters and use the member ID in Players &amp; permissions.</small>
+      </>}
+    </dialog>}
     {role === 'gm' && configuredHost && campaign && <section className="campaign-setup" aria-label="Campaign setup">
       <form onSubmit={event => void saveCampaignSetup(event)}>
         <strong>Campaign setup</strong>
@@ -822,11 +888,11 @@ export default function App() {
         {campaign.systemModuleId && <small>System pin is locked; changing rules versions needs an explicit migration.</small>}
       </form>
     </section>}
-    {role === 'gm' && configuredHost && <details className="gm-admin"><summary>GM administration · {proposals.length} pending</summary><div><button onClick={() => void enrollPlayer()}>Enroll player</button><button disabled={!selectedActor} onClick={() => void grantSelectedActor()}>Grant selected character</button>{issuedCredential && <p>Member ID: <code>{issuedCredential.memberId}</code> · One-time credential: <code>{issuedCredential.credential}</code> <button onClick={() => setIssuedCredential(null)}>Hide credential</button></p>}<section aria-label="GM proposal review"><strong>Review queue</strong>{proposals.map(proposal => <p key={proposal.id}>{proposal.actionId} · {proposal.entityId} · member {proposal.memberId.slice(0, 8)} <button onClick={() => void reviewProposal(proposal.id)}>Review</button></p>)}{activeProposal && <div><h2>Review {activeProposal.actionId}</h2><p>Member {activeProposal.memberId} · actor {activeProposal.entityId}</p><pre>{JSON.stringify(activeProposal.request, null, 2)}</pre><button disabled={busy} onClick={() => void decideProposal('accept')}>Accept after revalidation</button><button disabled={busy} onClick={() => void decideProposal('reject')}>Reject</button><button onClick={() => setActiveProposal(null)}>Close</button></div>}</section></div></details>}
+    {role === 'gm' && configuredHost && <details className="gm-admin"><summary>Players &amp; permissions · {proposals.length} pending</summary><div><button type="button" onClick={() => { setIssuedCredential(null); setShowEnrollment(true) }}>Enroll player</button>{selectedActor && <form className="member-grant-form" onSubmit={event => void grantSelectedActor(event)}><label>Grant {selectedActor.name} to member ID<input required value={grantMemberId} onChange={event => setGrantMemberId(event.target.value)} /></label><button disabled={busy || connection !== 'connected' || !grantMemberId.trim()}>Grant character</button></form>}<section aria-label="GM proposal review"><strong>Review queue</strong>{proposals.map(proposal => <p key={proposal.id}>{proposal.actionId} · {proposal.entityId} · member {proposal.memberId.slice(0, 8)} <button onClick={() => void reviewProposal(proposal.id)}>Review</button></p>)}{activeProposal && <div><h2>Review {activeProposal.actionId}</h2><p>Member {activeProposal.memberId} · actor {activeProposal.entityId}</p><pre>{JSON.stringify(activeProposal.request, null, 2)}</pre><button disabled={busy} onClick={() => void decideProposal('accept')}>Accept after revalidation</button><button disabled={busy} onClick={() => void decideProposal('reject')}>Reject</button><button onClick={() => setActiveProposal(null)}>Close</button></div>}</section></div></details>}
     {role === 'player' && queued.length > 0 && <section className="action-status" aria-label="Your local operation status"><strong>Local edits</strong>{queued.slice(-8).map(row => <p key={row.operation.operationId}>{row.operation.actionId} · {row.state}{row.receipt?.reasonCode ? ` · ${row.receipt.reasonCode}` : ''}{row.lastError === 'transport' ? ' · host acknowledgement unavailable; retrying' : ''} · {row.operation.operationId.slice(0, 8)}{row.state === 'queued' && row.firstSubmittedAt === undefined && <button onClick={() => void cancelUnsentEdit(row.operation.operationId)}>Cancel unsent edit</button>}</p>)}</section>}
     {role === 'player' && snapshot?.memberId && <section className="action-status" aria-label="Private local drafts"><label><input type="checkbox" checked={draftNextEdit} onChange={event => setDraftNextEdit(event.target.checked)} /> Save next permitted action as a private draft (do not submit)</label><label>Require this authorized character to stay unchanged <select aria-label="Dependency guard" value={dependencyEntityId} onChange={event => { dependencyEntityIdRef.current = event.target.value; setDependencyEntityId(event.target.value) }}><option value="">No dependency guard</option>{snapshot.actors.filter(actor => actor.entityId !== selectedActor?.entityId).map(actor => <option key={actor.entityId} value={actor.entityId}>{actor.name} · revision {actor.revision}</option>)}</select></label>{drafts.length > 0 && <div><strong>Private drafts · {drafts.length}</strong>{drafts.map(draft => { const payload = draft.payload as { kind?: string; operation?: OfflineOperation; reason?: { code?: string; message?: string } } | null; return <div key={draft.draftId}><p>{payload?.operation?.actionId || 'Saved edit'} · local only {payload?.kind === 'offline-intent' && <button onClick={() => void submitPrivateDraft(draft)}>Queue for host</button>}{payload?.kind === 'offline-conflict' && <button onClick={() => void editPrivateDraft(draft)}>Edit private draft parameters</button>}<button onClick={() => void discardPrivateDraft(draft)}>Discard draft</button></p>{payload?.kind === 'offline-conflict' && <details><summary>Review saved intent · {payload.reason?.code || 'conflict'}</summary><p>{payload.reason?.message || 'Original offline intent retained locally.'}</p><p>Original operation <code>{payload.operation?.operationId}</code></p><pre>{JSON.stringify(payload.operation?.parameters, null, 2)}</pre></details>}</div> })}</div>}</section>}
     {role === 'player' && queued.filter(row => row.state === 'conflicted' || row.state === 'rejected').map(row => <div className="action-status" key={row.operation.operationId}><ConflictRecovery queuedOperation={row} reason={{ code: row.receipt?.reasonCode || (row.state === 'rejected' ? 'gm_rejected' : 'conflict'), message: conflictMessage(row.receipt?.reasonCode || (row.state === 'rejected' ? 'gm_rejected' : 'conflict')) }} authorizedCurrentActor={connection === 'connected' ? snapshot?.actors.find(actor => actor.entityId === row.operation.entityId) : null} authorizedCurrentDependencies={connection === 'connected' ? (row.operation.dependencies || []).map(dependency => snapshot?.actors.find(actor => actor.entityId === dependency.entityId)).filter((actor): actor is Actor => Boolean(actor)) : []} canDiscardLocalOutcome onRetainAsPrivateDraft={draft => withPlayerStorage(storage => storage.savePrivateDraft(draft).then(() => {}))} onDiscardLocalOutcome={operationId => withPlayerStorage(storage => storage.deleteLocalOutcome(operationId))} onCreateOperation={operation => withPlayerStorage(async storage => { await storage.enqueueOperation(operation); if (connection === 'connected' && snapshot) void syncPending(snapshot) })} /></div>)}
-    {section === 'home' ? <CampaignHome role={role} snapshot={snapshot} campaign={campaign} connection={connection} session={sessionSnapshot} error={error} lore={loreArticles} maps={mapScenes} onOpen={openCampaignHomeTarget} onCreate={createFromCampaignHome} /> : section === 'maps' ? <MapsApp key={`${role}:${snapshot?.context.campaignId || 'connecting'}`} role={role} connection={connection} campaignId={snapshot?.context.campaignId || ''} actors={snapshot?.actors || []} encounters={tableEncounters} loreArticles={loreArticles} hostAvailable={Boolean(configuredHost)} initialSceneId={mapTargetId} cachedScenes={snapshot?.role === role ? mapScenes : []} cachedBackgrounds={snapshot?.role === role ? mapBackgrounds : {}} cacheTimes={snapshot?.role === role ? mapCacheTimes : {}} onSceneChange={setMapScenes} onSelectedSceneChange={setMapTargetId} onHandoff={(app, entityId, originSceneId) => { if (app === 'lore' && entityId) { setLoreReturnMapId(originSceneId); setLoreTargetId(entityId); setSection('lore'); return } setSection(app); if (app === 'characters' && entityId) setSelectedActorId(entityId); if (app === 'encounters' && entityId) { const target = tableEncounters.find(item => item.id === entityId); if (target) { setEncounterDetails(target); setEncounterNameInput(target.name); setEncounterSummaryInput(target.summary) } } }} /> : section === 'dashboard' || section === 'table' ? <main className="dashboard-page">
+    {section === 'home' ? <CampaignHome role={role} snapshot={snapshot} campaign={campaign} connection={connection} session={sessionSnapshot} error={error} lore={loreArticles} maps={mapScenes} onOpen={openCampaignHomeTarget} onCreate={createFromCampaignHome} onEnrollPlayer={() => { setIssuedCredential(null); setCredentialNotice(''); setShowEnrollment(true) }} /> : section === 'maps' ? <MapsApp key={`${role}:${snapshot?.context.campaignId || 'connecting'}`} role={role} connection={connection} campaignId={snapshot?.context.campaignId || ''} actors={snapshot?.actors || []} encounters={tableEncounters} loreArticles={loreArticles} hostAvailable={Boolean(configuredHost)} initialSceneId={mapTargetId} preparationEncounterId={preparationReturn?.encounterId} preparationEncounterName={preparationReturn?.encounterName} onReturnToPreparation={preparationReturn ? () => void returnToEncounterPreparation() : undefined} cachedScenes={snapshot?.role === role ? mapScenes : []} cachedBackgrounds={snapshot?.role === role ? mapBackgrounds : {}} cacheTimes={snapshot?.role === role ? mapCacheTimes : {}} onSceneChange={setMapScenes} onSelectedSceneChange={setMapTargetId} onHandoff={(app, entityId, originSceneId) => { if (app === 'lore' && entityId) { setLoreReturnMapId(originSceneId); setLoreTargetId(entityId); setSection('lore'); return } setSection(app); if (app === 'characters' && entityId) setSelectedActorId(entityId); if (app === 'encounters' && entityId) { const target = tableEncounters.find(item => item.id === entityId); if (target) { setEncounterDetails(target); setEncounterNameInput(target.name); setEncounterSummaryInput(target.summary) } } }} /> : section === 'dashboard' || section === 'table' ? <main className="dashboard-page">
       <div className="page-intro"><div><p className="eyebrow">{section === 'table' ? 'APPLICATION / TABLE' : 'YOUR CAMPAIGN, YOUR LAYOUT'}</p><h1>{section === 'table' ? 'Table' : dashboard?.name || 'Start a dashboard'}</h1><p>{section === 'table' ? 'Live session, authorized participants and recent activity.' : 'Personal panels follow shared play, while your arrangement stays yours.'}</p></div><div className="intro-actions">{section === 'table' && role === 'gm' && <button onClick={() => void returnToPreparation()}>Return to preparation</button>}<button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>
       {section === 'table' && <section className="session-strip" aria-label="Table workflow"><div><p className="eyebrow">GM WORKFLOW</p><strong>{sessionSnapshot?.current ? sessionSnapshot.current.status === 'finished' ? 'Session ended' : `Session ${sessionSnapshot.current.status}` : 'Ready for a session'}</strong><small>{activeEncounter ? `Current encounter: ${activeEncounter.name}` : 'Choose and activate a prepared encounter before starting.'}</small></div>{role === 'gm' && activeEncounter && !sessionSnapshot?.current && <button className="primary" disabled={busy || connection !== 'connected'} onClick={() => void changeSession('start', { id: activeEncounter.id, revision: activeEncounter.revision || 0 })}>Start Table session</button>}</section>}
       <div className="dashboard-toolbar"><label>Group <select value={activeGroup?.id || ''} onChange={event => { const group = workspace.groups.find(item => item.id === event.target.value); update({ ...workspace, activeGroupId: event.target.value, activeDashboardId: group?.dashboardIds[0] || '' }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div className="dashboard-tabs" role="tablist" aria-label="Dashboards">{groupDashboards.map(item => <button role="tab" aria-selected={item.id === dashboard?.id} className={item.id === dashboard?.id ? 'active' : ''} key={item.id} onClick={() => update({ ...workspace, activeDashboardId: item.id })}>{item.name}</button>)}</div>{editing && <div className="toolbar-actions"><label>Move to <select aria-label="Move dashboard to group" value={activeGroup?.id || ''} disabled={!dashboard} onChange={event => { if (!dashboard) return; const groupId = event.target.value; update({ ...workspace, activeGroupId: groupId, groups: workspace.groups.map(group => ({ ...group, dashboardIds: group.id === groupId ? [...group.dashboardIds.filter(id => id !== dashboard.id), dashboard.id] : group.dashboardIds.filter(id => id !== dashboard.id) })) }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><button onClick={createGroup}>+ Group</button><button onClick={renameGroup} disabled={!activeGroup}>Rename group</button><button onClick={createDashboard}>+ Dashboard</button><button onClick={renameDashboard} disabled={!dashboard}>Rename</button><button onClick={deleteDashboard} disabled={!dashboard}>Delete</button><button className="primary" onClick={() => setPicker(!picker)}>+ Add brick</button></div>}</div>

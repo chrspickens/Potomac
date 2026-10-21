@@ -161,6 +161,13 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 12000
   throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(detail)}`);
 }
 
+async function saveFirstRunScreenshot(sessionId, name) {
+  const { data } = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
+  const evidence = join(root, 'docs/evidence/gm-first-run');
+  await mkdir(evidence, { recursive: true });
+  writeFileSync(join(evidence, name), Buffer.from(data, 'base64'));
+}
+
 function startHost() {
   hostProcess = start(process.execPath, [join(root, 'server/host/index.mjs')], {
     env: { ...process.env, PORT: String(hostPort), POTOMAC_DB: dbPath, POTOMAC_GM_TOKEN: gmToken, POTOMAC_PLAYER_TOKEN: legacyPlayerToken, POTOMAC_SEED_DEMO: '0' },
@@ -345,8 +352,13 @@ try {
   const gmCtx = await cdp('Target.createBrowserContext');
   const playerCtx = await cdp('Target.createBrowserContext');
   const secondPlayerCtx = await cdp('Target.createBrowserContext');
+  const enrolledPlayerCtx = await cdp('Target.createBrowserContext');
+  const secondEnrolledPlayerCtx = await cdp('Target.createBrowserContext');
   const gm = await openContext(gmCtx.browserContextId, 'gm', `workspace-acceptance-gm-${process.pid}`, webUrl);
+  const enrolledPlayer = await openContext(enrolledPlayerCtx.browserContextId, 'gm', `workspace-acceptance-enrolled-player-${process.pid}`, webUrl);
+  const secondEnrolledPlayer = await openContext(secondEnrolledPlayerCtx.browserContextId, 'gm', `workspace-acceptance-second-enrolled-player-${process.pid}`, webUrl);
   assert.ok(await evaluate(gm.sessionId, "document.querySelector('.campaign-home')?.textContent.includes('Preparation')"), 'GM lands on Campaign Home with preparation shortcuts');
+  await saveFirstRunScreenshot(gm.sessionId, 'after-campaign-home.png');
   assert.equal(await evaluate(gm.sessionId, "Boolean(document.querySelector('.home-player-status'))"), false, 'GM Home does not show player-only status');
   await evaluate(gm.sessionId, "document.body.focus()");
   await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab' }, gm.sessionId);
@@ -369,7 +381,7 @@ try {
 
   await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.campaign-setup input'); field.focus(); field.select(); })()");
   await cdp('Input.insertText', { text: 'The Ashen Road Revised' }, gm.sessionId);
-  await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  await pointerClickText(gm.sessionId, 'Players & permissions · 0 pending', '.gm-admin summary');
   assert.equal(await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open"), true, 'GM administration expands through its visible disclosure');
   await pointerClickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
   await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent === 'The Ashen Road Revised'", 'campaign save works with GM administration expanded');
@@ -399,7 +411,7 @@ try {
   await cdp('Input.insertText', { text: 'The Ashen Road Narrow' }, gm.sessionId);
   await pointerClickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
   await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent === 'The Ashen Road Narrow'", 'campaign save remains clickable at 390px with administration expanded');
-  await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  await pointerClickText(gm.sessionId, 'Players & permissions · 0 pending', '.gm-admin summary');
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, gm.sessionId);
 
   const gmProjectionResponse = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${gmToken}` } });
@@ -568,13 +580,35 @@ try {
   assert.ok(player.secrets.every(item => !item.body.includes('The magistrate recognizes Mira.')), 'no captured player API payload contains the forbidden note');
 
   // Exercise the member enrollment and character grant controls through the actual GM UI.
-  await evaluate(gm.sessionId, "document.querySelector('.gm-admin').open = true");
-  await evaluate(gm.sessionId, "window.prompt = (_message, fallback) => fallback || 'Acceptance UI Participant'");
-  await clickText(gm.sessionId, 'Enroll player');
-  await waitForExpression(gm.sessionId, "document.querySelector('.gm-admin')?.textContent.includes('One-time credential')", 'UI-enrolled participant credential');
-  const uiParticipantCodes = await evaluate(gm.sessionId, "[...document.querySelectorAll('.gm-admin code')].map(element => element.textContent)");
-  assert.equal(uiParticipantCodes.length, 2, 'GM enrollment UI displays member identity and one-time credential');
-  const [uiParticipantMemberId, uiParticipantToken] = uiParticipantCodes;
+  await clickText(gm.sessionId, 'Home', 'nav[aria-label="Applications"] button');
+  const enrollFromHome = async (displayName, screenshotName) => {
+    await clickText(gm.sessionId, 'Enroll a player', '.home-quick-actions button');
+    await waitForExpression(gm.sessionId, "Boolean(document.querySelector('dialog[open] input[required]'))", 'player enrollment dialog');
+    if (screenshotName) await saveFirstRunScreenshot(gm.sessionId, screenshotName);
+    await evaluate(gm.sessionId, "(() => { const field=document.querySelector('dialog[open] input[required]'); field.focus(); })()");
+    await cdp('Input.insertText', { text: displayName }, gm.sessionId);
+    await pointerClickText(gm.sessionId, 'Create player credential', 'dialog[open] button');
+    await waitForExpression(gm.sessionId, "document.querySelector('dialog[open] input[readonly]')?.value && document.querySelector('dialog[open]')?.textContent.includes('Player credential (shown once)')", 'UI-enrolled participant credential handoff');
+    const values = await evaluate(gm.sessionId, "[...document.querySelectorAll('dialog[open] input[readonly]')].map(input => input.value)");
+    assert.equal(values.length, 2, 'GM enrollment UI displays member ID and credential exactly once');
+    await pointerClickText(gm.sessionId, 'Done', 'dialog[open] button');
+    await waitForExpression(gm.sessionId, "!document.querySelector('dialog')?.open", 'credential handoff closes');
+    return values;
+  };
+  const uiParticipantValues = await enrollFromHome('Acceptance UI Participant', 'after-enrollment-form.png');
+  const [uiParticipantMemberId, uiParticipantToken] = uiParticipantValues;
+  const [secondUiParticipantMemberId, secondUiParticipantToken] = await enrollFromHome('Acceptance UI Participant Two');
+
+  const signInEnrolledPlayer = async (client, memberId, credential) => {
+    await clickText(client.sessionId, 'Use player credential');
+    await waitForExpression(client.sessionId, "Boolean(document.querySelector('dialog[open] input[type=password]'))", 'player credential sign-in dialog');
+    await evaluate(client.sessionId, "document.querySelector('dialog[open] input[type=password]').focus()");
+    await cdp('Input.insertText', { text: credential }, client.sessionId);
+    await pointerClickText(client.sessionId, 'Connect as player', 'dialog[open] button');
+    await waitForExpression(client.sessionId, `JSON.parse(localStorage.getItem('potomac.identity.v1'))?.memberId === ${JSON.stringify(memberId)}`, 'enrolled player authenticated in an independent browser context');
+  };
+  await signInEnrolledPlayer(enrolledPlayer, uiParticipantMemberId, uiParticipantToken);
+  await signInEnrolledPlayer(secondEnrolledPlayer, secondUiParticipantMemberId, secondUiParticipantToken);
   assert.equal((await request('/api/state', uiParticipantToken)).status, 200, 'credential issued by the GM UI authenticates its participant');
   const uiUnsharedState = await (await request('/api/state', uiParticipantToken)).json();
   assert.equal(uiUnsharedState.actors.length, 0, 'new UI-enrolled participant initially sees no characters');
@@ -582,11 +616,10 @@ try {
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.character-list button'))", 'character app participant grant selection');
   await clickText(gm.sessionId, 'Mira Vell', '.character-list button');
   const preLinkDetail = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
-  await evaluate(gm.sessionId, "document.querySelector('.gm-admin').open = true");
-  await evaluate(gm.sessionId, "window.prompt = (_message, fallback) => fallback || ''");
-  await clickText(gm.sessionId, 'Grant selected character');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.member-grant-form input')?.value"), secondUiParticipantMemberId, 'character grant UI is prefilled for the most recently enrolled member');
+  await clickText(gm.sessionId, 'Grant character', '.member-grant-form button');
   await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('granted to member')", 'character grant confirmation in GM UI');
-  const uiGrantedStateResponse = await request('/api/state', uiParticipantToken);
+  const uiGrantedStateResponse = await request('/api/state', secondUiParticipantToken);
   const uiGrantedState = await uiGrantedStateResponse.json();
   assert.equal(uiGrantedStateResponse.status, 200);
   assert.ok(uiGrantedState.actors.some(actor => actor.id === 'actor-emberfall-01'), 'UI-granted participant can read the selected character');
@@ -703,6 +736,22 @@ try {
   assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 2, 'return from Lore restores Encounter A unsaved participant selection');
   await clickText(gm.sessionId, 'Create or link map', '.preparation-handoffs button');
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.maps-page')) && document.querySelector('.map-toolbar strong')?.textContent==='Orchard approach'", 'Encounter A opens its related map');
+  await clickText(gm.sessionId, 'Create scene', 'summary');
+  await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.map-create-form'))", 'encounter map creation form');
+  await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.map-create-form input:not([type=file])'); field.focus(); })()");
+  await cdp('Input.insertText', { text: 'Edited Encounter Battle Map' }, gm.sessionId);
+  await evaluate(gm.sessionId, "(() => { const select=document.querySelector('.map-create-form select'); const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set; setter.call(select,'battle'); select.dispatchEvent(new Event('change',{bubbles:true})); })()");
+  await clickText(gm.sessionId, 'Create on host', '.map-create-form button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.map-notice')?.textContent.includes('Linked to Edited Acceptance Encounter.')", 'new battle map is linked to its encounter');
+  const linkedCreatedMap = (await (await request('/api/maps', gmToken)).json()).maps.find(map => map.name === 'Edited Encounter Battle Map');
+  assert.equal(linkedCreatedMap?.kind, 'battle', 'encounter preparation creates a battle map');
+  assert.equal(linkedCreatedMap?.encounterId, createdEncounter.id, 'encounter-to-map preparation commits the association on the host');
+  await clickText(gm.sessionId, 'Return to Edited Acceptance Encounter preparation', '.map-page-actions button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'map preparation returns to its encounter');
+  await clickText(gm.sessionId, 'Create or link map', '.preparation-handoffs button');
+  await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.maps-page'))", 'encounter can reopen related Maps');
+  await clickText(gm.sessionId, 'Orchard approach', '.map-browser button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.map-toolbar strong')?.textContent==='Orchard approach'", 'encounter can select the existing related map');
   await clickText(gm.sessionId, 'Open associated encounter');
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare The Orchard Ruins')", 'map association opens host-loaded Encounter B');
   await clickText(gm.sessionId, 'Return to Edited Acceptance Encounter', '.preparation-handoffs button');
@@ -710,17 +759,18 @@ try {
   assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 2, 'return from Maps restores Encounter A unsaved participant selection');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation and Table handoff enabled');
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1424, height: 805, deviceScaleFactor: 1, mobile: false }, gm.sessionId);
-  if (await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
-  await pointerClickEncounter(gm.sessionId, 'The Glass Bridge', 'Activate and open Table');
+  if (await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'Players & permissions · 0 pending', '.gm-admin summary');
+  const glassBridgeActivation = await evaluate(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.querySelector('h2')?.textContent.trim()==='The Glass Bridge'); const button=[...(card?.querySelectorAll('button')||[])].find(item=>item.textContent.trim()==='Activate and open Table'); if(!button||button.disabled)return false; button.click(); return true; })()");
+  assert.equal(glassBridgeActivation, true, 'The Glass Bridge activation uses its enabled visible card control');
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('The Glass Bridge')", 'Encounters application hands off to Table with shared context');
   assert.equal((await (await request('/api/state', gmToken)).json()).context.activeEncounter, 'encounter-a', 'center pointer click from collapsed administration activates the selected encounter in shared context');
   await clickText(gm.sessionId, 'Return to preparation');
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Table returns to encounter preparation without changing context');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');
-  if (!await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  if (!await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'Players & permissions · 0 pending', '.gm-admin summary');
   await pointerClickEncounter(gm.sessionId, 'Edited Acceptance Encounter', 'Activate and open Table');
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Encounters application activates the selected encounter and opens Table');
-  await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  await pointerClickText(gm.sessionId, 'Players & permissions · 0 pending', '.gm-admin summary');
   const uiEncounterActivation = await (await request('/api/state', gmToken)).json();
   assert.equal(uiEncounterActivation.context.activeEncounter, createdEncounter.id, 'Encounters application activation commits shared campaign context');
   const rosterBeforeTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
@@ -859,7 +909,7 @@ try {
   const restartedPlayer = await restartedPlayerResponse.json();
   assert.ok(restartedPlayer.actors.some(actor => actor.id === createdActor.id), 'character grant persists across host restart');
   assert.equal((await request('/api/actors/actor-tidebound-01', uiParticipantToken)).status, 404, 'UI participant grant scope remains limited after host restart');
-  assert.equal((await request('/api/actors/actor-emberfall-01', uiParticipantToken)).status, 200, 'UI participant grant remains valid after host restart');
+  assert.equal((await request('/api/actors/actor-emberfall-01', secondUiParticipantToken)).status, 200, 'UI participant grant remains valid after host restart');
 
   // Host-side authorization and client recovery are checked independently.
   const denied = await request('/api/context', playerToken, { method: 'POST', body: jsonBody({ context: { activeEncounter: 'encounter-a' } }) });

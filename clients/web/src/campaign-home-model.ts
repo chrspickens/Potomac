@@ -25,10 +25,13 @@ export function lastPreparedEncounter(encounters: Encounter[]): Encounter | null
 }
 
 export function campaignHomeIdentity(campaign: CampaignConfig | null, snapshot: Snapshot | null): { name: string; system: string } {
+  const pinnedModule = campaign?.systemModuleId && campaign.systemModuleVersion
+    ? snapshot?.modules?.find(module => module.manifest.id === campaign.systemModuleId && module.manifest.version === campaign.systemModuleVersion)
+    : undefined
   return {
     name: campaign?.name || snapshot?.context.campaignId || 'Campaign',
     system: campaign?.systemModuleId && campaign.systemModuleVersion
-      ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}`
-      : 'System not configured',
+      ? `${pinnedModule?.manifest.name || campaign.systemModuleId} · ${campaign.systemModuleVersion}`
+      : 'No game system is pinned',
   }
 }

@@ -1,0 +1,21 @@
+.home-ruleset{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 19px;border:1px solid #3a6079;border-radius:9px;background:#12283a}
+.home-ruleset h2{font:600 18px Georgia,serif;margin:0 0 7px}
+.home-ruleset p:not(.eyebrow){color:#adc1d1;font-size:12px;line-height:1.5;margin:0}
+.home-ruleset code{color:#dcf0ff;overflow-wrap:anywhere}
+.home-ruleset>span{flex:none;padding:6px 9px;border:1px solid #806b35;border-radius:999px;color:#f1d88e;font-size:10px}
+.home-ruleset.is-unpinned{border-color:#806b35;background:#302a1c}
+dialog.workflow-dialog{position:fixed;width:min(500px,calc(100% - 36px));max-height:min(85vh,720px);overflow:auto;margin:auto;padding:26px;border:1px solid #477393;border-radius:12px;background:linear-gradient(145deg,#17354b,#0d1a26);box-shadow:0 24px 80px #000a;color:#e9f1ff}
+dialog.workflow-dialog::backdrop{background:#030a11bb}
+.workflow-dialog h2{font:600 26px Georgia,serif;margin:0 72px 10px 0}
+.workflow-dialog>p,.workflow-dialog>small{display:block;color:#b2c6d5;font-size:12px;line-height:1.55;margin:0 0 16px}
+.workflow-dialog label,.member-grant-form label{display:grid;gap:6px;color:#c8d9e5;font-size:12px;margin:12px 0}
+.workflow-dialog input,.member-grant-form input{width:100%;min-width:0}
+.workflow-close{position:absolute;top:17px;right:17px}
+.workflow-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+.workflow-actions .primary{background:#2374b6;border-color:#4ca8ee;color:white}
+.workflow-dialog [role=status]{padding:9px 11px;border:1px solid #35654f;border-radius:6px;background:#102c25;color:#a8e2bf}
+.member-grant-form{padding:10px 0 14px;border-bottom:1px solid #294052}
+.map-page-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.map-preparation-context{margin-top:8px!important;color:#bfd8e8!important}
+.map-placement-hint{max-width:620px;color:#9db7c9;font-size:11px;line-height:1.5;margin:0 0 10px}
+@media(max-width:600px){.home-ruleset{align-items:flex-start;flex-direction:column}dialog.workflow-dialog{padding:22px}.workflow-close{top:12px;right:12px}}
