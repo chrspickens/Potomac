@@ -221,6 +221,82 @@ test('authority changes during host resolution roll back effects, events and rec
   } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('V2 current session start and finish are host-owned, private, transactional and exactly-once across restart', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-current-session-'));
+  const databasePath = join(directory, 'host.sqlite'); let host, baseUrl, lockDigest;
+  const launch = async () => { host = createHost({ databasePath, campaignId: 'campaign-v2-current-session', enableV2Api: true }); const address = await host.listen(0); baseUrl = `http://127.0.0.1:${address.port}`; };
+  const request = (path, token = 'local-gm', options = {}) => fetch(`${baseUrl}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers } });
+  const send = (path, body, token = 'local-gm', method = 'POST', headers = {}) => request(path, token, { method, body: JSON.stringify(body), headers });
+  const proof = () => ({ 'x-v2-lock-digest': lockDigest });
+  let playerA, playerB;
+  try {
+    await launch();
+    playerA = await (await send('/api/members/enroll', { displayName: 'Session Player A' })).json();
+    playerB = await (await send('/api/members/enroll', { displayName: 'Session Player B' })).json();
+    const pinned = await send('/api/v2/campaign/lock', { moduleId: 'example.dicepool' }, 'local-gm', 'PUT'); assert.equal(pinned.status, 201); lockDigest = (await pinned.json()).digest;
+    const scene = { title: 'The Lantern Wharf', status: 'ready', obstacle: 'fog-gate', characters: [
+      { id: 'char-a', name: 'Mira', ownerPrincipalId: playerA.memberId, pool: 2, stress: 0, push: 1, role: 'keeper' },
+      { id: 'char-b', name: 'Oren', ownerPrincipalId: playerB.memberId, pool: 2, stress: 0, push: 1, role: 'scout' }
+    ], log: [], gmNote: 'private table note' };
+    assert.equal((await send('/api/v2/entities', { operationId: 'session-scene-create', entityId: 'session-scene', typeId: 'example.dicepool.scene', visibility: 'public', data: scene }, 'local-gm', 'POST', proof())).status, 201);
+    host.db.prepare("UPDATE v2_effect_entities SET visibility='private' WHERE campaign_id=? AND entity_id=?").run('campaign-v2-current-session', 'session-scene');
+    assert.equal((await send('/api/v2/entities/session-scene/grants', { memberId: playerA.memberId, permissions: ['read'] }, 'local-gm', 'POST', proof())).status, 201);
+    const none = await (await request('/api/v2/session/current', playerA.credential)).json(); assert.deepEqual(none, { status: 'none', revision: 0 });
+    const start = { operationId: 'session-start-one', encounterId: 'session-scene', expectedSessionRevision: 0, expectedEncounterRevision: 1, expectedLockDigest: lockDigest };
+    assert.equal((await send('/api/v2/session/start', start, playerA.credential)).status, 403, 'players cannot start a host session');
+    assert.equal((await send('/api/v2/session/start', { ...start, operationId: 'session-stale-start', expectedSessionRevision: 1 }, 'local-gm')).status, 409, 'stale session revision is rejected');
+    host.db.prepare("INSERT INTO v2_extension_pending_commands(operation_id,campaign_id,principal_id,command_id,entity_id,resolver,command_capability,lock,lock_digest,request,payload_hash,expected_revisions,continuation,suspension_transcript,window_id,authority_version,status,response,updated_at) VALUES('pending-session-fixture',?,'gm','command','session-scene','resolver','capability','{}',?,'{}','hash','{}','{}','{}','pending-window',0,'pending',NULL,'2026-10-20T00:00:00Z')").run('campaign-v2-current-session', lockDigest);
+    assert.equal((await send('/api/v2/session/start', { ...start, operationId: 'session-start-with-pending' }, 'local-gm')).status, 409, 'pending continuation blocks unsafe session start');
+    assert.deepEqual(await (await request('/api/v2/session/current', 'local-gm')).json(), { status: 'none', revision: 0 }, 'rejected transition does not create session state');
+    host.db.prepare("DELETE FROM v2_extension_pending_commands WHERE operation_id='pending-session-fixture'").run();
+    host.db.exec("CREATE TRIGGER reject_session_receipt BEFORE INSERT ON v2_session_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END");
+    assert.equal((await send('/api/v2/session/start', { ...start, operationId: 'session-start-rollback' }, 'local-gm')).status, 500, 'receipt failure rejects the session transition');
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_current_sessions').get().n, 0, 'receipt failure rolls back session mutation');
+    host.db.exec('DROP TRIGGER reject_session_receipt');
+    const starts = await Promise.all([send('/api/v2/session/start', start, 'local-gm'), send('/api/v2/session/start', start, 'local-gm')]);
+    assert.deepEqual(starts.map(response => response.status), [200, 200], 'concurrent exact start retries both return committed results');
+    const startReceipt = await starts[0].json(); assert.equal(startReceipt.status, 'live');
+    assert.deepEqual(await starts[1].json(), startReceipt, 'exact start retry returns the original receipt');
+    assert.equal((await send('/api/v2/session/start', { ...start, expectedEncounterRevision: 2 }, 'local-gm')).status, 409, 'altered start retry is rejected');
+    const playerView = await (await request('/api/v2/session/current', playerA.credential)).json(); assert.equal(playerView.status, 'live'); assert.equal(playerView.encounter.title, 'The Lantern Wharf');
+    const ungrantedView = await (await request('/api/v2/session/current', playerB.credential)).json(); assert.deepEqual(ungrantedView, { status: 'live', revision: 1 }, 'ungranted player receives generic status without encounter ID or name');
+    assert.equal(JSON.stringify(ungrantedView).includes('session-scene'), false); assert.equal(JSON.stringify(ungrantedView).includes('Lantern'), false);
+    const competing = await send('/api/v2/session/start', { ...start, operationId: 'session-start-competing' }, 'local-gm'); assert.equal(competing.status, 409, 'second concurrent-style start cannot replace the current session');
+    assert.equal((await request('/api/v2/entities/session-scene/grants/' + encodeURIComponent(playerA.memberId), 'local-gm', { method: 'DELETE', headers: proof() })).status, 200, 'GM can revoke the encounter grant');
+    assert.deepEqual(await (await request('/api/v2/session/current', playerA.credential)).json(), { status: 'live', revision: 1 }, 'grant revocation removes the encounter ID and name from the player projection');
+    host.db.prepare('UPDATE v2_effect_entities SET revision=2 WHERE campaign_id=? AND entity_id=?').run('campaign-v2-current-session', 'session-scene');
+    const staleFinish = { operationId: 'session-stale-encounter', expectedSessionRevision: 1, expectedEncounterRevision: 1, expectedLockDigest: lockDigest };
+    assert.equal((await send('/api/v2/session/finish', staleFinish, 'local-gm')).status, 409, 'stale encounter revision blocks finishing');
+    const finish = { operationId: 'session-finish-one', expectedSessionRevision: 1, expectedEncounterRevision: 2, expectedLockDigest: lockDigest };
+    assert.equal((await send('/api/v2/session/finish', finish, playerA.credential)).status, 403, 'players cannot finish a host session');
+    host.db.prepare("INSERT INTO v2_extension_pending_commands(operation_id,campaign_id,principal_id,command_id,entity_id,resolver,command_capability,lock,lock_digest,request,payload_hash,expected_revisions,continuation,suspension_transcript,window_id,authority_version,status,response,updated_at) VALUES('pending-finish-fixture',?,'gm','command','session-scene','resolver','capability','{}',?,'{}','hash','{}','{}','{}','pending-finish-window',0,'pending',NULL,'2026-10-20T00:00:00Z')").run('campaign-v2-current-session', lockDigest);
+    assert.equal((await send('/api/v2/session/finish', { ...finish, operationId: 'session-finish-with-pending' }, 'local-gm')).status, 409, 'pending continuation blocks unsafe session finish');
+    assert.equal((await request('/api/v2/session/current', 'local-gm')).status, 200);
+    assert.equal((await (await request('/api/v2/session/current', 'local-gm')).json()).status, 'live', 'rejected finish leaves the session live');
+    host.db.prepare("DELETE FROM v2_extension_pending_commands WHERE operation_id='pending-finish-fixture'").run();
+    const finishes = await Promise.all([send('/api/v2/session/finish', finish, 'local-gm'), send('/api/v2/session/finish', finish, 'local-gm')]);
+    assert.deepEqual(finishes.map(response => response.status), [200, 200], 'concurrent exact finish retries both return committed results'); const finishReceipt = await finishes[0].json(); assert.equal(finishReceipt.status, 'finished');
+    assert.deepEqual(await finishes[1].json(), finishReceipt, 'exact finish retry returns its receipt');
+    assert.equal((await send('/api/v2/session/finish', { ...finish, expectedEncounterRevision: 3 }, 'local-gm')).status, 409, 'altered finish retry is rejected');
+    assert.equal((await request('/api/v2/session/current', playerA.credential)).status, 200);
+    assert.deepEqual(await (await request('/api/v2/session/current', playerA.credential)).json(), { status: 'finished', revision: 2, finishedAt: finishReceipt.finishedAt });
+    host.close(); await launch();
+    assert.deepEqual(await (await send('/api/v2/session/finish', finish, 'local-gm')).json(), finishReceipt, 'finish receipt survives host restart');
+    assert.equal((await request('/api/v2/session/current', playerB.credential)).status, 200, 'session status remains available after restart without leaking hidden encounter identity');
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_session_receipts').get().count, 2, 'one durable receipt per lifecycle transition');
+    const contenders = await Promise.all([
+      send('/api/v2/session/start', { operationId: 'session-race-left', encounterId: 'session-scene', expectedSessionRevision: 2, expectedEncounterRevision: 2, expectedLockDigest: lockDigest }, 'local-gm'),
+      send('/api/v2/session/start', { operationId: 'session-race-right', encounterId: 'session-scene', expectedSessionRevision: 2, expectedEncounterRevision: 2, expectedLockDigest: lockDigest }, 'local-gm')
+    ]);
+    assert.deepEqual(contenders.map(response => response.status).sort(), [200, 409], 'concurrent competing starts commit exactly one current session');
+    assert.deepEqual(await (await request('/api/v2/session/current', playerA.credential)).json(), { status: 'live', revision: 3 }, 'revoked read grant does not regain session entity identity on a later start');
+    const finishRaceWinner = await send('/api/v2/session/finish', { operationId: 'session-finish-race-winner', expectedSessionRevision: 3, expectedEncounterRevision: 2, expectedLockDigest: lockDigest }, 'local-gm'); assert.equal(finishRaceWinner.status, 200);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS count FROM v2_session_receipts').get().count, 4, 'competing transitions leave one receipt for each committed result');
+    await request(`/api/members/${encodeURIComponent(playerA.memberId)}`, 'local-gm', { method: 'DELETE' });
+    assert.equal((await request('/api/v2/session/current', playerA.credential)).status, 401, 'revoked membership blocks current-session projection');
+  } finally { host?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('a competing SQLite authority writer is serialized after the command and revocation gates later retries', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'potomac-v2-authority-writer-'));
   const databasePath = join(directory, 'host.sqlite');
