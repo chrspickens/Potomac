@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ensureViteShim, viteShimPath } from './local-launch.mjs';
+import { ensureViteShim, resetPlaytest, viteShimPath } from './local-launch.mjs';
 
 async function withDirectory(run) {
   const directory = await mkdtemp(join(tmpdir(), 'potomac-local-launch-'));
@@ -46,4 +46,31 @@ test('an existing Vite shim does not invoke repair', async () => withDirectory(a
   let attempts = 0;
   assert.equal(await ensureViteShim({ repoRoot: directory, platform: 'linux', runInstall: async () => { attempts++; return { code: 1 }; } }), shim);
   assert.equal(attempts, 0);
+}));
+
+test('reset removes only one playtest ID and preserves neighboring evidence', async () => withDirectory(async directory => {
+  const first = '2026-10-21T04-08-52-236Z-dcf68b67';
+  const second = '2026-10-21T04-09-18-677Z-12c21940';
+  for (const id of [first, second]) {
+    await writeFile(join(directory, `${id}.sqlite`), 'database');
+    await writeFile(join(directory, `${id}.sqlite-wal`), 'sidecar');
+    await mkdir(join(directory, `${id}.sqlite.assets`));
+    await writeFile(join(directory, `${id}.sqlite.assets`, 'evidence.txt'), id);
+    await mkdir(join(directory, `${id}-browser-profile`));
+    await writeFile(join(directory, `${id}-browser-profile`, 'profile.txt'), id);
+  }
+  await writeFile(join(directory, 'unrelated-evidence.txt'), 'preserve');
+  await resetPlaytest(first, { directory, activeCheck: async () => false, profileActiveCheck: async () => false });
+  await assert.rejects(stat(join(directory, `${first}.sqlite`)), { code: 'ENOENT' });
+  await assert.rejects(stat(join(directory, `${first}.sqlite.assets`)), { code: 'ENOENT' });
+  await assert.rejects(stat(join(directory, `${first}-browser-profile`)), { code: 'ENOENT' });
+  assert.equal(await readFile(join(directory, `${second}.sqlite.assets`, 'evidence.txt'), 'utf8'), second);
+  assert.equal(await readFile(join(directory, 'unrelated-evidence.txt'), 'utf8'), 'preserve');
+}));
+
+test('reset refuses an active playtest without removing its files', async () => withDirectory(async directory => {
+  const id = '2026-10-21T04-08-52-236Z-dcf68b67';
+  await writeFile(join(directory, `${id}.sqlite`), 'database');
+  await assert.rejects(resetPlaytest(id, { directory, activeCheck: async () => true, profileActiveCheck: async () => false }), /still running/);
+  assert.equal(await readFile(join(directory, `${id}.sqlite`), 'utf8'), 'database');
 }));

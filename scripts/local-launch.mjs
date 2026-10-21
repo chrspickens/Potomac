@@ -311,23 +311,24 @@ function pathIsInside(parent, target) {
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-async function resetPlaytest(id) {
+export async function resetPlaytest(id, { directory = playtestRoot, activeCheck = isPlaytestActive, profileActiveCheck = isBrowserProfileActive } = {}) {
   if (!/^[0-9TZ:-]+-[0-9a-f]{8}$/.test(id)) throw new Error('Provide the playtest ID printed by start-playtest; only that named playtest can be reset.');
-  const parent = await realpath(playtestRoot);
+  const parent = await realpath(directory);
   const target = resolve(parent, `${id}.sqlite`);
   if (!pathIsInside(parent, target) || dirname(target) !== parent) throw new Error('Refusing to reset a path outside the playtest data folder.');
   const profile = resolve(parent, `${id}-browser-profile`);
   if (!pathIsInside(parent, profile) || dirname(profile) !== parent) throw new Error('Refusing to reset a path outside the playtest data folder.');
-  if (await isPlaytestActive(id) || await isBrowserProfileActive(profile)) throw new Error('That playtest or its browser profile is still running. Stop it before resetting its data.');
-  for (const candidate of [target, `${target}-shm`, `${target}-wal`, profile]) {
+  if (await activeCheck(id) || await profileActiveCheck(profile)) throw new Error('That playtest or its browser profile is still running. Stop it before resetting its data.');
+  const assets = `${target}.assets`;
+  for (const [candidate, expectedType] of [[target, 'file'], [`${target}-shm`, 'file'], [`${target}-wal`, 'file'], [profile, 'directory'], [assets, 'directory']]) {
     try {
       const info = await lstat(candidate);
-      if (info.isDirectory() && candidate !== profile) throw new Error(`Refusing unexpected directory at ${candidate}.`);
       if (info.isSymbolicLink()) throw new Error(`Refusing symbolic link at ${candidate}.`);
-      await rm(candidate, { recursive: candidate === profile, force: true });
+      if (expectedType === 'directory' ? !info.isDirectory() : !info.isFile()) throw new Error(`Refusing unexpected ${info.isDirectory() ? 'directory' : 'file'} at ${candidate}.`);
+      await rm(candidate, { recursive: expectedType === 'directory', force: true });
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  log(`Reset the named playtest database and browser profile for ${id}.`);
+  log(`Reset the named playtest database, assets, and browser profile for ${id}.`);
 }
 
 async function isPlaytestActive(id) {
