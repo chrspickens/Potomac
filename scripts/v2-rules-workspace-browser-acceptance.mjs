@@ -302,10 +302,47 @@ try {
   await commandForm('playerB', 'Attack', { actorId: '0', targetId: '2' });
   await waitFor('playerB', `document.body.innerText.includes('host denied this action')`, 'cross-player attack denial feedback');
   const denied = await ev('playerB', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(denied.status, 403);
-  await commandForm('playerB', 'Attack', { actorId: '1', targetId: '2' }); await waitFor('playerB', `document.body.innerText.includes('example.revised5e.attack committed by the host.')`, 'Player B permitted attack');
-  const attackB = await ev('playerB', `window.__potomacCommands.filter(item=>item.request.commandId==='example.revised5e.attack').at(-1)`); assert.equal(attackB.status, 200);
+  const playerBCommandsBeforeAttack = await ev('playerB', `window.__potomacCommands.length`);
+  await commandForm('playerB', 'Attack', { actorId: '1', targetId: '2' });
+  await waitFor('playerB', `window.__potomacCommands.length>${playerBCommandsBeforeAttack} && window.__potomacCommands.at(-1).request.commandId==='example.revised5e.attack'`, 'Player B attack request acknowledged');
+  const attackB = await ev('playerB', `window.__potomacCommands.at(-1)`);
+  assert.equal(attackB.status, 200, JSON.stringify(attackB));
+  assert.equal(attackB.response.status, 'applied', JSON.stringify(attackB));
+  assert.equal(attackB.request.input.actorId, 'player-b', JSON.stringify(attackB));
+  await waitFor('playerB', `document.body.innerText.includes('example.revised5e.attack committed by the host.') && document.body.innerText.includes('defeat')`, 'Player B sees the completed encounter from its committed attack');
+  const authoritativeBeforeRestart = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.equal(authoritativeBeforeRestart.data.status, 'complete', `Player B attack must complete the encounter before restart: ${JSON.stringify({ response: attackB.response, entity: authoritativeBeforeRestart.data })}`);
+  assert.equal(authoritativeBeforeRestart.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 0);
   await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
-  for (const [name, principal] of [['gm', 'gm'], ['playerA', a], ['playerB', b]]) { await click(name, 'Refresh authorized state'); await waitFor(name, `document.body.innerText.includes('Ash Bridge') && document.body.innerText.includes('complete')`, `${name} completed Revised 5e state after host restart`); }
+  const waitForRecoveredHostProjection = async principal => {
+    const token = principal === 'gm' ? 'local-gm' : principal.credential;
+    const until = Date.now() + 25000;
+    let last;
+    while (Date.now() < until) {
+      try {
+        const [entityResponse, reactionsResponse, sessionResponse] = await Promise.all([
+          api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, token, { headers: { 'x-v2-lock-digest': lock.digest } }),
+          api('/api/v2/reactions', token, { headers: { 'x-v2-lock-digest': lock.digest } }),
+          api('/api/v2/session/current', token),
+        ]);
+        const [entity, reactions, session] = await Promise.all([entityResponse.json(), reactionsResponse.json(), sessionResponse.json()]);
+        last = { entityStatus: entityResponse.status, entity, reactionsStatus: reactionsResponse.status, reactionsError: reactions.error, sessionStatus: sessionResponse.status, session: session.status };
+        if (entityResponse.ok && reactionsResponse.ok && sessionResponse.ok && entity.data?.status === 'complete' && entity.data.actors?.find(actor => actor.id === 'enemy')?.currentHitPoints === 0 && session.status === 'live') return last;
+      } catch (error) { last = String(error); }
+      await delay(100);
+    }
+    throw new Error(`Host did not restore the completed encounter for ${principal === 'gm' ? 'GM' : 'player'}: ${JSON.stringify(last)}`);
+  };
+  for (const [name, principal] of [['gm', 'gm'], ['playerA', a], ['playerB', b]]) {
+    const recovered = await waitForRecoveredHostProjection(principal);
+    await ev(name, `(()=>{window.__recoveryRefreshRequests=[];const original=fetch.bind(window);window.fetch=async(url,init={})=>{const response=await original(url,init);let error='',entityRevision,entityStatus;try{const body=await response.clone().json();error=String(body.error||body.message||'');if(String(url).includes('/api/v2/entities?typeId=')){const rows=Array.isArray(body)?body:body.entities||[];const entity=rows.find(item=>item.entityId===${JSON.stringify(encounterId)});entityRevision=entity?.revision;entityStatus=entity?.data?.status}}catch{}window.__recoveryRefreshRequests.push({url:String(url).split('?')[0],status:response.status,error,entityRevision,entityStatus});return response}})()`);
+    await click(name, 'Refresh authorized state');
+    await waitFor(name, `(()=>{const message=document.querySelector('.v2-message')?.textContent||'';return message.includes('Authorized state refreshed from the host')||message.includes('Authorized state refresh failed')})()`, `${name} Rules refresh resolves after host restart`);
+    const refreshEvidence = await ev(name, `({message:document.querySelector('.v2-message')?.textContent||'',requests:window.__recoveryRefreshRequests})`);
+    assert.ok(refreshEvidence.message.includes('Authorized state refreshed from the host'), `${name} Rules refresh failed after host restart: ${JSON.stringify(refreshEvidence)}`);
+    const displayedProjection = await ev(name, `(()=>{const status=[...document.querySelectorAll('dt')].find(node=>node.textContent.trim()==='Status')?.nextElementSibling?.textContent.trim();return {hasRevision:document.body.innerText.includes(${JSON.stringify(`Entity revision ${recovered.entity.revision}`)}),displayedStatus:status,entityId:document.querySelector('#v2-entity-picker')?.value||''}})()`);
+    assert.equal(displayedProjection.hasRevision && displayedProjection.displayedStatus === 'complete' && displayedProjection.entityId === encounterId, true, `${name} displays the recovered entity revision and completed state after host restart: ${JSON.stringify({ displayedProjection, refreshRequests: refreshEvidence.requests })}`);
+  }
   assert.deepEqual((await lockFor()).lock, lock.lock, 'exact root and full module capability closure survive host restart');
   const authoritativeAfterRestart = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.equal(authoritativeAfterRestart.data.status, 'complete', 'authoritative Rules projection reports the completed encounter after restart');
