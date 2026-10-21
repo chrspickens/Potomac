@@ -7,7 +7,7 @@
     {
       "entityTypeId": "example.revised5e.encounter",
       "title": "Prepare a Revised 5e encounter",
-      "description": "Name the encounter and assign the two player characters. A ready-to-use fighter and enemy are supplied as starter values.",
+      "description": "Prepare a fixed roster of two player characters and one training opponent. Assign the players and choose each participant's starting square on the 8 × 5 grid. Additional enemies are not supported in this prototype.",
       "template": {
         "title": "New encounter",
         "status": "setup",
@@ -153,6 +153,20 @@
           "type": "member"
         },
         {
+          "path": "actors.0.position.x",
+          "label": "Player A start · X (0–7)",
+          "type": "integer",
+          "min": 0,
+          "max": 7
+        },
+        {
+          "path": "actors.0.position.y",
+          "label": "Player A start · Y (0–4)",
+          "type": "integer",
+          "min": 0,
+          "max": 4
+        },
+        {
           "path": "actors.1.name",
           "label": "Player B character name",
           "type": "text"
@@ -163,9 +177,37 @@
           "type": "member"
         },
         {
+          "path": "actors.1.position.x",
+          "label": "Player B start · X (0–7)",
+          "type": "integer",
+          "min": 0,
+          "max": 7
+        },
+        {
+          "path": "actors.1.position.y",
+          "label": "Player B start · Y (0–4)",
+          "type": "integer",
+          "min": 0,
+          "max": 4
+        },
+        {
           "path": "actors.2.name",
           "label": "Opponent name",
           "type": "text"
+        },
+        {
+          "path": "actors.2.position.x",
+          "label": "Opponent start · X (0–7)",
+          "type": "integer",
+          "min": 0,
+          "max": 7
+        },
+        {
+          "path": "actors.2.position.y",
+          "label": "Opponent start · Y (0–4)",
+          "type": "integer",
+          "min": 0,
+          "max": 4
         }
       ],
       "assignmentPaths": [

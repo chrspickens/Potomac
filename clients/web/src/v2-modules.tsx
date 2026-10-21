@@ -79,7 +79,7 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
   const [entities, setEntities] = useState<Entity[]>([]); const [selectedEntityId, setSelectedEntityId] = useState(initialEntityId ?? ''); const [allowedCommandIds, setAllowedCommandIds] = useState<string[]>([]); const [commandsLoading, setCommandsLoading] = useState(false);
   const [reactions, setReactions] = useState<ReactionProjection[]>([]);
   const [currentSession, setCurrentSession] = useState<CurrentSession>();
-  const [players, setPlayers] = useState<EnrolledPlayer[]>([]); const [grantMemberId, setGrantMemberId] = useState(''); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  const [players, setPlayers] = useState<EnrolledPlayer[]>([]); const [playerNameDraft, setPlayerNameDraft] = useState('Player 1'); const [grantMemberId, setGrantMemberId] = useState(''); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
   const [preparationRecovery, setPreparationRecovery] = useState<PreparationRecovery | undefined>(() => readPreparationRecovery());
   const selected = lock ? modules.find(module => module.id === lock.lock.rootModule.id && module.version === lock.lock.rootModule.version && module.digest === lock.lock.rootModule.digest) : modules.find(module => module.id === selectedId);
   const entity = entities.find(item => item.entityId === selectedEntityId);
@@ -124,8 +124,19 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
   useEffect(() => {
     if (!connected || !lock) return;
     let cancelled = false;
-    const refreshSession = async () => { try { const projection = await request('/api/v2/session/current', {}, false) as CurrentSession; if (!cancelled) setCurrentSession(projection); } catch { if (!cancelled) setCurrentSession(undefined); } };
-    void refreshSession(); const timer = window.setInterval(() => void refreshSession(), 3000);
+    const refreshHostStatus = async () => {
+      try {
+        const [projection, reactionRows] = await Promise.all([
+          request('/api/v2/session/current', {}, false) as Promise<CurrentSession>,
+          request('/api/v2/reactions'),
+        ]);
+        if (!cancelled) {
+          setCurrentSession(projection);
+          setReactions((reactionRows.reactions ?? reactionRows) as ReactionProjection[]);
+        }
+      } catch { if (!cancelled) setCurrentSession(undefined); }
+    };
+    void refreshHostStatus(); const timer = window.setInterval(() => void refreshHostStatus(), 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [connected, lock?.digest, principalId]);
   const pin = async () => { setBusy(true); try { const body = await request('/api/v2/campaign/lock', { method: 'PUT', body: JSON.stringify({ moduleId: selectedId }) }, false); setLock(body); await refresh(body); setMessage(`${selected?.name ?? selectedId} pinned at its exact validated digest.`); } catch (error) { setMessage(error instanceof Error ? error.message : 'Pin failed.'); } finally { setBusy(false); } };
@@ -182,9 +193,25 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
     finally { setBusy(false); }
   };
   const enrollPlayer = async () => {
-    setBusy(true); try { const body = await request('/api/members/enroll', { method: 'POST', body: JSON.stringify({ displayName: `Player ${players.length + 1}` }) }, false); setPlayers(values => [...values, body]); setMessage('Player enrolled. Share the displayed one-time local test credential securely.'); }
+    const displayName = playerNameDraft.trim();
+    if (!displayName) { setMessage('Enter a player display name before enrolling.'); return; }
+    setBusy(true); try {
+      const body = await request('/api/members/enroll', { method: 'POST', body: JSON.stringify({ displayName }) }, false);
+      setPlayers(values => [...values, body]);
+      setPlayerNameDraft(`Player ${players.length + 2}`);
+      setMessage(`${displayName} is enrolled. Copy the reusable credential into that player's separate browser profile, then hide it here.`);
+    }
     catch (error) { setMessage(error instanceof Error ? error.message : 'Enrollment failed.'); } finally { setBusy(false); }
   };
+  const copyPlayerCredential = async (player: EnrolledPlayer) => {
+    if (!player.credential) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard is unavailable');
+      await navigator.clipboard.writeText(player.credential);
+      setMessage(`${player.displayName}'s credential was copied. Paste it into their separate browser profile, then hide it here.`);
+    } catch { setMessage(`Select ${player.displayName}'s credential and copy it into their separate browser profile. Hide it here after handoff.`); }
+  };
+  const hidePlayerCredential = (memberId: string) => setPlayers(values => values.map(player => player.memberId === memberId ? { ...player, credential: undefined } : player));
   const grantPlayer = async () => {
     if (!entity || !grantMemberId) return; setBusy(true); try {
       await request(`/api/v2/entities/${encodeURIComponent(entity.entityId)}/grants`, { method: 'POST', body: JSON.stringify({ memberId: grantMemberId, permissions: ['read', 'act'] }) });
@@ -257,7 +284,7 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
     {!lock && isGm && <section className="v2-setup-card"><h2>Pin a trusted module</h2><label htmlFor="v2-module-picker">Available modules</label><select id="v2-module-picker" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{modules.map(module => <option key={`${module.id}@${module.version}`} value={module.id}>{module.name} · {module.version} · {module.digest.slice(0, 19)}</option>)}</select><button disabled={busy || !selectedId} onClick={() => void pin()}>Pin exact module lock</button></section>}
     {!lock && !isGm && <section className="v2-setup-card"><h2>Waiting for GM</h2><p>The GM must choose a catalog module for this fresh campaign.</p></section>}
     {lock && !selected && <section className="v2-setup-card" role="alert"><h2>Required module unavailable</h2><p>The pinned trusted implementation is missing from this host catalog. The campaign lock was preserved; no substitute is selected.</p></section>}
-    {lock && selected && <><section className="v2-setup-card"><h2>Immutable campaign module</h2><p>{lock.lock.rootModule.id}@{lock.lock.rootModule.version} · {lock.lock.rootModule.digest}</p>{isGm && <><button disabled={busy} onClick={() => void enrollPlayer()}>Enroll a player</button>{players.map(player => <p key={player.memberId}>{player.credential ? <output>{player.displayName}: {player.credential}</output> : <span>{player.displayName} · enrolled</span>}</p>)}</>}</section>
+    {lock && selected && <><section className="v2-setup-card"><h2>Immutable campaign module</h2><p>{lock.lock.rootModule.id}@{lock.lock.rootModule.version} · {lock.lock.rootModule.digest}</p>{isGm && <><label htmlFor="v2-player-display-name">Player display name</label><input id="v2-player-display-name" value={playerNameDraft} maxLength={120} disabled={busy} onChange={event => setPlayerNameDraft(event.target.value)} /><button disabled={busy || !playerNameDraft.trim()} onClick={() => void enrollPlayer()}>Enroll a player</button>{players.map(player => <div className="v2-player-handoff" key={player.memberId}><p>{player.displayName} · enrolled</p>{player.credential && <><label htmlFor={`credential-${player.memberId}`}>Reusable player credential for {player.displayName}</label><output id={`credential-${player.memberId}`}>{player.displayName}: {player.credential}</output><div className="v2-handoff-actions"><button type="button" onClick={() => void copyPlayerCredential(player)}>Copy credential</button><button type="button" onClick={() => hidePlayerCredential(player.memberId)}>Hide credential</button></div></>}</div>)}</>}</section>
       {isGm && preparationRecovery && <section className="v2-setup-card" aria-label="Preparation recovery" role="status"><h2>Preparation recovery</h2>{preparationRecovery.entityId ? <><p>{preparationRecovery.entityTypeId} exists as {preparationRecovery.entityId}. Confirmed grants: {preparationRecovery.grantedMemberIds.map(id => players.find(player => player.memberId === id)?.displayName ?? 'enrolled player').join(', ') || 'none'}.</p><p>Still required: {preparationRecovery.assignedMemberIds.filter(id => !preparationRecovery.grantedMemberIds.includes(id)).map(id => players.find(player => player.memberId === id)?.displayName ?? 'enrolled player').join(', ') || 'none'}. Select this entity below and grant each remaining player, or retry the exact original preparation.</p><button type="button" disabled={busy} onClick={() => setSelectedEntityId(preparationRecovery.entityId!)}>Open recovered entity</button></> : <p>The preparation outcome is uncertain. Retry the exact original form values; its saved operation identity will prevent duplicate creation. This attempt cannot be cleared until the host confirms its result.</p>}</section>}
       {reactions.map(reaction => <section className="v2-setup-card" key={reaction.windowId} aria-label="Authorized reaction"><h3>Pending reaction</h3><p>Movement or the parent action is paused until this decision resolves. Expires {new Date(reaction.expiresAt).toLocaleString()}.</p>{reaction.permissions.adjudicate ? <><h4>GM adjudication</h4>{reaction.availableActions.map(action => <V2EntitySchemaForm key={action.actionId} schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-gm-accept`} disabled={busy} submitLabel={`GM: Accept ${actionLabel(action.actionId)}`} onSubmit={input => adjudicateReaction(reaction, 'accept', action.actionId, input)} />)}<button disabled={busy} onClick={() => void adjudicateReaction(reaction, 'decline')}>GM: Decline reaction and resume</button></> : reaction.permissions.submit && reaction.availableActions.map(action => <div key={action.actionId}><V2EntitySchemaForm schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-accept`} disabled={busy} submitLabel={`Accept ${actionLabel(action.actionId)}`} onSubmit={input => decideReaction(reaction, action.actionId, 'accept', input)} /><V2EntitySchemaForm schema={action.inputSchema as EntityJsonSchema} formId={`reaction-${reaction.windowId}-${action.actionId}-decline`} disabled={busy} submitLabel={`Decline ${actionLabel(action.actionId)}`} onSubmit={input => decideReaction(reaction, action.actionId, 'decline', input)} /></div>)}{reaction.permissions.expire && <button disabled={busy || Date.parse(reaction.expiresAt) > Date.now()} onClick={() => void expireReaction(reaction)}>Expire after deadline</button>}</section>)}
       {entity && <section className="v2-setup-card" aria-label="Current V2 session"><h3>Current session</h3><p>{!currentSession ? 'Checking host session status' : currentSession.status === 'live' ? `Live${currentSession.encounter?.title ? ` · ${currentSession.encounter.title}` : ''}` : currentSession.status === 'finished' ? 'Finished' : 'Not started'}</p>{isGm && (currentSession?.status === 'live' && currentSession.encounter?.entityId === entity.entityId ? <button type="button" disabled={busy} onClick={() => void transitionSession('finish')}>Finish session</button> : currentSession?.status !== 'live' && (entity.typeId.endsWith('.encounter') || entity.typeId.endsWith('.scene')) ? <button type="button" disabled={busy || !currentSession} onClick={() => void transitionSession('start')}>Start session</button> : null)}</section>}

@@ -152,8 +152,10 @@ try {
   const playerA = await openClient('Player A', 1440, 900); const playerB = await openClient('Player B', 1440, 900)
   for (const [client, identity] of [[playerA, playerAIdentity], [playerB, playerBIdentity]]) {
     const session = client.sessionId
-    await evaluate(session, `window.prompt = () => ${JSON.stringify(identity.credential)}`)
     await clickText(session, 'Use player credential')
+    await waitExpr(session, "Boolean(document.querySelector('#player-credential-input'))", `${client.label} visible credential entry`)
+    await inputText(session, '#player-credential-input', identity.credential)
+    await clickText(session, 'Connect as player')
     await waitExpr(session, "document.querySelector('.topbar-right select')?.value === 'player'", `${client.label} independently authenticates`)
     await waitExpr(session, "document.querySelector('.status')?.textContent.includes('CONNECTED')", `${client.label} live connection`)
     record('browser.enrolled-player', { label: client.label, memberId: identity.memberId, role: await evaluate(session, "document.querySelector('.topbar-right select')?.value") })

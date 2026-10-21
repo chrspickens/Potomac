@@ -3,7 +3,7 @@ import type { JsonValue } from '@potomac/contracts';
 import { validateEntitySchemaValue, type EntityJsonSchema } from './v2-entity-schema';
 
 export type V2PreparationMember = { memberId: string; displayName: string };
-export type V2PreparationField = { path: string; label: string; type: 'text' | 'integer' | 'number' | 'member' };
+export type V2PreparationField = { path: string; label: string; type: 'text' | 'integer' | 'number' | 'member'; min?: number; max?: number };
 export type V2PreparationProfile = { entityTypeId: string; title: string; description: string; template: JsonValue; fields: V2PreparationField[]; assignmentPaths: string[] };
 
 const getPath = (value: unknown, path: string): unknown => path.split('.').reduce((current, part) => current && typeof current === 'object' ? (current as Record<string, unknown>)[part] : undefined, value);
@@ -21,7 +21,17 @@ export function V2GuidedPreparationForm({ profile, schema, members, formId, disa
 }) {
   const [value, setValue] = useState<JsonValue>(() => structuredClone(profile.template));
   const [submitting, setSubmitting] = useState(false);
-  const errors = validateEntitySchemaValue(schema, value);
+  const errors = [
+    ...validateEntitySchemaValue(schema, value),
+    ...profile.fields.flatMap(field => {
+      if (field.type !== 'integer' && field.type !== 'number') return [];
+      const current = getPath(value, field.path);
+      if (typeof current !== 'number' || !Number.isFinite(current)) return [];
+      if (field.min !== undefined && current < field.min) return [`${field.label} must be at least ${field.min}.`];
+      if (field.max !== undefined && current > field.max) return [`${field.label} must be at most ${field.max}.`];
+      return [];
+    }),
+  ];
   const update = (path: string, next: unknown) => setValue(current => setPath(current, path, next));
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -37,7 +47,7 @@ export function V2GuidedPreparationForm({ profile, schema, members, formId, disa
       <label htmlFor={`${formId}-field-${index}`}>{field.label}</label>
       {field.type === 'member' ? <select id={`${formId}-field-${index}`} required value={String(getPath(value, field.path) ?? '')} disabled={disabled || submitting} onChange={event => update(field.path, event.target.value)}>
         <option value="">Choose an enrolled player</option>{members.map(member => <option key={member.memberId} value={member.memberId}>{member.displayName}</option>)}
-      </select> : <input id={`${formId}-field-${index}`} type={field.type === 'text' ? 'text' : 'number'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} value={String(getPath(value, field.path) ?? '')} disabled={disabled || submitting} onChange={event => update(field.path, field.type === 'text' ? event.target.value : event.target.value === '' ? undefined : Number(event.target.value))} />}
+      </select> : <input id={`${formId}-field-${index}`} type={field.type === 'text' ? 'text' : 'number'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.type === 'integer' || field.type === 'number' ? field.min : undefined} max={field.type === 'integer' || field.type === 'number' ? field.max : undefined} value={String(getPath(value, field.path) ?? '')} disabled={disabled || submitting} onChange={event => update(field.path, field.type === 'text' ? event.target.value : event.target.value === '' ? undefined : Number(event.target.value))} />}
     </div>)}
     {errors.length > 0 && <ul className="v2-entity-validation" role="alert">{errors.map(error => <li key={error}>{error}</li>)}</ul>}
     <button type="submit" disabled={disabled || submitting || errors.length > 0 || members.length === 0}>{submitting ? 'Preparing…' : submitLabel}</button>
