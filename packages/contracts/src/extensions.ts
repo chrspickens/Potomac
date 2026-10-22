@@ -1,6 +1,7 @@
 import type { CapabilityDigest, CapabilityId, CapabilityLock, JsonValue, SemVer } from "./index.js";
 import type { ResolverRef } from "./resolver.js";
 import type { EffectHandlerRef } from "./effects.js";
+import type { V2PreparationConstraint } from "./v2-preparation.js";
 
 export type ExtensionCapabilityRef = {
   id: CapabilityId;
@@ -31,6 +32,8 @@ export type ExtensionEntityDescriptor = {
   schemaVersion: number;
   capability: ExtensionCapabilityRef;
   schema: JsonValue;
+  /** Bounded declarative checks applied by the host before committing a new entity. */
+  creationConstraints?: V2PreparationConstraint[];
   ownership: ExtensionOwnership;
   visibility: ExtensionVisibility[];
   /** Entity data paths omitted from projections for roles not explicitly listed. */

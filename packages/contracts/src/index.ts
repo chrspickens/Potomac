@@ -45,6 +45,8 @@ export * from "./resolver.js";
 export * from "./effects.js";
 export * from "./reactions.js";
 export * from "./extensions.js";
+export { validateV2PreparationConstraints } from "./v2-preparation.js";
+export type { V2PreparationConstraint, V2GridPositionConstraint } from "./v2-preparation.js";
 export * from "./ui.js";
 
 export type FieldDefinition = {

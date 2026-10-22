@@ -1,5 +1,6 @@
 import { randomInt as cryptoRandomInt, randomUUID } from 'node:crypto';
 import { executeResolver } from '../../packages/rules-engine/src/resolver.ts';
+import { validateV2PreparationConstraints } from '../../packages/contracts/src/v2-preparation.ts';
 import { createV2EffectKernel, canonicalV2Json, hashV2Json, validateV2JsonSchema, validateV2SchemaDefinition } from './v2-effects.mjs';
 import { createV2ReactionKernel } from './v2-reactions.mjs';
 
@@ -73,6 +74,7 @@ function validateBoundedJson(value, schema) {
 function validateEntityDescriptor(descriptor) {
   if (!descriptor || descriptor.descriptorVersion !== 1 || !NAMESPACED.test(descriptor.typeId) || !Number.isInteger(descriptor.schemaVersion) || descriptor.schemaVersion < 1 || !NAMESPACED.test(descriptor.migration?.migrationId) || descriptor.migration.toSchemaVersion !== descriptor.schemaVersion || descriptor.migration.fromSchemaVersion !== descriptor.schemaVersion - 1 || !['campaign', 'principal'].includes(descriptor.ownership?.kind) || !Array.isArray(descriptor.visibility) || descriptor.visibility.length === 0 || descriptor.visibility.some(value => !['public', 'gm', 'owner'].includes(value)) || !Array.isArray(descriptor.creationRoles) || descriptor.creationRoles.some(role => !['gm', 'player'].includes(role))) fail('invalid', 'invalid entity descriptor');
   validateCapabilityRef(descriptor.capability); validateV2SchemaDefinition(descriptor.schema);
+  if (descriptor.creationConstraints !== undefined && (!Array.isArray(descriptor.creationConstraints) || descriptor.creationConstraints.some(constraint => !constraint || constraint.type !== 'unique-grid-positions' || !['participantsPath', 'gridPath', 'positionPath', 'blockedPath', 'namePath'].every(key => typeof constraint[key] === 'string' && /^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*$/.test(constraint[key]))))) fail('invalid', 'invalid entity creation constraints');
   if (descriptor.fieldVisibility !== undefined) {
     if (!Array.isArray(descriptor.fieldVisibility)) fail('invalid', 'invalid field visibility rules');
     const paths = new Set();
@@ -107,8 +109,8 @@ function validateWorkflowDescriptor(workflow) {
   }
 }
 
-export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, authorizeEffect = () => true, authorizeOwner = () => false, authorizeRead = () => false, authorizeCommand = () => false, authorizeCommandIntent = () => true, resolveReactionEligibility = () => [], authorizeReactionResponder = () => false, reauthorizePendingActor, drawRandom = cryptoRandomInt, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
-  if (!db || !Array.isArray(entities) || !Array.isArray(commands) || !Array.isArray(workflows) || !Array.isArray(effectHandlers) || !Array.isArray(resolvers) || typeof authenticate !== 'function' || typeof getCampaignLock !== 'function' || typeof validateLock !== 'function') fail('invalid', 'invalid extension kernel configuration');
+export function createV2ExtensionKernel({ db, entities, commands, workflows = [], effectHandlers, resolvers, authenticate, getCampaignLock, validateLock, validateEntityCreation = () => undefined, authorizeEffect = () => true, authorizeOwner = () => false, authorizeRead = () => false, authorizeCommand = () => false, authorizeCommandIntent = () => true, resolveReactionEligibility = () => [], authorizeReactionResponder = () => false, reauthorizePendingActor, drawRandom = cryptoRandomInt, now = () => new Date().toISOString(), createId = randomUUID, failureAt } = {}) {
+  if (!db || !Array.isArray(entities) || !Array.isArray(commands) || !Array.isArray(workflows) || !Array.isArray(effectHandlers) || !Array.isArray(resolvers) || typeof authenticate !== 'function' || typeof getCampaignLock !== 'function' || typeof validateLock !== 'function' || typeof validateEntityCreation !== 'function') fail('invalid', 'invalid extension kernel configuration');
   const entityTypes = new Map(); const commandTypes = new Map(); const workflowTypes = new Map(); const resolverMap = new Map(); const effectMap = new Map();
   for (const descriptor of entities) { validateEntityDescriptor(descriptor); if (entityTypes.has(descriptor.typeId)) fail('invalid', 'duplicate entity descriptor'); entityTypes.set(descriptor.typeId, clone(descriptor)); }
   for (const command of commands) { validateCommandDescriptor(command); if (commandTypes.has(command.commandId) || !entityTypes.has(command.entityTypeId)) fail('invalid', 'duplicate command or missing entity type'); commandTypes.set(command.commandId, clone(command)); }
@@ -455,6 +457,15 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
       const currentMember = principal(request.principalId, request.campaignId, request.authorityToken); const currentLock = lockFor(request.campaignId); assertTypePinned(request.campaignId, currentLock, descriptor);
       if (request.expectedLockDigest !== undefined && hashV2Json(currentLock) !== request.expectedLockDigest) fail('unsupported', 'campaign capability lock digest is stale');
       if (!descriptor.creationRoles.includes(currentMember.role)) fail('unauthorized', 'entity creation is not permitted');
+      const preparationErrors = validateV2PreparationConstraints(request.data, descriptor.creationConstraints ?? []);
+      if (preparationErrors.length) fail('invalid', preparationErrors[0]);
+      validateEntityCreation({
+        descriptor: clone(descriptor),
+        data: clone(request.data),
+        campaignId: request.campaignId,
+        member: clone(currentMember),
+        isActiveMember: principalId => authorizeOwner({ campaignId: request.campaignId, ownerPrincipalId: principalId })
+      });
       if (descriptor.ownership.kind === 'principal' && currentMember.role !== 'gm' && Object.hasOwn(request, 'ownerPrincipalId')) fail('unauthorized', 'only the GM may assign a principal-owned entity');
       if (descriptor.ownership.kind === 'campaign' && Object.hasOwn(request, 'ownerPrincipalId')) fail('invalid', 'campaign-owned entities cannot be assigned a principal owner');
       const owner = descriptor.ownership.kind === 'principal' ? (currentMember.role === 'gm' ? request.ownerPrincipalId ?? request.principalId : request.principalId) : null;

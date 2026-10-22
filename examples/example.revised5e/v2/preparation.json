@@ -1,13 +1,13 @@
 {
   "formatVersion": 1,
   "moduleId": "example.revised5e",
-  "moduleVersion": "1.2.1",
-  "moduleDigest": "sha256:49101fb3814ec240b6e3763ed159642ec4bacf66d537654b0ed713828695825a",
+  "moduleVersion": "1.3.0",
+  "moduleDigest": "sha256:3abb1d8aae432b59a0c137de3aa2c097a8bbf5f33c58a4a183e1da1b911cff1b",
   "forms": [
     {
       "entityTypeId": "example.revised5e.encounter",
       "title": "Prepare a Revised 5e encounter",
-      "description": "Prepare a fixed roster of two player characters and one training opponent. Assign the players and choose each participant's starting square on the 8 × 5 grid. Additional enemies are not supported in this prototype.",
+      "description": "Prepare two player characters and one to three enemies. Assign both players, add or remove enemies, and place every participant on the 8 × 5 grid.",
       "template": {
         "title": "New encounter",
         "status": "setup",
@@ -153,20 +153,6 @@
           "type": "member"
         },
         {
-          "path": "actors.0.position.x",
-          "label": "Player A start · X (0–7)",
-          "type": "integer",
-          "min": 0,
-          "max": 7
-        },
-        {
-          "path": "actors.0.position.y",
-          "label": "Player A start · Y (0–4)",
-          "type": "integer",
-          "min": 0,
-          "max": 4
-        },
-        {
           "path": "actors.1.name",
           "label": "Player B character name",
           "type": "text"
@@ -175,39 +161,62 @@
           "path": "actors.1.ownerPrincipalId",
           "label": "Assign Player B",
           "type": "member"
-        },
+        }
+      ],
+      "repeaters": [
         {
-          "path": "actors.1.position.x",
-          "label": "Player B start · X (0–7)",
-          "type": "integer",
-          "min": 0,
-          "max": 7
-        },
+          "path": "actors",
+          "startIndex": 2,
+          "minItems": 1,
+          "maxItems": 3,
+          "label": "Enemies",
+          "itemTemplatePath": "actors.2",
+          "idPath": "id",
+          "namePath": "name",
+          "positionPath": "position",
+          "idPrefix": "enemy-",
+          "addLabel": "Add enemy",
+          "removeLabel": "Remove enemy",
+          "fields": [
+            {
+              "path": "name",
+              "label": "Enemy name",
+              "type": "text"
+            },
+            {
+              "path": "armorClass",
+              "label": "Armor Class",
+              "type": "integer",
+              "min": 1,
+              "max": 30
+            },
+            {
+              "path": "initiativeModifier",
+              "label": "Initiative modifier",
+              "type": "integer",
+              "min": -5,
+              "max": 10
+            }
+          ]
+        }
+      ],
+      "placement": {
+        "participantsPath": "actors",
+        "positionPath": "position",
+        "gridPath": "grid",
+        "blockedPath": "grid.blocked",
+        "namePath": "name",
+        "title": "Starting positions",
+        "description": "Select each participant, then choose an open square. Every participant needs a different square."
+      },
+      "constraints": [
         {
-          "path": "actors.1.position.y",
-          "label": "Player B start · Y (0–4)",
-          "type": "integer",
-          "min": 0,
-          "max": 4
-        },
-        {
-          "path": "actors.2.name",
-          "label": "Opponent name",
-          "type": "text"
-        },
-        {
-          "path": "actors.2.position.x",
-          "label": "Opponent start · X (0–7)",
-          "type": "integer",
-          "min": 0,
-          "max": 7
-        },
-        {
-          "path": "actors.2.position.y",
-          "label": "Opponent start · Y (0–4)",
-          "type": "integer",
-          "min": 0,
-          "max": 4
+          "type": "unique-grid-positions",
+          "participantsPath": "actors",
+          "positionPath": "position",
+          "gridPath": "grid",
+          "blockedPath": "grid.blocked",
+          "namePath": "name"
         }
       ],
       "assignmentPaths": [

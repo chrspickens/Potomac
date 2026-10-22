@@ -205,7 +205,7 @@ function internalReference(fieldName: string, value: JsonValue): boolean {
   return fieldName.toLowerCase().endsWith('id') || typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value);
 }
 
-function parseForm(form: HTMLFormElement, schema: InputSchema): { input?: Record<string, JsonValue>; error?: string } {
+function parseForm(form: HTMLFormElement, schema: InputSchema, referenceNames?: Map<string, string>): { input?: Record<string, JsonValue>; error?: string } {
   const input: Record<string, JsonValue> = {};
   const formData = new FormData(form);
   for (const [name, field] of Object.entries(schema.properties)) {
@@ -220,6 +220,8 @@ function parseForm(form: HTMLFormElement, schema: InputSchema): { input?: Record
       const index = Number(raw);
       if (!Number.isInteger(index) || index < 0 || index >= field.enum.length) return { error: `Choose a valid ${fieldLabel(name, field).toLowerCase()}.` };
       value = field.enum[index];
+    } else if ((name === 'actorId' || name === 'targetId') && referenceNames?.has(raw)) {
+      value = raw;
     } else if (field.type === 'array') {
       try { value = JSON.parse(raw) as JsonValue; }
       catch { return { error: `Enter valid JSON for ${fieldLabel(name, field).toLowerCase()}.` }; }
@@ -267,6 +269,7 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState('');
   const schema = inputSchema(contribution, node.commandId);
+  const referenceNames = projectedReferenceNames(entity.data);
   const workflow = node.workflowTypeId ? currentWorkflow(contribution, entity, host, node.workflowTypeId) : undefined;
   const needsWorkflow = Boolean(node.workflowTypeId);
   const workflowRequest = workflow ? { workflowId: workflow.workflowId, expectedRevision: workflow.revision, expectedContinuationId: workflow.continuationId, transitionId: node.transitionId! } : undefined;
@@ -277,7 +280,7 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
     event.preventDefault();
     if (pending) return;
     const form = event.currentTarget;
-    const parsed = parseForm(form, schema);
+    const parsed = parseForm(form, schema, referenceNames);
     if (parsed.error) { setMessage(parsed.error); return; }
     setPending(true); setMessage('');
     try {
@@ -298,10 +301,11 @@ function CommandForm({ node, contribution, entity, host }: { node: Extract<UiNod
       const id = `${node.id}-${name}`;
       const label = fieldLabel(name, field);
       const required = schema.required?.includes(name) ?? false;
-      const referenceNames = projectedReferenceNames(entity.data);
       const choices = (field.enum ?? [true, false]).map((item, index) => ({ item, index, label: field.enum && referenceNames.get(String(item)) || (field.enum && internalReference(name, item) ? 'Unavailable option' : String(item)) }));
-      return <div className="v2-ui-input" key={name}>{field.type === 'array' && field.items?.type === 'object' ? <ArrayObjectField id={id} name={name} label={`${label}${required ? ' *' : ''}`} field={field} initial={savedIntentMatchesWorkflow ? savedAttempt.input[name] : undefined} disabled={pending} /> : <><label htmlFor={id}>{label}{required ? ' *' : ''}</label>{field.enum || field.type === 'boolean'
-        ? <select id={id} name={name} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending}><option value="" disabled>Choose {label.toLowerCase()}</option>{choices.map(choice => <option key={choice.index} value={field.enum ? String(choice.index) : String(choice.item)} disabled={field.enum && internalReference(name, choice.item) && !referenceNames.has(String(choice.item))}>{String(choice.label)}</option>)}</select>
+      const entityReference = !field.enum && field.type === 'string' && (name === 'actorId' || name === 'targetId');
+      const referenceChoices = entityReference ? [...referenceNames].map(([value, name]) => ({ value, label: name })) : [];
+      return <div className="v2-ui-input" key={name}>{field.type === 'array' && field.items?.type === 'object' ? <ArrayObjectField id={id} name={name} label={`${label}${required ? ' *' : ''}`} field={field} initial={savedIntentMatchesWorkflow ? savedAttempt.input[name] : undefined} disabled={pending} /> : <><label htmlFor={id}>{label}{required ? ' *' : ''}</label>{field.enum || field.type === 'boolean' || entityReference
+        ? <select id={id} name={name} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending}><option value="" disabled>Choose {label.toLowerCase()}</option>{entityReference ? referenceChoices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>) : choices.map(choice => <option key={choice.index} value={field.enum ? String(choice.index) : String(choice.item)} disabled={field.enum && internalReference(name, choice.item) && !referenceNames.has(String(choice.item))}>{String(choice.label)}</option>)}</select>
         : field.type === 'array'
           ? <textarea id={id} name={name} rows={3} placeholder={arrayExample(field)} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={`${id}-description`} />
         : <input id={id} name={name} type={field.type === 'integer' || field.type === 'number' ? 'number' : 'text'} step={field.type === 'integer' ? 1 : field.type === 'number' ? 'any' : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} defaultValue={savedIntentMatchesWorkflow ? defaultFieldValue(field, savedAttempt.input[name]) : ''} required={required} disabled={pending} aria-describedby={field.description ? `${id}-description` : undefined} />}{field.type === 'array' && <small id={`${id}-description`}>Enter a JSON array that matches the module schema, for example <code>{arrayExample(field)}</code>.</small>}{field.description && field.type !== 'array' && <small id={`${id}-description`}>{field.description}</small>}</>}</div>;

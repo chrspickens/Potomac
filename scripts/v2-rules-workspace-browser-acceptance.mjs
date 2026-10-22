@@ -44,10 +44,31 @@ const setLabeledValue = async (name, label, value) => {
 };
 const api = (url, token = 'local-gm', init = {}) => fetch(`http://127.0.0.1:${hostPort}${url}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers } });
 async function setTestStartingSquares(name) {
-  await setLabeledValue(name, 'Player B start · X (0–7)', '0');
-  await setLabeledValue(name, 'Player B start · Y (0–4)', '4');
+  const formId = 'example-revised5e-example-revised5e-encounter';
+  await setValue(name, `#${formId}-placement-participant`, 'player-b');
+  const placement = await ev(name, `(()=>{const square=document.querySelector('[aria-label="Choose square 0, 4"]');if(!square||square.disabled)return false;square.click();return true})()`);
+  assert.equal(placement, true, 'GM can place Player B using the visible initial-position grid');
 }
-async function startHost(databaseName, campaignId) { host = createHost({ databasePath: join(scratch, databaseName), campaignId, enableV2Api: true, v2RandomInt: (_min, max) => max - 1 }); await host.listen(hostPort); }
+async function setStartingSquare(name, actorId, x, y) {
+  const formId = 'example-revised5e-example-revised5e-encounter';
+  await setValue(name, `#${formId}-placement-participant`, actorId);
+  const placement = await ev(name, `(()=>{const square=document.querySelector(${JSON.stringify(`[aria-label="Choose square ${x}, ${y}"]`)});if(!square||square.disabled)return false;square.click();return true})()`);
+  assert.equal(placement, true, `${actorId} can be placed on open square (${x}, ${y}) through the visible grid`);
+}
+async function addEnemy(name, enemyName) {
+  await click(name, 'Add enemy');
+  const index = await ev(name, `document.querySelectorAll('.v2-preparation-opponent').length`);
+  const inputId = await ev(name, `document.querySelectorAll('.v2-preparation-opponent')[${index - 1}]?.querySelector('input')?.id`);
+  assert.ok(inputId, `enemy ${index} has an editable name field`);
+  await setValue(name, `#${inputId}`, enemyName);
+}
+async function setEnemyField(name, enemyIndex, label, value) {
+  const inputId = await ev(name, `(()=>{const enemy=document.querySelectorAll('.v2-preparation-opponent')[${enemyIndex}];return [...(enemy?.querySelectorAll('.v2-entity-field')||[])].find(field=>field.querySelector('label')?.textContent.trim()===${JSON.stringify(label)})?.querySelector('label')?.htmlFor})()`);
+  assert.ok(inputId, `enemy ${enemyIndex + 1} exposes ${label}`);
+  await setValue(name, `#${inputId}`, value);
+}
+let scriptedRolls;
+async function startHost(databaseName, campaignId) { host = createHost({ databasePath: join(scratch, databaseName), campaignId, enableV2Api: true, v2RandomInt: (_min, max) => scriptedRolls?.length ? scriptedRolls.shift() : max - 1 }); await host.listen(hostPort); }
 async function page(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`); }
 async function installCommandCapture(name) { await ev(name, `(()=>{window.__potomacCommands=[];const old=fetch.bind(window);window.fetch=async(url,init={})=>{const response=await old(url,init);if(String(url).endsWith('/api/v2/commands'))window.__potomacCommands.push({request:JSON.parse(init.body),status:response.status,response:await response.clone().json()});return response}})()`); }
 async function normalSetup(name, moduleId, campaignName) {
@@ -61,7 +82,7 @@ async function normalSetup(name, moduleId, campaignName) {
   await waitFor(name, `(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Enroll a player');return Boolean(b&&!b.disabled)})()`, 'GM enrollment ready');
   if (name === 'gm' && moduleId === 'example.revised5e') {
     await click(name, 'Return to campaign');
-    await waitFor(name, `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Revised 5e Encounter · 1.2.1 (experimental V2)')`, 'Campaign Home confirms exact authoritative V2 ruleset lock');
+    await waitFor(name, `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Revised 5e Encounter · 1.3.0 (experimental V2)')`, 'Campaign Home confirms exact authoritative V2 ruleset lock');
     assert.equal(await ev(name, `document.body.innerText.includes('System not configured') || document.body.innerText.includes('Configure campaign in GM setup')`), false, 'a valid V2 lock is not shown as unconfigured');
     assert.equal(await ev(name, `Boolean(document.querySelector('.campaign-setup[aria-label="Campaign setup"]'))`), false, 'V1 campaign setup is not shown for a valid V2 lock');
     await screenshot(name, 'gm-campaign-home-revised5e-lock.png');
@@ -118,12 +139,22 @@ async function commandForm(name, label, values) {
       }
       continue;
     }
-    const setBy = await ev(name, `(()=>{const f=document.querySelector(${JSON.stringify(selector)});const e=f?.elements.namedItem(${JSON.stringify(field)});return e?e.tagName.toLowerCase():''})()`);
-    assert.ok(setBy, `${label}.${field} exists`);
-    if (setBy === 'select') await setValue(name, `${selector} [name=${JSON.stringify(field)}]`, value, true);
+    const isSelect = field === 'actorId' || field === 'targetId';
+    if (isSelect) await setValue(name, `${selector} [name=${JSON.stringify(field)}]`, value, true);
     else await setValue(name, `${selector} [name=${JSON.stringify(field)}]`, value);
   }
   await click(name, label, selector);
+  await waitFor(name, `(()=>{const form=document.querySelector(${JSON.stringify(selector)});const button=[...(form?.querySelectorAll('button')||[])].find(item=>item.textContent.trim()===${JSON.stringify(label)});return Boolean(button&&!button.disabled)})()`, `${label} submission settles`);
+}
+async function waitForEncounterRound(encounterId, minimumRound) {
+  const until = Date.now() + 10000;
+  while (Date.now() < until) {
+    const activeLock = await lockFor('local-gm');
+    const response = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': activeLock.digest } });
+    if (response.ok && (await response.json()).data.round >= minimumRound) return;
+    await delay(100);
+  }
+  throw new Error(`Host encounter did not advance to round ${minimumRound}`);
 }
 async function lockFor(token) { return (await api('/api/v2/campaign/lock', token)).json(); }
 
@@ -138,7 +169,7 @@ try {
   // Revised 5e begins at ordinary Campaign Home and uses its trusted guided preparation profile.
   await normalSetup('gm', 'example.revised5e', 'Issue 166 Revised 5e');
   const [a, b] = await enrollTwo('gm');
-  const lock = await lockFor(); assert.equal(lock.lock.rootModule.id, 'example.revised5e'); assert.equal(lock.lock.rootModule.version, '1.2.1'); assert.equal(lock.lock.rootModule.digest, lock.lock.entries.find(item => item.id === 'example.revised5e').digest);
+  const lock = await lockFor(); assert.equal(lock.lock.rootModule.id, 'example.revised5e'); assert.equal(lock.lock.rootModule.version, '1.3.0'); assert.equal(lock.lock.rootModule.digest, lock.lock.entries.find(item => item.id === 'example.revised5e').digest);
   await saveEvidenceJson('revised5e-lock.json', lock);
   const catalog = await (await api('/api/v2/modules')).json(); const provider = catalog.modules.find(item => item.id === 'example.revised5e');
   const completeClosure = [{ id: provider.id, apiVersion: '1.0.0', implementationVersion: provider.version, digest: provider.digest }, ...provider.capabilities];
@@ -150,7 +181,7 @@ try {
   await setLabeledValue('gm', 'Assign Player A', a.principalId);
   await setLabeledValue('gm', 'Player B character name', 'Borin');
   await setLabeledValue('gm', 'Assign Player B', b.principalId);
-  await setLabeledValue('gm', 'Opponent name', 'Warden');
+  await setLabeledValue('gm', 'Enemy name', 'Warden');
   await setTestStartingSquares('gm');
   // A projection refresh can fail after the entity and grants have committed. The
   // retained idempotency key must make a same-form retry replay that creation.
@@ -187,7 +218,7 @@ try {
   await setLabeledValue('gm', 'Assign Player A', a.principalId);
   await setLabeledValue('gm', 'Player B character name', 'Borin');
   await setLabeledValue('gm', 'Assign Player B', b.principalId);
-  await setLabeledValue('gm', 'Opponent name', 'Warden');
+  await setLabeledValue('gm', 'Enemy name', 'Warden');
   await setTestStartingSquares('gm');
   await click('gm', 'Prepare encounter and assign players');
   await waitFor('gm', `document.body.innerText.includes('prepared by the host and read/act access granted to the selected players') && document.body.innerText.includes('Ash Bridge') && Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'created Revised 5e encounter and generic contribution');
@@ -234,7 +265,7 @@ try {
   await setLabeledValue('gm', 'Assign Player A', a.principalId);
   await setLabeledValue('gm', 'Player B character name', 'CinderB');
   await setLabeledValue('gm', 'Assign Player B', b.principalId);
-  await setLabeledValue('gm', 'Opponent name', 'Ash Knight');
+  await setLabeledValue('gm', 'Enemy name', 'Ash Knight');
   await click('gm', 'Prepare encounter and assign players');
   await waitFor('gm', `document.body.innerText.includes('Cinder Watch') && document.body.innerText.includes('prepared by the host and read/act access granted to the selected players')`, 'new preparation accepted after confirmed manual grant recovery');
   const afterNewPreparation = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
@@ -280,7 +311,7 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, sessions.playerA);
   assert.equal(await ev('playerA', `(()=>{const path=document.querySelector('.v2-ui-array-field');return Boolean(path&&path.getBoundingClientRect().width<=innerWidth&&document.documentElement.scrollWidth<=innerWidth)})()`), true, 'movement controls fit a narrow Chromium viewport without horizontal page overflow');
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sessions.playerA);
-  await commandForm('playerA', 'Move', { actorId: '0', path: '[{"x":1,"y":2}]' });
+  await commandForm('playerA', 'Move', { actorId: 'player-a', path: '[{"x":1,"y":2}]' });
   await waitFor('playerA', `document.body.innerText.includes('waiting for its authorized reaction')`, 'movement suspension receipt in Rules');
   const moveA = await ev('playerA', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.move')`);
   assert.equal(moveA.status, 200); assert.equal(moveA.response.status, 'pending');
@@ -319,7 +350,7 @@ try {
   const resumedMoveEvent = eventBeforeAttack.find(event => event.kind === 'command.resumed' && event.operationId === moveA.request.operationId);
   assert.deepEqual(resumedMoveEvent.payload.randomness.map(item => item.values), [[20], [4, 4]], 'accepted OA randomness is host supplied and auditable');
   assert.equal(resumedMoveEvent.payload.resolutionTranscript, undefined, 'player event excludes the GM-only transcript');
-  await commandForm('playerA', 'Attack', { actorId: '0', targetId: '2' });
+  await commandForm('playerA', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
   await waitFor('playerA', `window.__potomacCommands.some(item=>item.request.commandId==='example.revised5e.attack')`, 'Player A attack request');
   const attackA = await ev('playerA', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(attackA.status, 200, JSON.stringify(attackA)); assert.equal(attackA.response.status, 'applied', JSON.stringify(attackA));
   await waitFor('playerA', `document.body.innerText.includes('example.revised5e.attack committed by the host.')`, 'Player A attack confirmed');
@@ -329,11 +360,11 @@ try {
   assert.equal((await retry(a, { ...attackA.request, operationId: `${attackA.request.operationId}-stale`, expectedRevision: attackA.request.expectedRevision - 1 })).status, 409, 'stale revision is rejected');
   await ordinaryPlayer('playerB', b); await setValue('playerB', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerB');
   await waitFor('playerB', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'Player B authorized contribution');
-  await commandForm('playerB', 'Attack', { actorId: '0', targetId: '2' });
+  await commandForm('playerB', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
   await waitFor('playerB', `document.body.innerText.includes('host denied this action')`, 'cross-player attack denial feedback');
   const denied = await ev('playerB', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(denied.status, 403);
   const playerBCommandsBeforeAttack = await ev('playerB', `window.__potomacCommands.length`);
-  await commandForm('playerB', 'Attack', { actorId: '1', targetId: '2' });
+  await commandForm('playerB', 'Attack', { actorId: 'player-b', targetId: 'enemy' });
   await waitFor('playerB', `window.__potomacCommands.length>${playerBCommandsBeforeAttack} && window.__potomacCommands.at(-1).request.commandId==='example.revised5e.attack'`, 'Player B attack request acknowledged');
   const attackB = await ev('playerB', `window.__potomacCommands.at(-1)`);
   assert.equal(attackB.status, 200, JSON.stringify(attackB));
@@ -370,6 +401,7 @@ try {
     await waitFor(name, `(()=>{const message=document.querySelector('.v2-message')?.textContent||'';return message.includes('Authorized state refreshed from the host')||message.includes('Authorized state refresh failed')})()`, `${name} Rules refresh resolves after host restart`);
     const refreshEvidence = await ev(name, `({message:document.querySelector('.v2-message')?.textContent||'',requests:window.__recoveryRefreshRequests})`);
     assert.ok(refreshEvidence.message.includes('Authorized state refreshed from the host'), `${name} Rules refresh failed after host restart: ${JSON.stringify(refreshEvidence)}`);
+    await waitFor(name, `(()=>{const status=[...document.querySelectorAll('dt')].find(node=>node.textContent.trim()==='Status')?.nextElementSibling?.textContent.trim();return document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)} && document.body.innerText.includes(${JSON.stringify(`Entity revision ${recovered.entity.revision}`)}) && status==='complete'})()`, `${name} renders the host-confirmed completed entity after restart`);
     const displayedProjection = await ev(name, `(()=>{const status=[...document.querySelectorAll('dt')].find(node=>node.textContent.trim()==='Status')?.nextElementSibling?.textContent.trim();return {hasRevision:document.body.innerText.includes(${JSON.stringify(`Entity revision ${recovered.entity.revision}`)}),displayedStatus:status,entityId:document.querySelector('#v2-entity-picker')?.value||''}})()`);
     assert.equal(displayedProjection.hasRevision && displayedProjection.displayedStatus === 'complete' && displayedProjection.entityId === encounterId, true, `${name} displays the recovered entity revision and completed state after host restart: ${JSON.stringify({ displayedProjection, refreshRequests: refreshEvidence.requests })}`);
   }
@@ -424,6 +456,86 @@ try {
   await cdp('Page.reload', {}, sessions.playerA);
   await waitFor('playerA', `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Session ended')`, 'player reconnects to the finished V2 session after refresh');
   await screenshot('gm', 'gm-campaign-home-session-finished.png');
+
+  // Re-run the full first-encounter workflow with the bounded 2-PC/3-enemy roster.
+  // The old encounter tests above remain useful coverage for exact retries, but
+  // this scenario proves the new guided form, Table roster, two live rounds,
+  // single-responder OA, host authority and session finish together.
+  await click('gm', '⚙ Rules');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-guided-preparation-form'))`, 'new encounter preparation is available after returning to campaign');
+  await setLabeledValue('gm', 'Encounter name', 'Three Opponents');
+  await setLabeledValue('gm', 'Player A character name', 'Asha');
+  await setLabeledValue('gm', 'Assign Player A', a.principalId);
+  await setLabeledValue('gm', 'Player B character name', 'Borin');
+  await setLabeledValue('gm', 'Assign Player B', b.principalId);
+  await setLabeledValue('gm', 'Enemy name', 'Warden');
+  await addEnemy('gm', 'Bandit Two');
+  await addEnemy('gm', 'Bandit Three');
+  await setEnemyField('gm', 1, 'Armor Class', 13);
+  await setEnemyField('gm', 1, 'Initiative modifier', 1);
+  await setStartingSquare('gm', 'player-b', 0, 4);
+  assert.equal(await ev('gm', `document.querySelectorAll('.v2-preparation-opponent').length`), 3, 'the normal preparation form contains exactly three configurable enemies');
+  assert.equal(await ev('gm', `document.querySelectorAll('.v2-preparation-grid-cell.is-occupied').length`), 5, 'the starting grid displays all five placed participants');
+  await screenshot('gm', 'gm-three-enemy-preparation.png');
+  await click('gm', 'Prepare encounter and assign players');
+  await waitFor('gm', `document.body.innerText.includes('Three Opponents') && document.body.innerText.includes('Committed roster:') && document.body.innerText.includes('Bandit Three')`, 'host confirms the committed five-participant roster and starting positions');
+  const rosterRows = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  const rosterEntity = (rosterRows.entities ?? rosterRows).find(row => row.data.title === 'Three Opponents');
+  assert.ok(rosterEntity, 'the host persisted the newly prepared roster');
+  assert.equal(rosterEntity.data.actors.length, 5, 'host-confirmed entity has two player characters and three enemies');
+  assert.equal(rosterEntity.data.actors[3].armorClass, 13, 'the host confirms GM-configured enemy Armor Class');
+  assert.equal(rosterEntity.data.actors[3].initiativeModifier, 1, 'the host confirms GM-configured enemy initiative modifier');
+  assert.deepEqual(new Set(rosterEntity.data.actors.map(actor => `${actor.position.x},${actor.position.y}`)).size, 5, 'all five starting positions are unique');
+  const rosterEncounterId = rosterEntity.entityId;
+  await setValue('gm', '#v2-entity-picker', rosterEncounterId);
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-table-page')) && ['Asha','Borin','Warden','Bandit Two','Bandit Three'].every(name=>document.body.innerText.includes(name))`, 'Table shows all five committed participants and their positions');
+  await screenshot('gm', 'gm-three-enemy-table.png');
+  await click('gm', 'Open in Rules');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(rosterEncounterId)}`, 'Table returns to Rules with the same encounter selected');
+  await click('gm', 'Start session');
+  await waitFor('gm', `document.body.innerText.includes('Session started from the selected host encounter.') && document.body.innerText.includes('Live · Three Opponents')`, 'GM starts the five-participant live session');
+  scriptedRolls = [20, 19, 18, 17, 16, 1, 1, 1, 1, 1, 1, 1];
+  await click('gm', 'Roll initiative and begin');
+  await waitFor('gm', `document.body.innerText.includes('example.revised5e.initialize committed by the host.') && document.body.innerText.includes('active')`, 'host rolls initiative for all five participants');
+  const rosterAfterInitiative = await (await api(`/api/v2/entities/${encodeURIComponent(rosterEncounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.deepEqual(rosterAfterInitiative.data.initiativeOrder, ['player-a', 'player-b', 'enemy', 'enemy-1', 'enemy-2'], 'the host sorts five initiative results and ties/order remain module-defined');
+  // The previous scenario leaves its player dashboards on a finished session.
+  // Authenticate fresh independent contexts for this newly granted roster.
+  await ordinaryPlayer('rosterPlayerA', a);
+  await ordinaryPlayer('rosterPlayerB', b);
+  for (const name of ['rosterPlayerA', 'rosterPlayerB']) {
+    await setValue(name, '#v2-entity-picker', rosterEncounterId);
+    await installCommandCapture(name);
+  }
+  await commandForm('rosterPlayerA', 'Move', { actorId: 'player-a', path: '[{"x":1,"y":2}]' });
+  await waitFor('rosterPlayerA', `document.body.innerText.includes('is waiting for its authorized reaction')`, 'Player A movement opens one eligible opportunity-attack adjudication');
+  const pendingRosterMove = await ev('rosterPlayerA', `window.__potomacCommands.at(-1)`);
+  assert.equal(pendingRosterMove.status, 200); assert.equal(pendingRosterMove.response.status, 'pending');
+  await waitFor('gm', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='GM: Accept Opportunity attack')`, 'GM receives the single eligible reaction prompt');
+  await click('gm', 'GM: Accept Opportunity attack');
+  await waitFor('gm', `document.body.innerText.includes('GM accepted Opportunity attack')`, 'GM adjudicates the opportunity attack through the normal control');
+  // The GM resolves enemy attacks and ends the player turns through the normal
+  // Rules controls. Player attack ownership was already exercised above; this
+  // bounded roster pass focuses on two complete rounds with five participants.
+  await click('gm', 'Refresh authorized state');
+  await waitFor('gm', `document.body.innerText.includes('Authorized state refreshed from the host.')`, 'GM refreshes after the authorized reaction is committed');
+  for (const actorId of ['player-a', 'player-b']) await commandForm('gm', 'End turn', { actorId });
+  for (const [actorId, targetId] of [['enemy', 'player-a'], ['enemy-1', 'player-b'], ['enemy-2', 'player-a']]) await commandForm('gm', 'Attack', { actorId, targetId });
+  await waitForEncounterRound(rosterEncounterId, 2);
+  for (const actorId of ['player-a', 'player-b']) await commandForm('gm', 'End turn', { actorId });
+  for (const [actorId, targetId] of [['enemy', 'player-a'], ['enemy-1', 'player-b'], ['enemy-2', 'player-a']]) await commandForm('gm', 'Attack', { actorId, targetId });
+  await waitForEncounterRound(rosterEncounterId, 3);
+  const twoRounds = await (await api(`/api/v2/entities/${encodeURIComponent(rosterEncounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.equal(twoRounds.data.round, 3, 'the host completed two full rounds');
+  assert.equal(twoRounds.data.combatLog.filter(item => item.kind.startsWith('opportunity-')).length, 1, 'one opportunity attack was adjudicated; no multi-responder rule was added');
+  assert.equal(twoRounds.data.combatLog.filter(item => item.kind === 'miss').length, 6, 'all three enemies resolved an attack in each of two rounds');
+  await click('gm', 'Finish session');
+  await waitFor('gm', `document.body.innerText.includes('Session finished. Encounter history remains available.')`, 'GM finishes the live session after two rounds');
+  await click('gm', 'Return to campaign');
+  await waitFor('gm', `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Session ended')`, 'GM returns to campaign preparation after the session');
+  await screenshot('gm', 'gm-three-enemy-session-finished.png');
+
   const revokeA = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}/grants/${encodeURIComponent(a.principalId)}`, 'local-gm', { method: 'DELETE', headers: { 'x-v2-lock-digest': lock.digest } });
   assert.equal(revokeA.status, 200, 'GM grant revocation succeeds');
   const participantRead = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } });
@@ -488,6 +600,7 @@ try {
   assert.equal(pendingRows.length, 1, 'one durable reaction window is linked to the parent command'); const windowId = pendingRows[0].window_id;
   await ordinaryPlayer('diceB', diceB); await click('diceB', 'Refresh authorized state');
   await waitFor('diceB', `document.body.innerText.includes('Pending reaction') && document.body.innerText.includes('Accept Brace')`, 'authorized responder sees the pending reaction');
+  await waitFor('diceB', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept Brace' && !button.disabled)`, 'authorized responder control is enabled after its permission projection loads');
   assert.equal(await ev('diceA', ` [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept Brace')`), false, 'unauthorized initiator does not receive responder controls');
   const unauthorizedReaction = await api(`/api/v2/reactions/${encodeURIComponent(windowId)}/decisions`, diceA.credential, { method: 'POST', body: JSON.stringify({ operationId: 'issue-166-unauthorized-reaction', actionId: 'example.dicepool.brace', decision: 'accept', input: {} }), headers: { 'x-v2-lock-digest': diceLock.digest } });
   assert.ok([403, 404].includes(unauthorizedReaction.status), `unauthorized reaction responder rejected (${unauthorizedReaction.status})`);

@@ -86,6 +86,7 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
   const resolvers = providers.flatMap(provider => provider.resolvers);
   const intentAuthorizers = new Map(providers.flatMap(provider => provider.intentAuthorizers.map(policy => [policy.commandId, policy.authorize])));
   const reactionAudiencePolicies = new Map(providers.flatMap(provider => provider.reactionPrincipalResolvers.map(policy => [policy.commandId, { resolve: policy.resolve }])));
+  const entityCreationValidators = new Map(providers.flatMap(provider => provider.entityCreationValidators.map(policy => [policy.typeId, policy.validate])));
   const buildLock = (id, moduleId = 'example.starship.system') => lockForTrustedModule(catalog, id, moduleId);
   db.exec(V2_HOST_LOCK_SCHEMA);
   const authenticate = (principalId, { campaignId: requestedCampaign, authorityToken } = {}) => {
@@ -139,6 +140,9 @@ export function createV2HostAdapter({ db, campaignId, authenticateBearer, reauth
   const kernel = createV2ExtensionKernel({
     db, entities, commands, workflows, effectHandlers, resolvers, drawRandom,
     authenticate, getCampaignLock, validateLock,
+    validateEntityCreation: ({ descriptor, data, campaignId: targetCampaignId, isActiveMember }) => entityCreationValidators.get(descriptor.typeId)?.(data, {
+      isActiveMember: principalId => targetCampaignId === campaignId && isActiveMember(principalId)
+    }),
     authorizeCommandIntent: context => intentAuthorizers.get(context.command.commandId)?.(context) ?? true,
     authorizeRead: ({ member, entity }) => member.role === 'player' && hasGrant(entity.entityId, member.principalId, 'read'),
     authorizeCommand: ({ member, entity }) => member.role === 'player' && hasGrant(entity.entityId, member.principalId, 'act'),
