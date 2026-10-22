@@ -9,7 +9,7 @@ V2 trusted modules and their generic declarative workspace existed behind an exp
 
 ## Decision
 
-Campaign Home may list the host-provided trusted catalog only when the app and configured host are loopback. A GM may choose a catalog entry for a fresh campaign; the host validates and pins the exact module lock, digest, and capability closure. The UI never constructs lock provenance. The existing generic V2 renderer provides the Rules workspace for both GM and authenticated enrolled players. The lock cannot be replaced by ordinary V1 setup, and V2 setup refuses an existing V1 pin or legacy campaign records.
+Campaign Home may list the host-provided trusted catalog only when the app and configured host are loopback. A GM may choose a catalog entry for a fresh campaign; the host validates and pins the exact module lock, digest, and capability closure. The UI never constructs lock provenance. The existing generic V2 renderer provides Characters, Encounters, and Table task views for both GM and authenticated enrolled players, as described in [ADR-0015](0015-v2-task-applications.md). The lock cannot be replaced by ordinary V1 setup, and V2 setup refuses an existing V1 pin or legacy campaign records.
 
 This increment is deliberately limited to one configured campaign per host. It does not make V2 generally available over a network, add campaign selection, enable offline V2 queues, install third-party modules, or migrate module versions.
 

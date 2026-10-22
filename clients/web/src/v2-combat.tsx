@@ -20,7 +20,7 @@ type Encounter = UiEntityProjection & { revision: number; data: { title: string;
 function makeContribution(): UiContribution {
   const source = contributionSource as unknown as { contractVersion: 1; contributionId: string; contributionVersion: '1.0.0'; kind: UiContribution['kind']; slots: string[]; workflows: []; nodes: UiContribution['nodes'] };
   // This legacy acceptance page owns a tactical-grid movement control below. Keep
-  // the module-authored generic Move form on the normal Rules workspace only.
+  // the module-authored generic Move form on the normal V2 Table app only.
   const withoutGenericMove = (nodes: UiContribution['nodes']): UiContribution['nodes'] => {
     const result: UiContribution['nodes'] = [];
     for (const node of nodes) {

@@ -5,3 +5,7 @@
   margin: 0;
   max-width: 70ch;
 }
+
+.home-lock-status { margin: 18px 24px 0; padding: 14px 18px; border: 1px solid #3a5064; border-radius: 10px; background: #142333; color: #dce8f1; }
+.home-lock-status h2 { margin: 0 0 6px; font-size: 14px; }
+.home-lock-status p { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
