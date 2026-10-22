@@ -14,9 +14,9 @@ if (!chrome) throw new Error('Chrome/Edge not found. Set POTOMAC_CHROME.');
 const scratch = await mkdtemp(join(tmpdir(), 'potomac-v2-rules-ui-'));
 const freePort = async () => { const server = createServer(); await new Promise((ok, bad) => server.once('error', bad).listen(0, '127.0.0.1', ok)); const value = server.address().port; await new Promise((ok, bad) => server.close(error => error ? bad(error) : ok())); return value; };
 const hostPort = await freePort(), webPort = await freePort(), debugPort = await freePort();
-let host, socket, seq = 0; const children = [], pending = new Map(), sessions = {}, contexts = [];
+let host, socket, seq = 0; const children = [], pending = new Map(), sessions = {}, contexts = [], originWaiters = new Map();
 const child = (cmd, args, options = {}) => { const proc = spawn(cmd, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options }); let output = ''; proc.stdout.on('data', chunk => output += chunk); proc.stderr.on('data', chunk => output += chunk); children.push({ proc, get output() { return output; } }); return proc; };
-const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const id = ++seq, timer = setTimeout(() => { pending.delete(id); bad(new Error(`CDP ${method} timeout`)); }, 20000); pending.set(id, message => { clearTimeout(timer); message.error ? bad(new Error(message.error.message)) : ok(message.result); }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
+const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const id = ++seq, timer = setTimeout(() => { pending.delete(id); bad(new Error(`CDP ${method} timeout`)); }, 20000); pending.set(id, message => { clearTimeout(timer); message.error ? bad(new Error(`CDP ${method}: ${message.error.message}`)) : ok(message.result); }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
 const ev = async (name, expression) => { const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessions[name]); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; };
 const waitFor = async (name, expression, what, timeout = 25000) => { const until = Date.now() + timeout; while (Date.now() < until) { if (await ev(name, expression)) return; await delay(100); } throw new Error(`Timeout ${what}: ${await ev(name, 'document.body.innerText.slice(-1800)')}`); };
 const click = async (name, label, rootSelector = 'body') => { const result = await ev(name, `(()=>{const r=document.querySelector(${JSON.stringify(rootSelector)})||document;const b=[...r.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)return {ok:false,buttons:[...r.querySelectorAll('button')].map(x=>[x.textContent.trim(),x.disabled]),tail:document.body.innerText.slice(-900)};b.click();return {ok:true}})()`); assert.equal(result.ok, true, `click ${label}: ${JSON.stringify(result)}`); };
@@ -69,7 +69,21 @@ async function setEnemyField(name, enemyIndex, label, value) {
 }
 let scriptedRolls;
 async function startHost(databaseName, campaignId) { host = createHost({ databasePath: join(scratch, databaseName), campaignId, enableV2Api: true, v2RandomInt: (_min, max) => scriptedRolls?.length ? scriptedRolls.shift() : max - 1 }); await host.listen(hostPort); }
-async function page(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`); }
+async function page(name) {
+  const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId);
+  const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId });
+  const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId;
+  await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId);
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, attached.sessionId);
+  const readyOrigin = `http://127.0.0.1:${webPort}`;
+  const executionContext = new Promise((ok, bad) => {
+    const timer = setTimeout(() => { originWaiters.delete(attached.sessionId); bad(new Error(`${name} app execution context timed out`)); }, 20000);
+    originWaiters.set(attached.sessionId, origin => { if (origin === readyOrigin) { clearTimeout(timer); originWaiters.delete(attached.sessionId); ok(); } });
+  });
+  await cdp('Page.navigate', { url: `${readyOrigin}/` }, attached.sessionId);
+  await executionContext;
+  await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`);
+}
 async function installCommandCapture(name) { await ev(name, `(()=>{window.__potomacCommands=[];const old=fetch.bind(window);window.fetch=async(url,init={})=>{const response=await old(url,init);if(String(url).endsWith('/api/v2/commands'))window.__potomacCommands.push({request:JSON.parse(init.body),status:response.status,response:await response.clone().json()});return response}})()`); }
 async function normalSetup(name, moduleId, campaignName) {
   await page(name);
@@ -85,7 +99,18 @@ async function normalSetup(name, moduleId, campaignName) {
     await waitFor(name, `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Revised 5e Encounter · 1.3.0 (experimental V2)')`, 'Campaign Home confirms exact authoritative V2 ruleset lock');
     assert.equal(await ev(name, `document.body.innerText.includes('System not configured') || document.body.innerText.includes('Configure campaign in GM setup')`), false, 'a valid V2 lock is not shown as unconfigured');
     assert.equal(await ev(name, `Boolean(document.querySelector('.campaign-setup[aria-label="Campaign setup"]'))`), false, 'V1 campaign setup is not shown for a valid V2 lock');
-    await screenshot(name, 'gm-campaign-home-revised5e-lock.png');
+    const homeGuidance = await ev(name, `(()=>({actions:document.querySelector('.home-quick-actions')?.innerText||'',content:document.querySelector('.home-preview')?.innerText||''}))()`);
+    assert.match(homeGuidance.actions, /Open Revised 5e Encounter workspace/);
+    assert.doesNotMatch(homeGuidance.actions, /Create encounter|Create character/);
+    assert.match(homeGuidance.content, /legacy Characters and Encounters pages list V1 records/);
+    assert.doesNotMatch(homeGuidance.content, /No authorized characters/);
+    await screenshot(name, 'gm-campaign-home-v2-workflow.png');
+    await click(name, '♙ Characters');
+    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('legacy V1 records')`, 'Characters explains the legacy/V2 boundary');
+    await click(name, '⚑ Encounters');
+    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('legacy V1 sessions')`, 'Encounters explains the legacy/V2 boundary');
+    await click(name, '⌖ Maps');
+    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('separate app')`, 'Maps explains that it is separate from the module workspace');
     await click(name, '▦ Table');
     await waitFor(name, `document.body.innerText.includes('Choose a prepared encounter in Rules, then open it in Table')`,'V2 Table explains how to open a prepared encounter');
     await screenshot(name, 'gm-v2-table-route-help.png');
@@ -120,6 +145,12 @@ async function ordinaryPlayer(name, player) {
   await setValue(name, '#player-credential-input', player.credential);
   await click(name, 'Connect as player');
   await waitFor(name, `document.querySelector('.app-topbar select')?.value==='player' && (()=>{try{return JSON.parse(localStorage.getItem('potomac.identity.v1')||'null')?.credential===${JSON.stringify(player.credential)}}catch{return false}})()`, `${name} authenticated with its issued player credential`);
+  if (name === 'playerA') {
+    await waitFor(name, `Boolean(document.querySelector('.home-player-status'))`, `${name} V2 Campaign Home guidance`);
+    await waitFor(name, `document.querySelector('.home-player-status')?.innerText.includes('assigned character and actions appear in the Revised 5e Encounter workspace')`, `${name} authoritative V2 lock guidance on Campaign Home`);
+    assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('assigned character and actions appear in the Revised 5e Encounter workspace')`), true, 'player Campaign Home points to the V2 workspace instead of reporting no authorized V1 character');
+    assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('No character is currently available to this account.')`), false, 'player Campaign Home does not confuse an empty V1 snapshot with V2 ownership');
+  }
   await waitFor(name, ` [...document.querySelectorAll('.app-rail nav button')].some(b=>b.textContent.includes('Rules'))`, `${name} Rules navigation`);
   await click(name, '⚙ Rules');
   await waitFor(name, `Boolean(document.querySelector('.v2-combat-header'))`, `${name} generic Rules workspace`);
@@ -164,7 +195,7 @@ try {
   for (let i = 0; i < 300; i++) { try { if ((await fetch(`http://127.0.0.1:${webPort}/`)).ok) break; } catch {} await delay(100); }
   child(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${join(scratch, 'chrome')}`, 'about:blank']);
   let info; for (let i = 0; i < 200; i++) { try { info = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json(); break; } catch { await delay(100); } } assert.ok(info?.webSocketDebuggerUrl);
-  socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.id && pending.has(message.id)) { const done = pending.get(message.id); pending.delete(message.id); done(message); } });
+  socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.method === 'Runtime.executionContextCreated' && message.sessionId) originWaiters.get(message.sessionId)?.(message.params.context.origin); if (message.id && pending.has(message.id)) { const done = pending.get(message.id); pending.delete(message.id); done(message); } });
 
   // Revised 5e begins at ordinary Campaign Home and uses its trusted guided preparation profile.
   await normalSetup('gm', 'example.revised5e', 'Issue 166 Revised 5e');
@@ -619,6 +650,7 @@ try {
   await host.close(); host = undefined; await delay(150); await startHost('dicepool.sqlite', 'campaign-issue-166-dicepool');
   await click('diceB', 'Refresh authorized state'); await waitFor('diceB', `document.body.innerText.includes('Lantern Bridge') && document.body.innerText.includes('resolved')`, 'Dice-pool continuation result persists after second host start');
   await click('diceGm', 'Refresh authorized state'); await waitFor('diceGm', `document.body.innerText.includes('Live · Lantern Bridge')`, 'Dice-pool live session survives host restart');
+  await waitFor('diceGm', `(()=>{const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Finish session');return Boolean(button&&!button.disabled)})()`, 'GM session controls finish loading after the authorized refresh');
   await click('diceGm', 'Finish session'); await waitFor('diceGm', `document.body.innerText.includes('Finished')`, 'GM finishes the module-neutral Dice-pool session');
   assert.deepEqual((await lockFor()).lock, diceLock.lock, 'Dice-pool exact lock is unchanged after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_reaction_windows WHERE parent_operation_id=? AND status=?').get(contest.request.operationId, 'resolved').n, 1, 'reaction resolution persists exactly once');
