@@ -83,6 +83,7 @@ function projectLoreArticle(wire: LoreWireArticle & { type?: LoreKind; published
   }
 }
 export type CampaignConfig = { id: string; name: string; systemModuleId: string | null; systemModuleVersion: string | null; revision: number }
+export type CampaignMember = { memberId: string; displayName: string; createdAt: string; present: boolean }
 export type SessionContext = { campaignId: string; activeEncounter: Encounter | null; cursor: number }
 export type Activity = { id: string; actor: string; action: string; detail: string; time: string; visibility: 'all' | 'gm'; cursor: number }
 export type SessionRecord = { id: string; encounterId?: string | null; status: 'active' | 'paused' | 'finished'; revision: number; startedAt: string; updatedAt: string; finishedAt: string | null }
@@ -195,6 +196,12 @@ export async function submitOfflineOperation(operation: OfflineOperation): Promi
 export async function enrollLocalPlayer(displayName: string): Promise<{ memberId: string; displayName: string; credential: string }> {
   if (!baseUrl) throw new Error('A local host is required to enroll players')
   return http('/api/members/enroll', 'gm', { method: 'POST', body: JSON.stringify({ displayName }) })
+}
+
+export async function listCampaignMembers(): Promise<CampaignMember[]> {
+  if (!baseUrl) throw new Error('A local host is required to list campaign members')
+  const result = await http<{ members: CampaignMember[] }>('/api/members', 'gm')
+  return result.members
 }
 
 export async function grantActorToMember(actorId: string, memberId: string): Promise<void> {

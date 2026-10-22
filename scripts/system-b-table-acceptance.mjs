@@ -95,7 +95,7 @@ async function waitForExpression(sessionId, expression, label, timeoutMs = 15000
     try { if (await evaluate(sessionId, expression)) return; } catch {}
     await delay(100);
   }
-  const detail = await evaluate(sessionId, "({status:document.querySelector('.status')?.textContent,error:document.querySelector('.error-banner')?.textContent,body:document.body.innerText.slice(0,700)})").catch(() => null);
+  const detail = await evaluate(sessionId, "({status:document.querySelector('.status')?.textContent,error:document.querySelector('.error-banner')?.textContent,roster:document.querySelector('.table-participants')?.outerHTML,body:document.body.innerText.slice(0,700)})").catch(() => null);
   throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(detail)}`);
 }
 
@@ -196,10 +196,11 @@ try {
   const gm = await openBrowserClient(gmContext.browserContextId, 'gm', gmWebUrl);
   const player = await openBrowserClient(playerContext.browserContextId, 'player', playerWebUrl);
   await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel') && document.querySelector('.table-session-panel strong')?.textContent === 'No active session'", 'generic Table session brick');
-  await waitForExpression(gm.sessionId, "document.querySelector('.table-participants')?.textContent.includes('Nia Sol')", 'System B participant in generic Table roster');
+  await waitForExpression(gm.sessionId, "document.querySelector('.table-participants')?.textContent.includes('System B Player') && document.querySelector('.table-participants')?.textContent.includes('Not in current encounter')", 'enrolled System B member in generic Table roster before session start');
   await waitForExpression(player.sessionId, "document.querySelector('.table-participants')?.textContent.includes('Nia Sol')", 'authorized System B player roster');
   await clickText(gm.sessionId, 'Start session', '.table-session-panel button');
   await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", 'GM starts a session through Table UI');
+  await waitForExpression(gm.sessionId, "document.querySelector('.table-participants')?.textContent.includes('Present in current encounter')", 'GM member roster marks the encounter participant present after session start');
   await waitForExpression(player.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", 'player receives committed session start');
 
   await clickText(player.sessionId, 'Characters', 'nav[aria-label="Applications"] button');
@@ -221,7 +222,7 @@ try {
   await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
   await cdp('Input.insertText', { text: '6' }, player.sessionId);
   await pointerClickText(player.sessionId, 'Roll Instinct Test', '.character-action-form button');
-  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('instinct-test accepted at revision'))", 'valid System B check receives host acceptance feedback');
+  await waitForExpression(player.sessionId, "document.querySelector('.app-notification')?.textContent.includes('instinct-test accepted at revision')", 'valid System B check receives host acceptance feedback');
   const instinctAfterCheck = await jsonRequest(`/api/actors/${actorId}`, gmToken);
   assert.equal(instinctAfterCheck.revision, instinctRevisionBeforeValidation + 1, 'accepted System B check commits exactly one revision');
   const systemBSessionId = (await jsonRequest('/api/session', gmToken)).current.id;
@@ -230,7 +231,7 @@ try {
   assert.equal(instinctEvents.length, 1, 'one real Character UI submission creates one committed System B check event');
   assert.equal(instinctEvents[0].payload.parameters.difficulty, 6, 'host audit records the difficulty explicitly entered in Character UI');
   await pointerClickText(player.sessionId, 'Spend 1 Hope', '.character-view button');
-  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('spend-hope accepted'))", 'player submits generic System B action during active session');
+  await waitForExpression(player.sessionId, "document.querySelector('.app-notification')?.textContent.includes('spend-hope accepted')", 'player submits generic System B action during active session');
   assert.equal(await evaluate(player.sessionId, "Boolean(document.querySelector('.gm-note')?.textContent.includes('SYSTEM_B_GM_PRIVATE_STAR_CHART'))"), false, 'GM-only actor field is absent from player DOM');
 
   const playerJsonChecks = await Promise.all([
