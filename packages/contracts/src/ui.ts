@@ -53,6 +53,8 @@ export type UiEntityProjection = {
   schemaVersion: number;
   revision: number;
   data: JsonValue;
+  /** Host-computed paths to nested records owned by the authenticated principal; never contains principal IDs. */
+  viewerOwnedPaths?: string[];
 };
 
 /** Authorization is supplied by the host, never inferred from a UI binding or role label. */

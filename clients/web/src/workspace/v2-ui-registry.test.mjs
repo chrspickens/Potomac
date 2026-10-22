@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { UiContributionRegistry, readUiPath, validateUiContribution } from './v2-ui-registry.ts';
 import { d20ActorSheetProbe, d20UiCatalog, dicePoolStressProbe, dicePoolUiCatalog, probeUiLock, starshipUiCatalog, starshipUiContributions, starshipUiLock } from './v2-ui-fixtures.ts';
+import { describeHistoryEntry, describeOutcome, friendlyCommandError, initiativeParticipants, summarizeCommandOutcomes } from './v2-ui-presentation.ts';
 
 test('registers exact-pinned starship sheet, form, engineering panel, and reusable brick descriptors', () => {
   const registry = new UiContributionRegistry(starshipUiLock, starshipUiLock.campaignId, starshipUiCatalog);
@@ -91,4 +92,29 @@ test('bounded descriptors can validate and read resource paths across authorized
   const invalid = structuredClone(contribution);
   invalid.nodes[1].currentPath = 'actors.*.unknown';
   assert.throws(() => validateUiContribution(invalid, lock, 'd20-array-probe', catalog), /invalid resource fields/);
+});
+
+test('initiative tracker resolves authorized participant names and highlights the committed active turn', () => {
+  const data = { round: 2, currentTurnIndex: 1, initiativeOrder: ['pc-a', 'enemy-a'], actors: [{ id: 'pc-a', name: 'Mira', kind: 'player' }, { id: 'enemy-a', name: 'Raider', kind: 'enemy' }] };
+  const tracker = initiativeParticipants(data, 'initiativeOrder', 'Initiative order', ['actors.0']);
+  assert.equal(tracker.round, 2);
+  assert.equal(tracker.active, 'Raider');
+  assert.deepEqual(tracker.participants.map(({ label, kind, active, controlledByViewer }) => ({ label, kind, active, controlledByViewer })), [
+    { label: 'Mira', kind: 'player', active: false, controlledByViewer: true }, { label: 'Raider', kind: 'enemy', active: true, controlledByViewer: false },
+  ]);
+  assert.equal(initiativeParticipants(data, 'otherList', 'Participants'), undefined);
+});
+
+test('combat feedback summarizes only the host outcome and retains host detail on a friendly rejection', () => {
+  const data = { actors: [{ id: 'pc-a', name: 'Mira' }, { id: 'enemy-a', name: 'Raider' }] };
+  assert.deepEqual(summarizeCommandOutcomes({ outcomes: [{ kind: 'revised5e.attack.hit', data: { actorId: 'pc-a', targetId: 'enemy-a', damage: 4 } }] }, data), ['Mira hit Raider for 4 damage.']);
+  const rejected = friendlyCommandError(Object.assign(new Error('movement is not legal for the current turn'), { code: 'conflict' }), 'example.revised5e.move');
+  assert.match(rejected, /another participant’s turn/);
+  assert.match(rejected, /Host detail: movement is not legal for the current turn/);
+});
+
+test('combat and movement history entries are readable and derive from committed fields', () => {
+  assert.equal(describeHistoryEntry({ round: 2, actorName: 'Mira', kind: 'hit', targetName: 'Raider', damage: 5 }, 'combat'), 'Round 2 · Mira hit Raider for 5 damage.');
+  assert.equal(describeHistoryEntry({ round: 2, actorName: 'Mira', from: { x: 1, y: 1 }, to: { x: 2, y: 1 }, feetSpent: 5, remaining: 25 }, 'movement'), 'Round 2 · Mira moved from (1, 1) to (2, 1) · spent 5 ft · 25 ft remain.');
+  assert.equal(describeOutcome('revised5e.turn-ended', { actorId: 'pc-a', nextActorId: 'enemy-a', round: 2 }, new Map([['enemy-a', 'Raider']])), 'Turn ended. Raider acts next in round 2.');
 });
