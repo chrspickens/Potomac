@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { configuredHost, type Activity, type CampaignConfig, type ConnectionStatus, type LoreArticle, type MapSceneView, type Role, type SessionSnapshot, type Snapshot } from './api'
 import { campaignHomeActivity, campaignHomeIdentity, campaignHomeState, lastPreparedEncounter } from './campaign-home-model'
+import './campaign-home-v2.css'
 
 type Props = {
   role: Role
@@ -14,7 +15,7 @@ type Props = {
   error: string
   lore: LoreArticle[]
   maps: MapSceneView[]
-  onOpen: (target: 'table' | 'characters' | 'encounters' | 'lore' | 'maps', id?: string) => void
+  onOpen: (target: 'table' | 'characters' | 'encounters' | 'lore' | 'maps' | 'rules', id?: string) => void
   onCreate: (target: 'character' | 'encounter') => void
 }
 
@@ -55,7 +56,7 @@ export function CampaignHome({ role, snapshot, campaign, connection, session, v2
     {state === 'unavailable' && <section className="home-state" role="status"><h2>Campaign unavailable</h2><p>Reconnect to the host to load the campaign.</p></section>}
     {state === 'error' && <section className="home-state" role="alert"><h2>Campaign details could not be loaded</h2><p>{error}</p></section>}
     {state === 'offline' && <p className="home-stale" role="status">Showing this browser’s last authorized snapshot. Details may be stale until the host reconnects.</p>}
-    {state === 'empty' && <section className="home-state"><h2>{role === 'gm' ? 'Your campaign is ready to prepare' : 'Your campaign is getting started'}</h2><p>{role === 'gm' ? 'Create a character or prepare an encounter to begin.' : 'No campaign content is currently available to you.'}</p></section>}
+    {state === 'empty' && <section className="home-state"><h2>{role === 'gm' ? 'Your campaign is ready to prepare' : 'Your campaign is getting started'}</h2><p>{v2Ruleset ? role === 'gm' ? `Prepare your first records in the pinned ${v2Ruleset.name || 'V2'} Rules workspace.` : `The GM has not shared ${v2Ruleset.name || 'V2'} campaign content yet.` : role === 'gm' ? 'Create a character or prepare an encounter to begin.' : 'No campaign content is currently available to you.'}</p></section>}
 
     <section className="home-session" aria-label="Current session">
         <div><p className="eyebrow">CURRENT SESSION</p><h2>{sessionLabel}</h2><p>{v2SessionEnabled ? v2Session?.encounter ? `${v2Session.status === 'finished' ? 'Last encounter' : 'Active encounter'}: ${v2Session.encounter.title || 'Current encounter'}` : v2Session?.status === 'live' ? 'A live session is underway.' : role === 'gm' ? 'No encounter is active.' : 'No current encounter is available.' : sessionEncounter ? `Active encounter: ${sessionEncounter.name}` : role === 'gm' ? 'No encounter is active.' : 'No current encounter is available.'}</p></div>
@@ -66,16 +67,16 @@ export function CampaignHome({ role, snapshot, campaign, connection, session, v2
     </section>
 
     {role === 'gm' ? <section className="home-quick-actions" aria-label="GM quick actions"><h2>Preparation</h2>
-      <button type="button" onClick={() => onCreate('encounter')}>Create encounter</button>
-      <button type="button" onClick={() => onCreate('character')}>Create character</button>
+      {v2Ruleset ? <><p>Prepare and review this module’s content in its Rules workspace.</p><button type="button" onClick={() => onOpen('rules')}>Open {v2Ruleset.name || 'V2'} workspace</button></> : <><button type="button" onClick={() => onCreate('encounter')}>Create encounter</button><button type="button" onClick={() => onCreate('character')}>Create character</button></>}
       <button type="button" onClick={() => onOpen('lore')}>Create Lore entry · open Lore</button>
-      <button type="button" onClick={() => onOpen('maps')}>Create map · open Maps</button>
-    </section> : <section className="home-player-status" aria-label="Your campaign status"><h2>Your next step</h2><p>{v2SessionEnabled && !v2Session ? v2HostStatus === 'connected' ? 'Checking the current session.' : 'Reconnect to check the current session.' : (v2SessionEnabled ? v2Session?.status === 'live' : currentSession?.status === 'active') ? 'Follow the live session and use your authorized character.' : currentSession?.status === 'paused' ? 'The session is paused. You can review your authorized campaign content.' : 'Wait for the GM to begin a session, or review your authorized campaign content.'}</p><p>{snapshot?.actors.length ? `Your authorized characters: ${snapshot.actors.map(actor => actor.name).join(', ')}` : 'No character is currently available to this account.'}</p><button type="button" onClick={() => onOpen('characters')}>View your characters</button></section>}
+      <button type="button" onClick={() => onOpen('maps')}>{v2Ruleset ? 'Open Maps' : 'Create map · open Maps'}</button>
+      {v2Ruleset && <p className="home-scope-note">Maps is a separate app from the V2 module workspace.</p>}
+    </section> : <section className="home-player-status" aria-label="Your campaign status"><h2>Your next step</h2><p>{v2SessionEnabled && !v2Session ? v2HostStatus === 'connected' ? 'Checking the current session.' : 'Reconnect to check the current session.' : (v2SessionEnabled ? v2Session?.status === 'live' : currentSession?.status === 'active') ? 'Follow the live session and use your authorized character.' : currentSession?.status === 'paused' ? 'The session is paused. You can review your authorized campaign content.' : 'Wait for the GM to begin a session, or review your authorized campaign content.'}</p>{v2Ruleset ? <><p>Your assigned character and actions appear in the {v2Ruleset.name || 'V2'} workspace when supported by that module.</p><button type="button" onClick={() => onOpen('rules')}>Open {v2Ruleset.name || 'V2'} workspace</button></> : <><p>{snapshot?.actors.length ? `Your authorized characters: ${snapshot.actors.map(actor => actor.name).join(', ')}` : 'No character is currently available to this account.'}</p><button type="button" onClick={() => onOpen('characters')}>View your characters</button></>}</section>}
 
     <div className="home-content">
-      <section className="home-preview" aria-label="Authorized campaign content"><h2>Campaign content</h2>
-        {snapshot?.actors.length ? <div><h3>Characters</h3>{snapshot.actors.slice(0, 4).map(actor => <button type="button" key={actor.entityId} onClick={() => onOpen('characters', actor.entityId)}>{actor.name}</button>)}</div> : <p>No authorized characters.</p>}
-        {snapshot?.encounters.length ? <div><h3>Encounters</h3>{snapshot.encounters.slice(0, 4).map(encounter => <button type="button" key={encounter.id} onClick={() => onOpen('encounters', encounter.id)}>{encounter.name}</button>)}</div> : null}
+      <section className="home-preview" aria-label={v2Ruleset ? 'V2 campaign content' : 'Authorized campaign content'}><h2>{v2Ruleset ? `${v2Ruleset.name || 'V2'} content` : 'Campaign content'}</h2>
+        {v2Ruleset ? <p>Records from this module appear in Rules. The legacy Characters and Encounters pages list V1 records.</p> : <>{snapshot?.actors.length ? <div><h3>Characters</h3>{snapshot.actors.slice(0, 4).map(actor => <button type="button" key={actor.entityId} onClick={() => onOpen('characters', actor.entityId)}>{actor.name}</button>)}</div> : <p>No authorized characters.</p>}
+        {snapshot?.encounters.length ? <div><h3>Encounters</h3>{snapshot.encounters.slice(0, 4).map(encounter => <button type="button" key={encounter.id} onClick={() => onOpen('encounters', encounter.id)}>{encounter.name}</button>)}</div> : null}</>}
         {maps.length ? <div><h3>Maps</h3>{maps.slice(0, 3).map(map => <button type="button" key={map.id} onClick={() => onOpen('maps', map.id)}>{map.name}</button>)}</div> : null}
         {lore.filter(item => !item.archived).length ? <div><h3>Lore</h3>{lore.filter(item => !item.archived).slice(0, 3).map(item => <button type="button" key={item.id} onClick={() => onOpen('lore', item.id)}>{item.title}</button>)}</div> : null}
       </section>

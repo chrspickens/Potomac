@@ -21,6 +21,7 @@ import { CampaignSearch } from './campaign-search'
 import { campaignSearchAvailable } from './campaign-search-availability'
 import { CampaignHome } from './campaign-home'
 import './campaign-home.css'
+import './v2-navigation.css'
 import { V2ModulesApp } from './v2-modules'
 import { V2TableView } from './v2-table-view'
 import { isLoopbackV2Origin, v2CampaignSetupBlockReason } from './campaign-v2-setup'
@@ -825,13 +826,18 @@ export default function App() {
 
   const activeEncounter = snapshot?.context.activeEncounter
   const playerCharacter = role === 'player' ? (selectedActor || snapshot?.actors[0] || null) : null
+  const v2ModuleName = v2CampaignLock ? trustedV2Modules.find(module => module.id === v2CampaignLock.lock.rootModule.id && module.version === v2CampaignLock.lock.rootModule.version && module.digest === v2CampaignLock.lock.rootModule.digest)?.name || v2CampaignLock.lock.rootModule.id : ''
+  const v2NavigationGuidance = v2CampaignLock && section === 'characters' ? `The Characters app lists legacy V1 records. Records owned by ${v2ModuleName} are managed in its Rules workspace.`
+    : v2CampaignLock && section === 'encounters' ? `The Encounters app manages legacy V1 sessions. Prepare ${v2ModuleName} records in its Rules workspace.`
+      : v2CampaignLock && section === 'maps' ? `Maps is a separate app and does not display ${v2ModuleName} records. Use its Rules workspace to prepare the module and Table to review supported views.` : ''
   const returnToTable = () => {
     setSection('table')
     setMapTargetId(undefined)
     setLoreTargetId(undefined)
     setActionState('Returned to the live Table view. Shared session context was not changed.')
   }
-  const openCampaignHomeTarget = (target: 'table' | 'characters' | 'encounters' | 'lore' | 'maps', id?: string) => {
+  const openCampaignHomeTarget = (target: 'table' | 'characters' | 'encounters' | 'lore' | 'maps' | 'rules', id?: string) => {
+    if (target === 'rules') { setSection('rules'); return }
     if (target === 'table' && v2CampaignLock && id) { openV2Table(id); return }
     if (target === 'characters' && id) setSelectedActorId(id)
     if (target === 'encounters' && id) {
@@ -898,7 +904,8 @@ export default function App() {
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => { setError(''); void host.load(role).then(setSnapshot).catch(cause => setError(displayError(cause))) }}>Retry</button></div>}
     {role === 'player' && section !== 'home' && (section === 'rules' && v2CampaignLock ? <section className="session-strip player-session-focus" aria-label="Player Rules workspace"><div><p className="eyebrow">PLAYER WORKSPACE</p><strong>Module actions and session status</strong><small>Use the authorized Rules controls below. Your assigned character and active turn are identified in the encounter tracker when available.</small></div><button type="button" onClick={returnToTable}>Return to Table</button></section> : <section className="session-strip player-session-focus" aria-label="Your live session"><div><p className="eyebrow">PLAYER SESSION</p><strong>{sessionSnapshot?.current?.status === 'paused' ? 'Session paused' : sessionSnapshot?.current?.status === 'active' ? 'Session live' : 'No live session'}</strong><small>{activeEncounter ? `Current encounter: ${activeEncounter.name}` : 'No current encounter is published.'}{playerCharacter ? ` · Your character: ${playerCharacter.name}` : ' · No authorized character yet.'}</small></div>{section !== 'table' && <button type="button" onClick={returnToTable}>Return to Table</button>}</section>)}
     {actionState && <div className="action-status" role="status">{actionState}</div>}
-    {v2CampaignLock && section !== 'rules' && <button type="button" className="primary" onClick={() => setSection('rules')}>Open experimental rules workspace</button>}
+    {v2CampaignLock && section !== 'rules' && section !== 'home' && section !== 'table' && !v2NavigationGuidance && <button type="button" className="primary" onClick={() => setSection('rules')}>Open {v2ModuleName} workspace</button>}
+    {v2NavigationGuidance && <section className="v2-navigation-guidance" aria-label="V2 application scope"><div><p className="eyebrow">PINNED V2 CAMPAIGN</p><p>{v2NavigationGuidance}</p></div><button type="button" className="primary" onClick={() => setSection('rules')}>Open {v2ModuleName} workspace</button></section>}
     {role === 'gm' && configuredHost && campaign && !Boolean(v2CampaignLock) && <section className="campaign-setup" aria-label="Campaign setup">
       <form onSubmit={event => void saveCampaignSetup(event)}>
         <strong>Campaign setup</strong>

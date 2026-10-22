@@ -1,0 +1,20 @@
+.v2-navigation-guidance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 14px 30px 0;
+  padding: 14px 18px;
+  color: #eaf2f9;
+  background: #122534;
+  border: 1px solid #36576d;
+  border-radius: 10px;
+}
+
+.v2-navigation-guidance .eyebrow { margin-bottom: 5px; }
+.v2-navigation-guidance p:not(.eyebrow) { max-width: 75ch; margin: 0; color: #bfd2df; font-size: 12px; line-height: 1.5; }
+.v2-navigation-guidance button { flex: 0 0 auto; min-height: 40px; }
+
+@media (max-width: 700px) {
+  .v2-navigation-guidance { align-items: flex-start; flex-direction: column; margin-inline: 14px; }
+}

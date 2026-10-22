@@ -85,7 +85,18 @@ async function normalSetup(name, moduleId, campaignName) {
     await waitFor(name, `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Revised 5e Encounter · 1.3.0 (experimental V2)')`, 'Campaign Home confirms exact authoritative V2 ruleset lock');
     assert.equal(await ev(name, `document.body.innerText.includes('System not configured') || document.body.innerText.includes('Configure campaign in GM setup')`), false, 'a valid V2 lock is not shown as unconfigured');
     assert.equal(await ev(name, `Boolean(document.querySelector('.campaign-setup[aria-label="Campaign setup"]'))`), false, 'V1 campaign setup is not shown for a valid V2 lock');
-    await screenshot(name, 'gm-campaign-home-revised5e-lock.png');
+    const homeGuidance = await ev(name, `(()=>({actions:document.querySelector('.home-quick-actions')?.innerText||'',content:document.querySelector('.home-preview')?.innerText||''}))()`);
+    assert.match(homeGuidance.actions, /Open Revised 5e Encounter workspace/);
+    assert.doesNotMatch(homeGuidance.actions, /Create encounter|Create character/);
+    assert.match(homeGuidance.content, /legacy Characters and Encounters pages list V1 records/);
+    assert.doesNotMatch(homeGuidance.content, /No authorized characters/);
+    await screenshot(name, 'gm-campaign-home-v2-workflow.png');
+    await click(name, '♙ Characters');
+    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('legacy V1 records')`, 'Characters explains the legacy/V2 boundary');
+    await click(name, '⚑ Encounters');
+    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('legacy V1 sessions')`, 'Encounters explains the legacy/V2 boundary');
+    await click(name, '⌖ Maps');
+    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('separate app')`, 'Maps explains that it is separate from the module workspace');
     await click(name, '▦ Table');
     await waitFor(name, `document.body.innerText.includes('Choose a prepared encounter in Rules, then open it in Table')`,'V2 Table explains how to open a prepared encounter');
     await screenshot(name, 'gm-v2-table-route-help.png');
@@ -120,6 +131,11 @@ async function ordinaryPlayer(name, player) {
   await setValue(name, '#player-credential-input', player.credential);
   await click(name, 'Connect as player');
   await waitFor(name, `document.querySelector('.app-topbar select')?.value==='player' && (()=>{try{return JSON.parse(localStorage.getItem('potomac.identity.v1')||'null')?.credential===${JSON.stringify(player.credential)}}catch{return false}})()`, `${name} authenticated with its issued player credential`);
+  if (name === 'playerA') {
+    await waitFor(name, `Boolean(document.querySelector('.home-player-status'))`, `${name} V2 Campaign Home guidance`);
+    assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('assigned character and actions appear in the Revised 5e Encounter workspace')`), true, 'player Campaign Home points to the V2 workspace instead of reporting no authorized V1 character');
+    assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('No character is currently available to this account.')`), false, 'player Campaign Home does not confuse an empty V1 snapshot with V2 ownership');
+  }
   await waitFor(name, ` [...document.querySelectorAll('.app-rail nav button')].some(b=>b.textContent.includes('Rules'))`, `${name} Rules navigation`);
   await click(name, '⚙ Rules');
   await waitFor(name, `Boolean(document.querySelector('.v2-combat-header'))`, `${name} generic Rules workspace`);
@@ -619,6 +635,7 @@ try {
   await host.close(); host = undefined; await delay(150); await startHost('dicepool.sqlite', 'campaign-issue-166-dicepool');
   await click('diceB', 'Refresh authorized state'); await waitFor('diceB', `document.body.innerText.includes('Lantern Bridge') && document.body.innerText.includes('resolved')`, 'Dice-pool continuation result persists after second host start');
   await click('diceGm', 'Refresh authorized state'); await waitFor('diceGm', `document.body.innerText.includes('Live · Lantern Bridge')`, 'Dice-pool live session survives host restart');
+  await waitFor('diceGm', `(()=>{const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Finish session');return Boolean(button&&!button.disabled)})()`, 'GM session controls finish loading after the authorized refresh');
   await click('diceGm', 'Finish session'); await waitFor('diceGm', `document.body.innerText.includes('Finished')`, 'GM finishes the module-neutral Dice-pool session');
   assert.deepEqual((await lockFor()).lock, diceLock.lock, 'Dice-pool exact lock is unchanged after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_reaction_windows WHERE parent_operation_id=? AND status=?').get(contest.request.operationId, 'resolved').n, 1, 'reaction resolution persists exactly once');
