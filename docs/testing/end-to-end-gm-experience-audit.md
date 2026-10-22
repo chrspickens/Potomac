@@ -22,6 +22,7 @@ Isolated real-host Chromium acceptance supplied the GM/Player A/Player B functio
 | P2 | Campaign Home used the V1 snapshot for its character preview. In a V2 campaign it could say no authorized characters were available even though module-owned records belong in Rules and Table. | V2 Home explains where module records appear; player guidance directs them to the pinned module workspace instead of making a false V1 character claim. |
 | P2 | Characters, Encounters and Maps appeared as peer app destinations without explaining their V1 or separate-app scope in a V2 campaign. | Those routes now show a V2 scope note and a direct route to the pinned module workspace. Maps is described as separate from module content. |
 | P3 | One baseline run of the broad browser suite reached Dice-pool session completion before the post-restart action button had re-enabled. The app still showed the live session; the helper rejected the disabled button. | The acceptance now waits for the explicit enabled state of **Finish session** after the authorized refresh. This keeps the expectation intact and removes the observed synchronization race. The revised suite passed. |
+| P3 | The first hosted run started Vite and Chromium, then failed before Campaign Home with CDP `Inspected target navigated or closed`. The browser target was created and attached, but the runner evaluated the new page before its initial navigation had loaded. | The browser acceptance now waits for the target's explicit `Page.loadEventFired` event before inspecting Campaign Home. The focused suite passed locally after this change; hosted recheck is pending. |
 
 Existing V2 Table navigation already explains that a V2 encounter is selected in Rules rather than through the legacy active-encounter selector. Rules/Table handoff, host session status, exact lock display, and finish/return-to-Home behavior passed existing acceptance and were left intact.
 
@@ -58,4 +59,4 @@ Results after the final code changes:
 - `pnpm build` — passed as part of `pnpm check`; Vite retains its existing >500 kB chunk warning.
 - `pnpm check` — passed all unit, host, module, Maps, V1/V2 browser and system acceptance suites.
 - `git diff --check` — passed. Generated Maps evidence was restored to the exact main-branch contents; no Maps evidence is included in this change.
-- Hosted GitHub Actions on the final PR head — pending.
+- Hosted GitHub Actions — first run [39713809452](https://github.com/chrspickens/Potomac/actions/runs/39713809452) failed at the initial V2 workspace browser navigation due to the CDP synchronization issue above. The fixed final-head run is pending.
