@@ -146,6 +146,7 @@ async function ordinaryPlayer(name, player) {
   await waitFor(name, `document.querySelector('.app-topbar select')?.value==='player' && (()=>{try{return JSON.parse(localStorage.getItem('potomac.identity.v1')||'null')?.credential===${JSON.stringify(player.credential)}}catch{return false}})()`, `${name} authenticated with its issued player credential`);
   if (name === 'playerA') {
     await waitFor(name, `Boolean(document.querySelector('.home-player-status'))`, `${name} V2 Campaign Home guidance`);
+    await waitFor(name, `document.querySelector('.home-player-status')?.innerText.includes('assigned character and actions appear in the Revised 5e Encounter workspace')`, `${name} authoritative V2 lock guidance on Campaign Home`);
     assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('assigned character and actions appear in the Revised 5e Encounter workspace')`), true, 'player Campaign Home points to the V2 workspace instead of reporting no authorized V1 character');
     assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('No character is currently available to this account.')`), false, 'player Campaign Home does not confuse an empty V1 snapshot with V2 ownership');
   }
