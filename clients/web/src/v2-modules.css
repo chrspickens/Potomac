@@ -9,3 +9,13 @@
 .v2-entity-validation{margin:0;padding:10px 10px 10px 30px;border:1px solid #a75e5e;border-radius:7px;color:#ffd5d5;background:#341d20}
 .v2-grant-controls{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:14px 0}
 .v2-grant-controls label{display:grid;gap:5px}
+.v2-preparation-repeater,.v2-preparation-opponent,.v2-preparation-placement{display:grid;gap:10px;margin:0;padding:12px;border:1px solid #36576d;border-radius:8px}
+.v2-preparation-repeater>legend,.v2-preparation-opponent>legend,.v2-preparation-placement>legend{padding:0 5px;color:#b9def0;font-weight:650}
+.v2-preparation-repeater>p,.v2-preparation-placement>p{margin:0;color:#aec1cf}
+.v2-preparation-opponent{margin:8px 0;background:#101e28}
+.v2-preparation-opponent>button{justify-self:start}
+.v2-preparation-grid{display:grid;gap:4px;max-width:100%;overflow:auto}
+.v2-preparation-grid-cell{min-width:2.5rem;min-height:2.5rem;padding:2px;border:1px solid #456276;border-radius:4px;background:#122431;color:#aec1cf;font-size:.75rem}
+.v2-preparation-grid-cell:not(:disabled):hover,.v2-preparation-grid-cell.is-selected{border-color:#f2bd65;background:#473722;color:#fff2d5}
+.v2-preparation-grid-cell.is-occupied{background:#234454;color:#fff}
+.v2-preparation-grid-cell.is-blocked{background:#423b3b;color:#b9a9a9}

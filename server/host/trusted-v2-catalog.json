@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "modules": [
     { "id": "example.starship.system", "version": "1.0.0", "source": "../../examples/example.starship/v2", "entry": "extensions.mjs", "authoring": true },
-    { "id": "example.revised5e", "version": "1.2.1", "source": "../../examples/example.revised5e/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "revised5eAuthorizeIntent", "preparationFile": "preparation.json", "preparationDigest": "sha256:28dfcc5efd9eb34b90c2248dedb12f0bd8957913ea22bc2ca7f196ffdb543d82" },
+    { "id": "example.revised5e", "version": "1.3.0", "source": "../../examples/example.revised5e/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "revised5eAuthorizeIntent", "creationValidatorExport": "revised5eValidateCreation", "creationValidatorEntityType": "example.revised5e.encounter", "preparationFile": "preparation.json", "preparationDigest": "sha256:aed3252543bb666fb15ea91453ac7bfb9f671cfaab27d2a7388846c5ac9b4392" },
     { "id": "example.interruption", "version": "1.0.0", "source": "../../examples/example.interruption/v2", "entry": "extensions.mjs", "authoring": true },
     { "id": "example.dicepool", "version": "1.1.0", "source": "../../examples/example.dicepool/v2", "entry": "extensions.mjs", "authoring": true, "intentAuthorizerExport": "dicepoolAuthorizeIntent", "reactionPrincipalExport": "dicepoolReactionPrincipal", "preparationFile": "preparation.json", "preparationDigest": "sha256:80634923d3e70d081b4a03f597a63161d87cc07934e65c19481588805d214637" },
     { "id": "example.starter", "version": "1.0.0", "source": "../../examples/module-starter/v2", "entry": "extensions.mjs", "authoring": true },

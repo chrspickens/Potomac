@@ -109,7 +109,8 @@ export async function loadTrustedV2Catalog({ catalogFile = configFile } = {}) {
       if (typeof item.preparationFile !== 'string' || typeof item.preparationDigest !== 'string' || path.isAbsolute(item.preparationFile)) fail(`${item.id}: preparation file and digest must both be pinned`);
       const preparationPath = path.resolve(root, item.preparationFile);
       if (!preparationPath.startsWith(`${root}${path.sep}`)) fail(`${item.id}: preparation file escapes its module source`);
-      if (await digestFiles(root, [item.preparationFile]) !== item.preparationDigest) fail(`${item.id}: preparation metadata digest mismatch`);
+      const actualPreparationDigest = await digestFiles(root, [item.preparationFile]);
+      if (actualPreparationDigest !== item.preparationDigest) fail(`${item.id}: preparation metadata digest mismatch (${item.preparationDigest} != ${actualPreparationDigest})`);
       preparation = await readJson(preparationPath);
     }
     const rootCapability = capabilities?.find(capability => capability.id === item.id && capability.implementationVersion === item.version);
@@ -141,9 +142,11 @@ export async function loadTrustedV2Catalog({ catalogFile = configFile } = {}) {
     for (const contribution of uiValues) uiRegistry.register(contribution);
     if (item.intentAuthorizerExport && typeof source[item.intentAuthorizerExport] !== 'function') fail(`${item.id}: configured intent authorizer export is unavailable`);
     if (item.reactionPrincipalExport && typeof source[item.reactionPrincipalExport] !== 'function') fail(`${item.id}: configured reaction principal export is unavailable`);
+    if (item.creationValidatorExport && (typeof source[item.creationValidatorExport] !== 'function' || !entities.some(entity => entity.typeId === item.creationValidatorEntityType))) fail(`${item.id}: configured entity creation validator export or target type is unavailable`);
     providers.push({ ...item, root, manifest, version: item.version, digest: rootDigest, contentDigest: verification.contentDigest, moduleRefs, capabilities, source, entities, commands, resolvers, effectHandlers,
       workflows: descriptors.filter(value => value?.descriptorVersion === 1 && typeof value.workflowType === 'string'), preparationProfile: preparation,
       intentAuthorizers: item.intentAuthorizerExport ? commands.map(command => ({ commandId: command.commandId, authorize: source[item.intentAuthorizerExport] })) : [], reactionPrincipalResolvers: item.reactionPrincipalExport ? commands.map(command => ({ commandId: command.commandId, resolve: source[item.reactionPrincipalExport] })) : [],
+      entityCreationValidators: item.creationValidatorExport ? [{ typeId: item.creationValidatorEntityType, validate: source[item.creationValidatorExport] }] : [],
       ui: item.authoring ? await Promise.all(((await readJson(path.join(root, 'authoring.json'))).uiFiles ?? []).map(file => readJson(path.join(root, file)))) : [] });
   }
   const preparationProfiles = { formatVersion: 1, modules: providers.filter(provider => provider.preparationProfile).map(provider => provider.preparationProfile) };

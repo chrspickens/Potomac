@@ -1,11 +1,35 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { revised5eResolvers, revised5eRefs } from './extensions.mjs';
+import { revised5eResolvers, revised5eRefs, revised5eValidateCreation } from './extensions.mjs';
+import { validateV2PreparationConstraints } from '../../../packages/contracts/src/v2-preparation.ts';
 
 const resolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.attackResolver.id);
 const movementResolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.movementResolver.id);
 const secondWindResolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.secondWindResolver.id);
 const shortRestResolver = revised5eResolvers.find(item => item.ref.id === revised5eRefs.shortRestResolver.id);
+test('Revised 5e creation allows two distinct player owners and one to three GM-controlled enemies', () => {
+  const data = { actors: [
+    { id: 'player-a', kind: 'player', ownerPrincipalId: 'member-a' },
+    { id: 'player-b', kind: 'player', ownerPrincipalId: 'member-b' },
+    { id: 'enemy', kind: 'enemy', ownerPrincipalId: 'gm' }
+  ] };
+  assert.doesNotThrow(() => revised5eValidateCreation(data, { isActiveMember: id => id === 'member-a' || id === 'member-b' }));
+  assert.doesNotThrow(() => revised5eValidateCreation({ actors: [...data.actors, { id: 'enemy-2', kind: 'enemy', ownerPrincipalId: 'gm' }, { id: 'enemy-3', kind: 'enemy', ownerPrincipalId: 'gm' }] }));
+  assert.throws(() => revised5eValidateCreation({ actors: [...data.actors, { id: 'enemy-2', kind: 'enemy', ownerPrincipalId: 'gm' }, { id: 'enemy-3', kind: 'enemy', ownerPrincipalId: 'gm' }, { id: 'enemy-4', kind: 'enemy', ownerPrincipalId: 'gm' }] }));
+  assert.throws(() => revised5eValidateCreation({ actors: [data.actors[0], data.actors[0], data.actors[2]] }));
+  assert.throws(() => revised5eValidateCreation({ actors: [data.actors[0], data.actors[1], { ...data.actors[2], ownerPrincipalId: 'member-a' }] }));
+  assert.throws(() => revised5eValidateCreation(data, { isActiveMember: () => false }));
+});
+
+test('module-declared initial position constraints reject occupied, blocked, and out-of-bounds squares', () => {
+  const constraint = [{ type: 'unique-grid-positions', participantsPath: 'actors', gridPath: 'grid', positionPath: 'position', blockedPath: 'grid.blocked', namePath: 'name' }];
+  const valid = { grid: { width: 2, height: 2, blocked: [{ x: 1, y: 1 }] }, actors: [{ name: 'A', position: { x: 0, y: 0 } }, { name: 'B', position: { x: 1, y: 0 } }] };
+  assert.deepEqual(validateV2PreparationConstraints(valid, constraint), []);
+  assert.match(validateV2PreparationConstraints({ ...valid, actors: [valid.actors[0], { name: 'B', position: { x: 0, y: 0 } }] }, constraint)[0], /shares square/);
+  assert.match(validateV2PreparationConstraints({ ...valid, actors: [valid.actors[0], { name: 'B', position: { x: 1, y: 1 } }] }, constraint)[0], /blocked square/);
+  assert.match(validateV2PreparationConstraints({ ...valid, actors: [valid.actors[0], { name: 'B', position: { x: 2, y: 0 } }] }, constraint)[0], /inside the 2 × 2 grid/);
+});
+
 const encounter = () => ({ entityId: 'encounter', entityType: 'example.revised5e.encounter', revision: 2, data: {
   status: 'active', initiativeOrder: ['player-a', 'player-b', 'enemy'], currentTurnIndex: 0, round: 1, actionsUsed: [], shortRestCount: 0, combatLog: [],
   actors: [
@@ -77,6 +101,18 @@ test('leaving melee reach suspends at its pre-exit square and Disengage or unava
   request.state.data.actors[2].reactionAvailable = true;
   request.state.data.actors[0].disengaged = true;
   assert.equal(movementResolver.resolve(request).continuation, undefined);
+});
+
+test('movement with multiple eligible opportunity-attack responders remains explicitly unsupported', () => {
+  const state = encounter();
+  state.data.actors.push({
+    ...state.data.actors[2], id: 'enemy-2', name: 'Second Warden', position: { x: 3, y: 1 }
+  });
+  const request = movementInput(state, [{ x: 1, y: 2 }]);
+  assert.throws(
+    () => movementResolver.resolve(request),
+    error => error.code === 'unsupported' && /one opportunity-attack trigger/.test(error.message)
+  );
 });
 
 test('Disengage consumes the action and End Turn advances and restores the next actor resources', () => {

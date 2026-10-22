@@ -36,7 +36,7 @@
       "actors": {
         "type": "array",
         "minItems": 3,
-        "maxItems": 3,
+        "maxItems": 5,
         "items": {
           "type": "object",
           "properties": {
@@ -307,7 +307,7 @@
       },
       "initiativeOrder": {
         "type": "array",
-        "maxItems": 3,
+        "maxItems": 5,
         "items": {
           "type": "string",
           "minLength": 1,
@@ -316,7 +316,7 @@
       },
       "initiativeRolls": {
         "type": "array",
-        "maxItems": 3,
+        "maxItems": 5,
         "items": {
           "type": "integer",
           "minimum": 1,
@@ -326,7 +326,7 @@
       "currentTurnIndex": {
         "type": "integer",
         "minimum": 0,
-        "maximum": 2
+        "maximum": 4
       },
       "round": {
         "type": "integer",
@@ -335,7 +335,7 @@
       },
       "actionsUsed": {
         "type": "array",
-        "maxItems": 3,
+        "maxItems": 5,
         "items": {
           "type": "string",
           "minLength": 1,
@@ -583,11 +583,8 @@
         "properties": {
           "actorId": {
             "type": "string",
-            "enum": [
-              "player-a",
-              "player-b",
-              "enemy"
-            ]
+            "minLength": 1,
+            "maxLength": 80
           },
           "path": {
             "type": "array",
@@ -596,15 +593,29 @@
             "items": {
               "type": "object",
               "properties": {
-                "x": { "type": "integer", "minimum": 0, "maximum": 19 },
-                "y": { "type": "integer", "minimum": 0, "maximum": 19 }
+                "x": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 19
+                }
               },
-              "required": ["x", "y"],
+              "required": [
+                "x",
+                "y"
+              ],
               "additionalProperties": false
             }
           }
         },
-        "required": ["actorId", "path"],
+        "required": [
+          "actorId",
+          "path"
+        ],
         "additionalProperties": false
       }
     },
@@ -636,19 +647,13 @@
         "properties": {
           "actorId": {
             "type": "string",
-            "enum": [
-              "player-a",
-              "player-b",
-              "enemy"
-            ]
+            "minLength": 1,
+            "maxLength": 80
           },
           "targetId": {
             "type": "string",
-            "enum": [
-              "player-a",
-              "player-b",
-              "enemy"
-            ]
+            "minLength": 1,
+            "maxLength": 80
           }
         },
         "required": [
@@ -671,11 +676,8 @@
         "properties": {
           "actorId": {
             "type": "string",
-            "enum": [
-              "player-a",
-              "player-b",
-              "enemy"
-            ]
+            "minLength": 1,
+            "maxLength": 80
           }
         },
         "required": [
@@ -697,11 +699,8 @@
         "properties": {
           "actorId": {
             "type": "string",
-            "enum": [
-              "player-a",
-              "player-b",
-              "enemy"
-            ]
+            "minLength": 1,
+            "maxLength": 80
           }
         },
         "required": [
@@ -723,11 +722,8 @@
         "properties": {
           "actorId": {
             "type": "string",
-            "enum": [
-              "player-a",
-              "player-b",
-              "enemy"
-            ]
+            "minLength": 1,
+            "maxLength": 80
           }
         },
         "required": [

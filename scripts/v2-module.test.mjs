@@ -6,7 +6,7 @@ import path from 'node:path';
 import { assertCapabilityRef, canonicalFileDigest, resolveCapabilityLock, validateAuthoringSchema, validateModule } from './v2-module.mjs';
 
 test('the public authoring validator accepts the current Revised 5e and dice-pool bundles', async () => {
-  const expected = { 'example.revised5e': 'sha256:49101fb3814ec240b6e3763ed159642ec4bacf66d537654b0ed713828695825a', 'example.dicepool': 'sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc' };
+  const expected = { 'example.revised5e': 'sha256:3abb1d8aae432b59a0c137de3aa2c097a8bbf5f33c58a4a183e1da1b911cff1b', 'example.dicepool': 'sha256:6920a4b162ed3ad2a80d9444f282cd63fcdbf32a1c2ef9f4e3e4072b3ea519cc' };
   for (const [name, folder] of [['example.revised5e', 'example.revised5e'], ['example.dicepool', 'example.dicepool'], ['example.starter', 'module-starter']]) {
     const result = await validateModule(new URL(`../examples/${folder}/v2`, import.meta.url));
     const authoring = JSON.parse(await readFile(new URL(`../examples/${folder}/v2/authoring.json`, import.meta.url), 'utf8'));

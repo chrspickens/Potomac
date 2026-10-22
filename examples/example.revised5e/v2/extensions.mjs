@@ -34,13 +34,14 @@ const movementLogItem = object({ round: { type: 'integer', minimum: 0 }, actorId
 
 export const revised5eEncounter = {
   descriptorVersion: 1, typeId: 'example.revised5e.encounter', schemaVersion: 2, capability: revised5eRefs.entity,
+  creationConstraints: [{ type: 'unique-grid-positions', participantsPath: 'actors', gridPath: 'grid', positionPath: 'position', blockedPath: 'grid.blocked', namePath: 'name' }],
   schema: object({
     title: { type: 'string', minLength: 1, maxLength: 100 }, status: { type: 'string', enum: ['setup', 'active', 'complete'] },
-    actors: { type: 'array', minItems: 3, maxItems: 3, items: actorSchema },
+    actors: { type: 'array', minItems: 3, maxItems: 5, items: actorSchema },
     grid: object({ width: { type: 'integer', minimum: 1, maximum: 20 }, height: { type: 'integer', minimum: 1, maximum: 20 }, squareFeet: { type: 'integer', enum: [5] }, blocked: { type: 'array', maxItems: 20, items: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }) } }),
-    initiativeOrder: { type: 'array', maxItems: 3, items: stringId }, initiativeRolls: { type: 'array', maxItems: 3, items: { type: 'integer', minimum: 1, maximum: 20 } },
-    currentTurnIndex: { type: 'integer', minimum: 0, maximum: 2 }, round: { type: 'integer', minimum: 0, maximum: 10000 },
-    actionsUsed: { type: 'array', maxItems: 3, items: stringId }, shortRestCount: { type: 'integer', minimum: 0, maximum: 10000 },
+    initiativeOrder: { type: 'array', maxItems: 5, items: stringId }, initiativeRolls: { type: 'array', maxItems: 5, items: { type: 'integer', minimum: 1, maximum: 20 } },
+    currentTurnIndex: { type: 'integer', minimum: 0, maximum: 4 }, round: { type: 'integer', minimum: 0, maximum: 10000 },
+    actionsUsed: { type: 'array', maxItems: 5, items: stringId }, shortRestCount: { type: 'integer', minimum: 0, maximum: 10000 },
     combatLog: { type: 'array', maxItems: 100, items: combatLogItem }, movementLog: { type: 'array', maxItems: 100, items: movementLogItem }
   }),
   ownership: { kind: 'campaign' }, visibility: ['public'], creationRoles: ['gm'],
@@ -50,15 +51,24 @@ export const revised5eEncounter = {
   migration: { migrationId: 'example.revised5e.encounter.v2-resources', fromSchemaVersion: 1, toSchemaVersion: 2 }
 };
 
+export function revised5eValidateCreation(data, { isActiveMember } = {}) {
+  const players = data?.actors?.filter(actor => actor?.kind === 'player') ?? [];
+  const enemies = data?.actors?.filter(actor => actor?.kind === 'enemy') ?? [];
+  const actorIds = data?.actors?.map(actor => actor?.id) ?? [];
+  const playerOwners = players.map(actor => actor.ownerPrincipalId);
+  if (players.length !== 2 || enemies.length < 1 || enemies.length > 3) throw Object.assign(new Error('this encounter requires two player characters and one to three enemies'), { code: 'invalid' });
+  if (actorIds.some(id => typeof id !== 'string' || !id.trim()) || new Set(actorIds).size !== actorIds.length) throw Object.assign(new Error('each participant must have a unique actor ID'), { code: 'invalid' });
+  if (playerOwners.some(owner => typeof owner !== 'string' || !owner.trim() || owner === 'gm') || new Set(playerOwners).size !== playerOwners.length) throw Object.assign(new Error('each player character must have a different enrolled player'), { code: 'invalid' });
+  if (isActiveMember && playerOwners.some(owner => !isActiveMember(owner))) throw Object.assign(new Error('each player character must be assigned to an active enrolled player'), { code: 'invalid' });
+  if (enemies.some(actor => actor.ownerPrincipalId !== 'gm')) throw Object.assign(new Error('every enemy must be controlled by the GM'), { code: 'invalid' });
+}
+
 const empty = object({});
 const outcomeSchema = { type: 'array', minItems: 0, maxItems: 4, items: object({ kind: { type: 'string', minLength: 1, maxLength: 80 }, data: { type: 'object', properties: {}, additionalProperties: true }, visibility: { type: 'string', enum: ['public', 'gm', 'private'] } }) };
 const initiativeInput = empty;
-const attackInput = object({
-  actorId: { type: 'string', enum: ['player-a', 'player-b', 'enemy'] },
-  targetId: { type: 'string', enum: ['player-a', 'player-b', 'enemy'] }
-});
-const movementInput = object({ actorId: { type: 'string', enum: ['player-a', 'player-b', 'enemy'] }, path: { type: 'array', minItems: 1, maxItems: 8, items: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }) } });
-const actorActionInput = object({ actorId: { type: 'string', enum: ['player-a', 'player-b', 'enemy'] } });
+const attackInput = object({ actorId: stringId, targetId: stringId });
+const movementInput = object({ actorId: stringId, path: { type: 'array', minItems: 1, maxItems: 8, items: object({ x: { type: 'integer', minimum: 0, maximum: 19 }, y: { type: 'integer', minimum: 0, maximum: 19 } }) } });
+const actorActionInput = object({ actorId: stringId });
 const shortRestInput = empty;
 const gmOnly = { roles: ['gm'], ownership: 'any' };
 const enrolledPlayers = { roles: ['gm', 'player'], ownership: 'owner-or-participant' };
@@ -74,6 +84,13 @@ export const revised5eCommands = [
 ];
 
 const actorById = (state, id) => state.data.actors.find(actor => actor.id === id);
+const validateRoster = data => {
+  const players = data.actors.filter(actor => actor.kind === 'player');
+  const enemies = data.actors.filter(actor => actor.kind === 'enemy');
+  if (players.length !== 2 || enemies.length < 1 || enemies.length > 3 || new Set(data.actors.map(actor => actor.id)).size !== data.actors.length) {
+    throw Object.assign(new Error('this encounter requires two player characters and one to three enemies with unique actor IDs'), { code: 'invalid' });
+  }
+};
 const authorizeActor = (actor, principalId) => {
   if (actor.kind === 'enemy' && principalId !== 'gm' || actor.kind === 'player' && actor.ownerPrincipalId !== principalId && principalId !== 'gm') throw Object.assign(new Error('actor controller authorization failed'), { code: 'unauthorized' });
 };
@@ -82,10 +99,15 @@ const outcome = (kind, data) => ({ kind, data, visibility: 'public' });
 const patch = (operationId, handler, targetId, state) => ({ effectId: `${operationId}.${handler}`, handler, targetId, payload: { state }, visibility: 'public' });
 const initResolver = {
   ref: revised5eRefs.initiativeResolver,
-  randomRequests: ({ state, randomness }) => state.data.status === 'setup' && randomness.length === 0 ? [{ requestId: 'initiative', kind: 'pool', count: 3, sides: 20 }] : [],
+  randomRequests: ({ state, randomness }) => {
+    if (state.data.status !== 'setup' || randomness.length !== 0) return [];
+    validateRoster(state.data);
+    return [{ requestId: 'initiative', kind: 'pool', count: state.data.actors.length, sides: 20 }];
+  },
   resolve(input) {
     const data = input.state.data;
     if (data.status !== 'setup') throw Object.assign(new Error('encounter initiative has already been rolled'), { code: 'conflict' });
+    validateRoster(data);
     const rolls = randomValues(input.randomness, 'initiative');
     if (rolls.length !== data.actors.length) throw Object.assign(new Error('host initiative transcript is incomplete'), { code: 'invalid' });
     const ranked = data.actors.map((actor, index) => ({ actor, roll: rolls[index], total: rolls[index] + actor.initiativeModifier, index }))

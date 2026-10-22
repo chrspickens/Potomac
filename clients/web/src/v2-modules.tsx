@@ -178,7 +178,18 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
       await refresh();
       setSelectedEntityId(body.entityId);
       clearPreparationRecovery(key);
-      setMessage(`${descriptor.typeId} prepared by the host and read/act access granted to the selected players.`);
+      const rosterResponse = await request(`/api/v2/entities?typeId=${encodeURIComponent(descriptor.typeId)}`);
+      const committedEntities = Array.isArray(rosterResponse) ? rosterResponse : rosterResponse.entities ?? [];
+      const committed = committedEntities.find((row: Entity) => row.entityId === body.entityId);
+      const committedActors = committed?.data && typeof committed.data === 'object' && !Array.isArray(committed.data) && Array.isArray((committed.data as Record<string, JsonValue>).actors) ? (committed.data as Record<string, JsonValue>).actors as JsonValue[] : [];
+      const rosterSummary = committedActors.flatMap(actor => {
+        if (!actor || typeof actor !== 'object' || Array.isArray(actor)) return [];
+        const row = actor as Record<string, JsonValue>, position = row.position;
+        return typeof row.name === 'string' && position && typeof position === 'object' && !Array.isArray(position)
+          ? [`${row.name} at (${String((position as Record<string, JsonValue>).x)}, ${String((position as Record<string, JsonValue>).y)})`]
+          : [];
+      });
+      setMessage(`${descriptor.typeId} prepared by the host and read/act access granted to the selected players. Committed roster: ${rosterSummary.length ? rosterSummary.join('; ') : 'the authorized host projection is available in Rules and Table'}.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : '';
       if (createdEntityId && !grantsComplete) {
