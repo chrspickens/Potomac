@@ -14,9 +14,9 @@ if (!chrome) throw new Error('Chrome/Edge not found. Set POTOMAC_CHROME.');
 const scratch = await mkdtemp(join(tmpdir(), 'potomac-v2-rules-ui-'));
 const freePort = async () => { const server = createServer(); await new Promise((ok, bad) => server.once('error', bad).listen(0, '127.0.0.1', ok)); const value = server.address().port; await new Promise((ok, bad) => server.close(error => error ? bad(error) : ok())); return value; };
 const hostPort = await freePort(), webPort = await freePort(), debugPort = await freePort();
-let host, socket, seq = 0; const children = [], pending = new Map(), sessions = {}, contexts = [];
+let host, socket, seq = 0; const children = [], pending = new Map(), sessions = {}, contexts = [], originWaiters = new Map();
 const child = (cmd, args, options = {}) => { const proc = spawn(cmd, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options }); let output = ''; proc.stdout.on('data', chunk => output += chunk); proc.stderr.on('data', chunk => output += chunk); children.push({ proc, get output() { return output; } }); return proc; };
-const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const id = ++seq, timer = setTimeout(() => { pending.delete(id); bad(new Error(`CDP ${method} timeout`)); }, 20000); pending.set(id, message => { clearTimeout(timer); message.error ? bad(new Error(message.error.message)) : ok(message.result); }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
+const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const id = ++seq, timer = setTimeout(() => { pending.delete(id); bad(new Error(`CDP ${method} timeout`)); }, 20000); pending.set(id, message => { clearTimeout(timer); message.error ? bad(new Error(`CDP ${method}: ${message.error.message}`)) : ok(message.result); }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
 const ev = async (name, expression) => { const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessions[name]); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; };
 const waitFor = async (name, expression, what, timeout = 25000) => { const until = Date.now() + timeout; while (Date.now() < until) { if (await ev(name, expression)) return; await delay(100); } throw new Error(`Timeout ${what}: ${await ev(name, 'document.body.innerText.slice(-1800)')}`); };
 const click = async (name, label, rootSelector = 'body') => { const result = await ev(name, `(()=>{const r=document.querySelector(${JSON.stringify(rootSelector)})||document;const b=[...r.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)return {ok:false,buttons:[...r.querySelectorAll('button')].map(x=>[x.textContent.trim(),x.disabled]),tail:document.body.innerText.slice(-900)};b.click();return {ok:true}})()`); assert.equal(result.ok, true, `click ${label}: ${JSON.stringify(result)}`); };
@@ -71,10 +71,17 @@ let scriptedRolls;
 async function startHost(databaseName, campaignId) { host = createHost({ databasePath: join(scratch, databaseName), campaignId, enableV2Api: true, v2RandomInt: (_min, max) => scriptedRolls?.length ? scriptedRolls.shift() : max - 1 }); await host.listen(hostPort); }
 async function page(name) {
   const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId);
-  const target = await cdp('Target.createTarget', { url: `http://127.0.0.1:${webPort}/`, browserContextId: context.browserContextId });
+  const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId });
   const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId;
   await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId);
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, attached.sessionId);
+  const readyOrigin = `http://127.0.0.1:${webPort}`;
+  const executionContext = new Promise((ok, bad) => {
+    const timer = setTimeout(() => { originWaiters.delete(attached.sessionId); bad(new Error(`${name} app execution context timed out`)); }, 20000);
+    originWaiters.set(attached.sessionId, origin => { if (origin === readyOrigin) { clearTimeout(timer); originWaiters.delete(attached.sessionId); ok(); } });
+  });
+  await cdp('Page.navigate', { url: `${readyOrigin}/` }, attached.sessionId);
+  await executionContext;
   await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, `${name} Campaign Home`);
 }
 async function installCommandCapture(name) { await ev(name, `(()=>{window.__potomacCommands=[];const old=fetch.bind(window);window.fetch=async(url,init={})=>{const response=await old(url,init);if(String(url).endsWith('/api/v2/commands'))window.__potomacCommands.push({request:JSON.parse(init.body),status:response.status,response:await response.clone().json()});return response}})()`); }
@@ -188,7 +195,7 @@ try {
   for (let i = 0; i < 300; i++) { try { if ((await fetch(`http://127.0.0.1:${webPort}/`)).ok) break; } catch {} await delay(100); }
   child(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${join(scratch, 'chrome')}`, 'about:blank']);
   let info; for (let i = 0; i < 200; i++) { try { info = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json(); break; } catch { await delay(100); } } assert.ok(info?.webSocketDebuggerUrl);
-  socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.id && pending.has(message.id)) { const done = pending.get(message.id); pending.delete(message.id); done(message); } });
+  socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.method === 'Runtime.executionContextCreated' && message.sessionId) originWaiters.get(message.sessionId)?.(message.params.context.origin); if (message.id && pending.has(message.id)) { const done = pending.get(message.id); pending.delete(message.id); done(message); } });
 
   // Revised 5e begins at ordinary Campaign Home and uses its trusted guided preparation profile.
   await normalSetup('gm', 'example.revised5e', 'Issue 166 Revised 5e');
