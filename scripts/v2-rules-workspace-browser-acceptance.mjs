@@ -600,6 +600,7 @@ try {
   assert.equal(pendingRows.length, 1, 'one durable reaction window is linked to the parent command'); const windowId = pendingRows[0].window_id;
   await ordinaryPlayer('diceB', diceB); await click('diceB', 'Refresh authorized state');
   await waitFor('diceB', `document.body.innerText.includes('Pending reaction') && document.body.innerText.includes('Accept Brace')`, 'authorized responder sees the pending reaction');
+  await waitFor('diceB', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept Brace' && !button.disabled)`, 'authorized responder control is enabled after its permission projection loads');
   assert.equal(await ev('diceA', ` [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept Brace')`), false, 'unauthorized initiator does not receive responder controls');
   const unauthorizedReaction = await api(`/api/v2/reactions/${encodeURIComponent(windowId)}/decisions`, diceA.credential, { method: 'POST', body: JSON.stringify({ operationId: 'issue-166-unauthorized-reaction', actionId: 'example.dicepool.brace', decision: 'accept', input: {} }), headers: { 'x-v2-lock-digest': diceLock.digest } });
   assert.ok([403, 404].includes(unauthorizedReaction.status), `unauthorized reaction responder rejected (${unauthorizedReaction.status})`);
