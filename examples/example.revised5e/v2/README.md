@@ -4,6 +4,8 @@ This is a separate, bundled V2 module. It is not discovered by the legacy V1 mod
 
 The preparation profile requires two player characters and supports one to three enemies. Mira Vale, Oren Pike and the Mire Warden are original example content; additional enemies start with the same training-opponent profile and can be renamed during preparation. Their stat choices are original example content. Club and shortsword weapon dice are SRD 5.2.1 equipment data.
 
+Campaigns pinned to Revised 5e 1.2.1 remain pinned to that exact version and digest. This host catalog currently trusts 1.3.0 only, so an existing 1.2.1 lock cannot be resolved after upgrading the host: lock-dependent reads and commands fail closed, and the immutable lock and campaign data are preserved. The host never substitutes 1.3.0. There is no in-place campaign/module migration in this increment; supporting upgrades needs a separate migration and version-retention design before existing 1.2.1 campaigns can be upgraded safely.
+
 ## Included rules
 
 - Each combatant rolls one host supplied d20 for initiative. The initiative modifier is the Dexterity modifier. Highest total acts first and the order repeats each round. Initiative ties use the encounter's stable actor order as a documented table procedure; the SRD leaves tie ordering to the GM and players.
