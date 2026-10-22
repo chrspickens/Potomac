@@ -171,17 +171,22 @@ export function createV2ExtensionKernel({ db, entities, commands, workflows = []
   };
   const projectRecord = (record, descriptor, member) => {
     const result = clone(record);
+    const viewerOwnedPaths = [];
     for (const rule of descriptor.fieldVisibility || []) if (!rule.roles.includes(member.role)) {
       const parts = rule.path.split('.');
-      const redact = (value, index) => {
+      const redact = (value, index, parentPath = []) => {
         const part = parts[index];
-        if (part === '*') { if (Array.isArray(value)) value.forEach(item => redact(item, index + 1)); return; }
+        if (part === '*') { if (Array.isArray(value)) value.forEach((item, itemIndex) => redact(item, index + 1, [...parentPath, String(itemIndex)])); return; }
         if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-        if (index === parts.length - 1) delete value[part]; else redact(value[part], index + 1);
+        if (index === parts.length - 1) {
+          if (part === 'ownerPrincipalId' && value[part] === member.principalId && parentPath.length) viewerOwnedPaths.push(parentPath.join('.'));
+          delete value[part];
+        } else redact(value[part], index + 1, [...parentPath, part]);
       };
       redact(result.data, 0);
     }
     if (member.role !== 'gm' && result.ownerPrincipalId !== member.principalId) delete result.ownerPrincipalId;
+    if (viewerOwnedPaths.length) result.viewerOwnedPaths = [...new Set(viewerOwnedPaths)];
     return result;
   };
   const transaction = (work, mode = 'IMMEDIATE') => {

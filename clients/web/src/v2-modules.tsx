@@ -281,8 +281,9 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
   const submitCommand = async (command: { operationId: string; commandId: string; entityId: string; expectedRevision: number; input: Record<string, JsonValue> }) => {
     if (!lock) throw new Error('No pinned campaign lock.');
     const result = await request('/api/v2/commands', { method: 'POST', body: JSON.stringify({ operationId: command.operationId, commandId: command.commandId, entityId: command.entityId, expectedRevision: command.expectedRevision, input: command.input }) });
-    const feedback = commandResultFeedback(result);
-    const prefix = `${command.commandId} ${feedback.message.replace(/^Command /, '')}`;
+    const entityData = entities.find(item => item.entityId === command.entityId)?.data;
+    const feedback = commandResultFeedback(result, entityData);
+    const prefix = feedback.message.startsWith('Command committed by the host.') ? `${command.commandId} ${feedback.message.replace(/^Command /, '')}` : feedback.message;
     setMessage(prefix);
     if (feedback.status === 'applied' || feedback.status === 'pending') {
       try { await refresh(); } catch { setMessage(`${prefix} The refreshed projection is unavailable; use Refresh authorized state before acting again.`); }

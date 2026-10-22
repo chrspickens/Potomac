@@ -291,7 +291,7 @@ try {
   await installCommandCapture('gm'); await click('gm', 'Roll initiative and begin', '[aria-label="example.revised5e.combat"]');
   await waitFor('gm', `window.__potomacCommands.some(item=>item.request.commandId==='example.revised5e.initialize')`, 'initiative command request');
   const initCapture = await ev('gm', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.initialize')`); assert.equal(initCapture.status, 200, JSON.stringify(initCapture)); assert.equal(initCapture.response.status, 'applied', JSON.stringify(initCapture));
-  await waitFor('gm', `document.body.innerText.includes('example.revised5e.initialize committed by the host.') && document.body.innerText.includes('active')`, 'host-confirmed initiative result');
+  await waitFor('gm', `document.body.innerText.includes('Committed: initiative rolled.') && document.body.innerText.includes('active')`, 'host-confirmed initiative result is summarized in plain language');
 
   await ordinaryPlayer('playerA', a); await setValue('playerA', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerA');
   await waitFor('playerA', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]')) && document.body.innerText.includes('Asha')`, 'Player A authorized contribution and projection');
@@ -300,6 +300,8 @@ try {
   assert.equal((await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`)), false, 'player UI does not render GM-only principal fields');
   const playerProjection = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.ok(playerProjection.data.actors.every(actor => !Object.hasOwn(actor, 'ownerPrincipalId')), 'nested owner principal fields are filtered before reaching players');
+  assert.deepEqual(playerProjection.viewerOwnedPaths, ['actors.0'], 'the host returns only a path marker for Player A’s own character, without revealing either player principal ID');
+  assert.equal(await ev('playerA', `document.body.innerText.includes('Your character') && document.body.innerText.includes('Asha')`), true, 'Player A can identify their assigned character from the authorized host marker');
   const movementFormVisible = await ev('playerA', `Boolean(document.querySelector('form[aria-label="Move"]'))`);
   assert.equal(movementFormVisible, true, 'Revised 5e movement command is exposed through the normal Rules contribution');
   assert.equal(await ev('playerA', `(()=>{const form=document.querySelector('form[aria-label="Move"]');const actor=form?.elements.namedItem('actorId');const options=actor?[...actor.options].map(option=>option.textContent.trim()):[];return options.includes('Asha')&&options.includes('Borin')&&options.includes('Warden')&&!options.includes('player-a')&&!options.includes('enemy')&&!form?.querySelector('textarea[name="path"]')&&Boolean(form?.querySelector('.v2-ui-array-field'))})()`), true, 'authorized actor choices use projected character names and movement uses guided waypoint controls');
@@ -332,7 +334,7 @@ try {
   const movementAdjudication = await ev('gm', `window.__reactionAdjudications.at(-1)`);
   assert.equal(movementAdjudication.status, 200); assert.equal(movementAdjudication.request.actionId, 'example.revised5e.opportunity-attack');
   await click('playerA', 'Refresh authorized state');
-  await waitFor('playerA', `document.body.innerText.includes('opportunity-critical') && document.querySelector('progress[aria-label="Hit points 1"]')?.value===2`, 'player sees opportunity attack, HP loss, and resumed movement');
+  await waitFor('playerA', `document.body.innerText.includes('Warden critically hit Asha for 10 damage') && document.querySelector('progress[aria-label="Hit points 1"]')?.value===2`, 'player sees the host-confirmed opportunity attack, HP loss, and resumed movement in readable history');
   await screenshot('gm', 'gm-opportunity-attack-resolved.png');
   await screenshot('playerA', 'player-a-opportunity-attack-resolved.png');
   const resolvedMovement = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
@@ -353,16 +355,18 @@ try {
   await commandForm('playerA', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
   await waitFor('playerA', `window.__potomacCommands.some(item=>item.request.commandId==='example.revised5e.attack')`, 'Player A attack request');
   const attackA = await ev('playerA', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(attackA.status, 200, JSON.stringify(attackA)); assert.equal(attackA.response.status, 'applied', JSON.stringify(attackA));
-  await waitFor('playerA', `document.body.innerText.includes('example.revised5e.attack committed by the host.')`, 'Player A attack confirmed');
+  await waitFor('playerA', `document.body.innerText.includes('Committed:')`, 'Player A attack receives a host-confirmed outcome summary');
   const retry = async (player, body, changed) => api('/api/v2/commands', player.credential, { method: 'POST', body: JSON.stringify(body), headers: { 'x-v2-lock-digest': lock.digest } });
   assert.equal((await retry(a, attackA.request)).status, 200, 'exact command retry replays the committed receipt');
   assert.equal((await retry(a, { ...attackA.request, input: { actorId: 'player-a', targetId: 'player-b' } })).status, 409, 'altered payload with the same operation ID conflicts');
   assert.equal((await retry(a, { ...attackA.request, operationId: `${attackA.request.operationId}-stale`, expectedRevision: attackA.request.expectedRevision - 1 })).status, 409, 'stale revision is rejected');
   await ordinaryPlayer('playerB', b); await setValue('playerB', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerB');
   await waitFor('playerB', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'Player B authorized contribution');
-  await commandForm('playerB', 'Attack', { actorId: 'player-a', targetId: 'enemy' });
-  await waitFor('playerB', `document.body.innerText.includes('host denied this action')`, 'cross-player attack denial feedback');
-  const denied = await ev('playerB', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.attack')`); assert.equal(denied.status, 403);
+  const playerBProjection = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, b.credential, { headers: { 'x-v2-lock-digest': lock.digest } })).json();
+  assert.deepEqual(playerBProjection.viewerOwnedPaths, ['actors.1'], 'Player B receives only its own character path marker');
+  assert.equal(await ev('playerB', `document.body.innerText.includes('Your character') && document.body.innerText.includes('Borin')`), true, 'Player B can identify their assigned character without either principal ID');
+  await setValue('playerB', 'form[aria-label="Attack"] select[name="actorId"]', 'player-a');
+  assert.equal(await ev('playerB', `(()=>{const form=document.querySelector('form[aria-label="Attack"]');return form?.querySelector('button[type="submit"]')?.disabled&&form.innerText.includes('it is Borin’s turn')})()`), true, 'out-of-turn character action is disabled with the current participant named');
   const playerBCommandsBeforeAttack = await ev('playerB', `window.__potomacCommands.length`);
   await commandForm('playerB', 'Attack', { actorId: 'player-b', targetId: 'enemy' });
   await waitFor('playerB', `window.__potomacCommands.length>${playerBCommandsBeforeAttack} && window.__potomacCommands.at(-1).request.commandId==='example.revised5e.attack'`, 'Player B attack request acknowledged');
@@ -370,7 +374,7 @@ try {
   assert.equal(attackB.status, 200, JSON.stringify(attackB));
   assert.equal(attackB.response.status, 'applied', JSON.stringify(attackB));
   assert.equal(attackB.request.input.actorId, 'player-b', JSON.stringify(attackB));
-  await waitFor('playerB', `document.body.innerText.includes('example.revised5e.attack committed by the host.') && document.body.innerText.includes('defeat')`, 'Player B sees the completed encounter from its committed attack');
+  await waitFor('playerB', `document.body.innerText.includes('Committed:') && document.body.innerText.includes('defeated')`, 'Player B sees the completed encounter and committed attack outcome');
   const authoritativeBeforeRestart = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.equal(authoritativeBeforeRestart.data.status, 'complete', `Player B attack must complete the encounter before restart: ${JSON.stringify({ response: attackB.response, entity: authoritativeBeforeRestart.data })}`);
   assert.equal(authoritativeBeforeRestart.data.actors.find(actor => actor.id === 'enemy').currentHitPoints, 0);
@@ -443,6 +447,7 @@ try {
   assert.equal(await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'reconnected Table projection remains privacy filtered');
   await click('playerB', 'Open in Table');
   await waitFor('playerB', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'Player B opens the same authorized encounter in Table');
+  assert.equal(await ev('playerB', `document.body.innerText.includes('Your character') && document.body.innerText.includes('Borin')`), true, 'Table preserves the authorized player ownership cue');
   assert.equal(await ev('playerB', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Player B Table projection excludes GM-only actor ownership');
   await click('playerB', 'Open in Rules');
   await waitFor('playerB', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'Player B returns to Rules with the same stable entity reference');
@@ -497,7 +502,7 @@ try {
   await waitFor('gm', `document.body.innerText.includes('Session started from the selected host encounter.') && document.body.innerText.includes('Live · Three Opponents')`, 'GM starts the five-participant live session');
   scriptedRolls = [20, 19, 18, 17, 16, 1, 1, 1, 1, 1, 1, 1];
   await click('gm', 'Roll initiative and begin');
-  await waitFor('gm', `document.body.innerText.includes('example.revised5e.initialize committed by the host.') && document.body.innerText.includes('active')`, 'host rolls initiative for all five participants');
+  await waitFor('gm', `document.body.innerText.includes('Committed: initiative rolled.') && document.body.innerText.includes('Round 1')`, 'host rolls initiative for all five participants and the turn tracker shows round one');
   const rosterAfterInitiative = await (await api(`/api/v2/entities/${encodeURIComponent(rosterEncounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.deepEqual(rosterAfterInitiative.data.initiativeOrder, ['player-a', 'player-b', 'enemy', 'enemy-1', 'enemy-2'], 'the host sorts five initiative results and ties/order remain module-defined');
   // The previous scenario leaves its player dashboards on a finished session.
@@ -594,7 +599,7 @@ try {
   assert.equal(Object.hasOwn(playerScene.data, 'gmNote'), false, 'GM-only module field is removed from the player projection');
   assert.equal(await ev('diceA', `document.body.innerText.includes('The bell answers from below.')`), false, 'GM-only field never appears in the player UI');
   await commandForm('diceA', 'Start contested action', { actorId: 'player-a', defenderId: 'player-b', push: 'false' });
-  await waitFor('diceA', `document.body.innerText.includes('example.dicepool.contested-action is waiting for its authorized reaction; its effects are not committed yet.')`, 'Dice-pool parent command reports its durable reaction as pending');
+  await waitFor('diceA', `document.body.innerText.includes('Command is waiting for its authorized reaction; its effects are not committed yet.')`, 'Dice-pool parent command clearly reports its durable reaction as pending without exposing an internal command ID');
   const contest = await ev('diceA', `window.__potomacCommands.find(item=>item.request.commandId==='example.dicepool.contested-action')`); assert.equal(contest.status, 200); assert.equal(contest.response.status, 'pending', JSON.stringify(contest));
   const pendingRows = await host.db.prepare("SELECT window_id FROM v2_reaction_windows WHERE parent_operation_id=?").all(contest.request.operationId);
   assert.equal(pendingRows.length, 1, 'one durable reaction window is linked to the parent command'); const windowId = pendingRows[0].window_id;

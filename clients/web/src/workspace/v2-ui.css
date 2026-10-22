@@ -29,6 +29,16 @@
 }
 
 .v2-ui-display dd { margin: 0; overflow-wrap: anywhere; }
+.v2-ui-initiative { display: block; margin: .5rem 0 1rem; padding: .85rem; border: 1px solid var(--line, #d7dce1); border-radius: .65rem; }
+.v2-ui-initiative h4 { margin: 0 0 .5rem; }
+.v2-ui-initiative ol,.v2-ui-history ol { display: grid; gap: .4rem; padding-left: 1.6rem; }
+.v2-ui-initiative li { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .75rem; padding: .45rem .55rem; border-radius: .4rem; }
+.v2-ui-initiative li.is-active { background: color-mix(in srgb, var(--focus, #245db0) 18%, transparent); outline: 2px solid var(--focus, #245db0); }
+.v2-ui-initiative li small { color: var(--muted, #555); }
+.v2-ui-initiative li strong { margin-left: auto; }
+.v2-ui-initiative li .v2-ui-controlled { margin-left: 0; color: var(--focus, #245db0); }
+.v2-ui-history { min-width: 0; overflow-wrap: anywhere; }
+.v2-ui-history li { margin-block: .25rem; }
 .v2-ui-input input,
 .v2-ui-input select,
 .v2-ui-form button,
@@ -36,6 +46,7 @@
 .v2-ui-resource progress { display: block; width: 100%; }
 .v2-ui-form [role="alert"],
 .v2-ui-command [role="alert"] { color: var(--danger, #9b2c2c); }
+.v2-ui-command [role="status"] { color: var(--success, #175f36); }
 
 .v2-ui-contribution :focus-visible {
   outline: 3px solid var(--focus, #245db0);
