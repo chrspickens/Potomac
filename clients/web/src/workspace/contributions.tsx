@@ -4,7 +4,7 @@ import type { Activity, Encounter, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 import type { LoreArticle } from '../api.ts';
 import type { BrickBinding, BrickDefinition, BrickRenderProps, AuthorizedBrickDataAdapter } from './types.ts';
-import { resolveMapSceneBinding, resolveTableParticipants } from './authorized-adapter.ts';
+import { resolveMapSceneBinding, resolveTableParticipantRoster, type TableParticipantRosterItem } from './authorized-adapter.ts';
 import { getBrickDefinition, registerBrickDefinition } from './registry.ts';
 import { MapCanvas } from '../maps-app.tsx';
 import type { MapSceneView } from '../api.ts';
@@ -131,9 +131,13 @@ function TableSessionBrick({ data, adapter, onSessionCommand, onOpenApp, busy, o
   return <div className="table-session-panel"><p className="eyebrow">LIVE SESSION</p><strong>{session ? session.status[0].toUpperCase() + session.status.slice(1) : 'No active session'}</strong>{session && <small>Started {new Date(session.startedAt).toLocaleString()}</small>}{adapter.getRole() === 'gm' && <div className="action-grid">{!session || session.status === 'finished' ? <button type="button" disabled={busy || offline || !onSessionCommand || !canStart} title={!canStart ? 'Set an active encounter with a current host revision before starting' : undefined} onClick={() => { if (startTarget) onSessionCommand?.('start', startTarget) }}>Start session</button> : session.status === 'active' ? <><button type="button" disabled={busy || offline || !onSessionCommand} onClick={() => onSessionCommand?.('pause')}>Pause session</button><button type="button" disabled={busy || offline || !onSessionCommand} onClick={() => onSessionCommand?.('finish')}>End session</button></> : <><button type="button" disabled={busy || offline || !onSessionCommand} onClick={() => onSessionCommand?.('resume')}>Resume session</button><button type="button" disabled={busy || offline || !onSessionCommand} onClick={() => onSessionCommand?.('finish')}>End session</button></>}</div>}{adapter.getRole() === 'gm' && !canStart && (!session || session.status === 'finished') && <small role="status">Choose an active encounter before starting a session.</small>}{adapter.getRole() === 'player' && <small>Session controls are managed by the GM.</small>}{offline && <small role="status">Reconnect to manage the session.</small>}{session && <button type="button" onClick={() => onOpenApp?.('encounters', adapter.getActiveEncounter()?.id)}>Open encounter</button>}</div>;
 }
 
-function TableParticipantsBrick({ data, onOpenApp }: BrickRenderProps<Array<{ actor: Actor; status?: string }>>) {
-  if (!data?.length) return <p className="brick-message">No participants are currently available.</p>;
-  return <div className="table-participants">{data.map(({ actor, status }) => <article key={actor.entityId}><div><strong>{actor.name}</strong><small>{actor.module.manifest.name}{status ? ` · ${status}` : ''}</small></div><div className="table-participant-fields">{actor.module.view.brick.filter(item => item.control === 'stat' || item.control === 'resource').map((item, index) => <span key={`${item.field}-${index}`}><small>{item.label}</small><b>{formatPublicValue(valueAt(actor.data, item.field || ''))}</b></span>)}</div><button type="button" onClick={() => onOpenApp?.('characters', actor.entityId)}>Open Character</button></article>)}</div>;
+function TableParticipantsBrick({ data, adapter, onOpenApp }: BrickRenderProps<TableParticipantRosterItem[]>) {
+  if (!data?.length) return <p className="brick-message table-participants-empty">{adapter.getRole() === 'gm'
+    ? data ? 'No players are enrolled in this campaign yet.' : 'The enrolled player roster is unavailable until the host connects.'
+    : data ? 'No characters have been added to this encounter yet. Enrolling a player does not add a character to the encounter.' : 'Choose an active encounter to see its assigned characters.'}</p>;
+  return <div className="table-participants">{data.map(item => item.kind === 'member'
+    ? <article className="table-member-participant" key={item.member.memberId}><strong>{item.member.displayName}</strong><span className={item.member.present ? 'table-presence is-present' : 'table-presence'}>{item.member.present ? <><span aria-hidden="true">★</span> Present in current encounter</> : 'Not in current encounter'}</span></article>
+    : <article key={item.actor.entityId}><div><strong>{item.actor.name}</strong><small>{item.actor.module.manifest.name}{item.status ? ` · ${item.status}` : ''}</small></div><div className="table-participant-fields">{item.actor.module.view.brick.filter(field => field.control === 'stat' || field.control === 'resource').map((field, index) => <span key={`${field.field}-${index}`}><small>{field.label}</small><b>{formatPublicValue(valueAt(item.actor.data, field.field || ''))}</b></span>)}</div><button type="button" onClick={() => onOpenApp?.('characters', item.actor.entityId)}>Open Character</button></article>)}</div>;
 }
 
 function LoreArticleBrick({ data, onOpenApp }: BrickRenderProps<LoreArticle>) {
@@ -177,9 +181,9 @@ const activityDefinition: BrickDefinition<Activity[]> = {
 const tableSessionDefinition: BrickDefinition<SessionSnapshot> = {
   ...declaredBrickDefinition('table.session'), resolve: (_binding, adapter) => adapter.getSession(), render: TableSessionBrick,
 };
-const tableParticipantsDefinition: BrickDefinition<Array<{ actor: Actor; status?: string }>> = {
+const tableParticipantsDefinition: BrickDefinition<TableParticipantRosterItem[]> = {
   ...declaredBrickDefinition('table.participants'),
-  resolve: resolveTableParticipants,
+  resolve: resolveTableParticipantRoster,
   render: TableParticipantsBrick,
 };
 const tableActivityDefinition: BrickDefinition<Activity[]> = {

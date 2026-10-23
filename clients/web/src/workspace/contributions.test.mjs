@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAuthorizedBrickAdapter, resolveMapSceneBinding, resolveTableParticipants } from './authorized-adapter.ts';
+import { createAuthorizedBrickAdapter, resolveMapSceneBinding, resolveTableParticipantRoster, resolveTableParticipants } from './authorized-adapter.ts';
 import { getBrickDefinition } from './registry.ts';
 import { resolveBindingMode } from './binding.ts';
 
@@ -31,6 +31,17 @@ test('Table participants resolve the authorized assigned roster for follow and p
   assert.deepEqual(resolveTableParticipants({ mode: 'pinned', entityId: firstEncounter.id }, changedEncounterAdapter), [
     { actor: firstActor, status: 'active' },
   ]);
+});
+
+test('GM Table roster lists enrolled members with current-session presence while player roster stays encounter-scoped', () => {
+  const members = [
+    { memberId: 'member-1', displayName: 'Mira', createdAt: '2026-10-01T00:00:00.000Z', present: true },
+    { memberId: 'member-2', displayName: 'Oren', createdAt: '2026-10-02T00:00:00.000Z', present: false },
+  ];
+  const active = encounter('encounter-1', []);
+  const gmAdapter = createAuthorizedBrickAdapter([], [active], active, [], undefined, 'gm', [], [], members);
+  assert.deepEqual(resolveTableParticipantRoster({ mode: 'follow', contextKey: 'session.activeEncounter' }, gmAdapter), members.map(member => ({ kind: 'member', member })));
+  assert.deepEqual(resolveTableParticipantRoster({ mode: 'follow', contextKey: 'session.activeEncounter' }, createAuthorizedBrickAdapter([], [active], active, [], undefined, 'player', [], [], members)), []);
 });
 
 test('Lore brick adapters expose only active, explicitly linked Lore IDs', async () => {

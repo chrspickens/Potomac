@@ -90,6 +90,37 @@ test('durable session commands enforce GM transitions, revisions, and operation 
   });
 });
 
+test('GM-only member roster marks enrolled players present for characters in the live encounter', async () => {
+  await withHost(async ({ request }) => {
+    const target = await prepareSessionEncounter(request, { encounterId: 'member-roster-encounter', actorId: 'member-roster-actor' });
+    const alice = await (await postJson(request, '/api/members/enroll', { displayName: 'Roster Alice' })).json();
+    const bob = await (await postJson(request, '/api/members/enroll', { displayName: 'Roster Bob' })).json();
+    assert.equal((await postJson(request, '/api/actors/member-roster-actor/grants', { memberId: alice.memberId, permissions: ['read'] })).status, 201);
+    const enrolled = await (await request('/api/members')).json();
+    assert.deepEqual(Object.fromEntries(enrolled.members.map(({ memberId, present }) => [memberId, present])), { [alice.memberId]: false, [bob.memberId]: false });
+    assert.deepEqual(enrolled.members.map(({ displayName }) => displayName).sort(), ['Roster Alice', 'Roster Bob']);
+    assert.equal(enrolled.members.some(member => 'credential' in member || 'credentialHash' in member), false);
+    assert.equal((await request('/api/members', 'player')).status, 403);
+
+    const started = await postJson(request, '/api/session/commands', {
+      operationId: 'member-roster-start', command: 'start', sessionId: 'member-roster-session', baseRevision: 0,
+      encounterId: target.encounterId, encounterRevision: target.encounterRevision
+    });
+    assert.equal(started.status, 200);
+    const liveMembers = await (await request('/api/members')).json();
+    assert.deepEqual(Object.fromEntries(liveMembers.members.map(({ memberId, present }) => [memberId, present])), { [alice.memberId]: true, [bob.memberId]: false });
+
+    assert.equal((await postJson(request, '/api/session/commands', {
+      operationId: 'member-roster-pause', command: 'pause', sessionId: 'member-roster-session', baseRevision: 1
+    })).status, 200);
+    assert.equal((await (await request('/api/members')).json()).members.find(member => member.memberId === alice.memberId).present, true);
+    assert.equal((await postJson(request, '/api/session/commands', {
+      operationId: 'member-roster-finish', command: 'finish', sessionId: 'member-roster-session', baseRevision: 2
+    })).status, 200);
+    assert.equal((await (await request('/api/members')).json()).members.find(member => member.memberId === alice.memberId).present, false);
+  });
+});
+
 test('Lore search is bounded, read-only and filters unpublished entries before returning them', async () => {
   await withHost(async ({ host, request }) => {
     const now = new Date().toISOString();

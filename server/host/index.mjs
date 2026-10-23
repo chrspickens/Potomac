@@ -1075,6 +1075,25 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         });
         notify(); return json(res, 200, result);
       }
+      if (req.method === 'GET' && url.pathname === '/api/members') {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+        const currentSessionId = db.prepare('SELECT current_session_id FROM session_state WHERE campaign_id=?').get(campaignId)?.current_session_id;
+        const currentSession = currentSessionId ? db.prepare('SELECT encounter_id,status FROM sessions WHERE id=? AND campaign_id=?').get(currentSessionId, campaignId) : null;
+        const presentMemberIds = currentSession && ['active', 'paused'].includes(currentSession.status) && currentSession.encounter_id
+          ? new Set(db.prepare(`SELECT DISTINCT player.member_id FROM (
+              SELECT a.owner_member_id AS member_id FROM encounter_participants p JOIN actors a ON a.id=p.actor_id
+                WHERE p.encounter_id=? AND p.status<>'removed' AND a.archived=0 AND a.owner_member_id IS NOT NULL
+              UNION
+              SELECT g.member_id FROM encounter_participants p JOIN actors a ON a.id=p.actor_id
+                JOIN actor_grants g ON g.actor_id=a.id AND (g.can_read=1 OR g.can_act=1)
+                WHERE p.encounter_id=? AND p.status<>'removed' AND a.archived=0
+            ) player`)
+            .all(currentSession.encounter_id, currentSession.encounter_id).map(row => row.member_id))
+          : new Set();
+        const members = db.prepare('SELECT id,display_name,created_at FROM members WHERE revoked_at IS NULL ORDER BY created_at,id').all()
+          .map(member => ({ memberId: member.id, displayName: member.display_name, createdAt: member.created_at, present: presentMemberIds.has(member.id) }));
+        return json(res, 200, { members });
+      }
       if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, sessionJson(auth));
       if (req.method === 'GET' && url.pathname === '/api/lore') {
         const query = (url.searchParams.get('q') || '').trim();
