@@ -445,7 +445,8 @@ try {
   assert.ok(proposalReceipt?.proposalId, 'gmReview action becomes a proposal');
   assert.equal(conflictReceipt?.reasonCode, 'dependency_revision_conflict', 'stale dependency is rejected as a conflict');
 
-  await waitForExpression(gm, "document.querySelector('.gm-admin summary')?.textContent.includes('1 pending')", 'GM proposal queue');
+  await clickText(gm, 'Home', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm, "document.querySelector('.campaign-home') && document.querySelector('.gm-admin summary')?.textContent.includes('1 pending')", 'GM proposal queue on Campaign Home');
   await clickText(gm, 'Review', '.gm-admin [aria-label="GM proposal review"] button');
   await waitForExpression(gm, "document.querySelector('.gm-admin h2')?.textContent === 'Review clear-stress'", 'GM proposal details');
   await clickText(gm, 'Accept after revalidation', '.gm-admin button');
@@ -495,7 +496,8 @@ try {
   await clickText(memberAClient, 'Neris Holt', '.character-list button');
   await clickText(memberAClient, 'Request Stress Recovery', '.full-character .action-grid button');
   await waitForExpression(memberAClient, "document.querySelector('[aria-label=\"Your local operation status\"]')?.innerText.includes('clear-stress · awaitingReview')", 'second review request reaches the host');
-  await waitForExpression(gm, "document.querySelector('.gm-admin summary')?.textContent.includes('1 pending')", 'rejection proposal reaches GM queue');
+  await clickText(gm, 'Home', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm, "document.querySelector('.campaign-home') && document.querySelector('.gm-admin summary')?.textContent.includes('1 pending')", 'rejection proposal reaches GM queue on Campaign Home');
   await clickText(gm, 'Review', '.gm-admin [aria-label="GM proposal review"] button');
   await waitForExpression(gm, "document.querySelector('.gm-admin h2')?.textContent === 'Review clear-stress'", 'rejection proposal details');
   await evaluate(gm, "window.prompt = () => 'Not approved in the offline review fixture.'");

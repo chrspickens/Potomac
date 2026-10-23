@@ -1,4 +1,104 @@
 /* Tableau-like layout affordances for the workspace editor. */
+.table-session-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px;
+  text-align: left;
+}
+
+.table-session-panel > .eyebrow,
+.table-session-panel > strong,
+.table-session-panel > small {
+  display: block;
+  margin: 0;
+  text-align: left;
+}
+
+.table-session-panel > strong {
+  font-size: 18px;
+}
+
+.table-session-panel > .action-grid {
+  margin-top: 4px;
+}
+
+.table-participants {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  text-align: left;
+}
+
+.table-participants-empty {
+  text-align: left;
+  line-height: 1.5;
+}
+
+.table-participants > article {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #294052;
+  border-radius: 7px;
+  text-align: left;
+}
+
+.table-participant-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.table-member-participant {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.table-presence {
+  color: #a9bdcc;
+  font-size: 11px;
+}
+
+.table-presence.is-present {
+  color: #a9e5bd;
+  font-weight: 600;
+}
+
+.gm-admin-credentials article {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #35556a;
+  border-radius: 6px;
+}
+
+.gm-admin-credentials code {
+  overflow-wrap: anywhere;
+}
+
+.app-notification {
+  position: fixed;
+  z-index: 1000;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(560px, calc(100vw - 40px));
+  padding: 10px 14px;
+  border: 1px solid #3e85b4;
+  border-radius: 8px;
+  background: #173850;
+  color: #cce8fa;
+  box-shadow: 0 8px 28px #0007;
+  font-size: 12px;
+}
+
+.app-notification button {
+  flex: none;
+}
+
 .brick-grid.is-editing {
   --brick-grid-guide: rgb(117 164 196 / 8%);
   --brick-grid-guide-strong: rgb(117 164 196 / 13%);

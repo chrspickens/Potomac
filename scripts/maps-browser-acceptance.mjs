@@ -30,7 +30,7 @@ const evaluate = (session, expression) => {
     return serialized === undefined ? undefined : JSON.parse(serialized)
   })
 }
-const waitExpr = async (session, expression, label) => { const started = Date.now(); while (Date.now() - started < 15000) { if (await evaluate(session, expression)) return; await delay(100) } throw new Error(`Timed out: ${label}`) }
+const waitExpr = async (session, expression, label) => { const started = Date.now(); while (Date.now() - started < 15000) { if (await evaluate(session, expression)) return; await delay(100) } const detail = await evaluate(session, "({error:document.querySelector('.map-error')?.textContent,notice:document.querySelector('.map-notice')?.textContent,revision:document.querySelector('.map-revision')?.textContent})"); throw new Error(`Timed out: ${label} ${JSON.stringify(detail)}`) }
 const clickText = (session, text, selector = 'button') => evaluate(session, `(() => { const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(x=>x.textContent.includes(${JSON.stringify(text)})&&!x.disabled); if(!e) throw new Error('missing enabled ${text}; body='+document.body.innerText.slice(0,900)); e.click(); return true })()`)
 const inputText = async (session, selector, value) => { await evaluate(session, `(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e) throw new Error('missing input'); e.focus(); e.select(); return true })()`); await cdp('Input.insertText', { text: value }, session) }
 const pressKey = async (session, key) => { await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: key === 'Tab' ? 9 : undefined }, session); await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: key === 'Tab' ? 9 : undefined }, session) }
@@ -137,18 +137,22 @@ try {
   await waitExpr(gm, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'Maps connected')
   await clickText(gm, 'Create scene', 'summary'); await waitExpr(gm, "Boolean(document.querySelector('.map-create-form'))", 'create form'); await inputText(gm, '.map-create-form input:not([type=file])', 'Ashen Coast'); assert.equal(await evaluate(gm, "document.querySelector('.map-create-form input:not([type=file])').value"), 'Ashen Coast'); await clickText(gm, 'Create on host', '.map-create-form button'); await waitExpr(gm, "document.body.innerText.includes('Ashen Coast')", 'Ashen Coast committed'); await waitExpr(gm, "document.querySelector('.status')?.textContent.includes('CONNECTED')", 'still connected after map creation'); await sample('maps-after-create'); const write = Object.values(diagnostics.requests).find(request => request.method === 'POST' && new URL(request.url).pathname === '/api/maps'); assert.ok(write?.events.some(event => event.type === 'response' && event.status === 200), 'Ashen Coast must be accepted by the disposable host'); assert.ok(Object.values(diagnostics.requests).some(request => new URL(request.url).pathname.startsWith('/api/maps/map-') && request.events.some(event => event.type === 'response' && event.status === 200)), 'Ashen Coast must be read back from the disposable host'); await screenshot(gm, 'stage-1-ashen-coast.png'); record('stage1.map-created', { name: 'Ashen Coast', status: await evaluate(gm, "document.querySelector('.status')?.textContent") }); mark('Stage 1: GM creates Ashen Coast through the React UI and stays connected', 'PASS')
   const enrollPlayer = async displayName => {
+    await clickText(gm, 'Home', 'nav[aria-label="Applications"] button')
+    await waitExpr(gm, "Boolean(document.querySelector('.campaign-home'))", 'Campaign Home for player enrollment')
+    await evaluate(gm, "document.querySelector('.gm-admin').open = true")
     await evaluate(gm, `window.prompt = () => ${JSON.stringify(displayName)}`)
     await clickText(gm, 'Enroll player', '.gm-admin button')
-    await waitExpr(gm, "document.querySelector('.gm-admin')?.textContent.includes('One-time credential')", `${displayName} UI enrollment`)
-    const codes = await evaluate(gm, "[...document.querySelectorAll('.gm-admin code')].map(item=>item.textContent)")
+    await waitExpr(gm, `document.querySelector('.gm-admin-credentials article:last-child')?.textContent.includes(${JSON.stringify(displayName)})`, `${displayName} UI enrollment`)
+    const codes = await evaluate(gm, "[...document.querySelector('.gm-admin-credentials article:last-child').querySelectorAll('code')].map(item=>item.textContent)")
     assert.equal(codes.length, 2, `${displayName} enrollment shows its member ID and one-time credential`)
     await clickText(gm, 'Hide credential', '.gm-admin button')
     return { memberId: codes[0], credential: codes[1] }
   }
-  await clickText(gm, 'GM administration', '.gm-admin summary')
   const playerAIdentity = await enrollPlayer('Flooded Observatory Player A')
   const playerBIdentity = await enrollPlayer('Flooded Observatory Player B')
   assert.notEqual(playerAIdentity.memberId, playerBIdentity.memberId, 'players are independently enrolled')
+  await clickText(gm, 'Maps', 'nav[aria-label="Applications"] button')
+  await waitExpr(gm, "Boolean(document.querySelector('.maps-page'))", 'return to Maps app')
   const playerA = await openClient('Player A', 1440, 900); const playerB = await openClient('Player B', 1440, 900)
   for (const [client, identity] of [[playerA, playerAIdentity], [playerB, playerBIdentity]]) {
     const session = client.sessionId

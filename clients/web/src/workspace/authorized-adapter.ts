@@ -1,4 +1,4 @@
-import type { Activity, Encounter, LoreArticle, Role, SessionSnapshot } from '../api.ts';
+import type { Activity, CampaignMember, Encounter, LoreArticle, Role, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 import type { MapSceneView } from '../api.ts';
 import type { AuthorizedBrickDataAdapter, BrickBinding } from './types.ts';
@@ -10,6 +10,18 @@ export function resolveTableParticipants(binding: BrickBinding, adapter: Authori
     ?? (encounter.id === adapter.getActiveEncounter()?.id ? adapter.getParticipants() : []);
 }
 
+export type TableParticipantRosterItem =
+  | { kind: 'member'; member: CampaignMember }
+  | { kind: 'character'; actor: Actor; status?: string };
+
+export function resolveTableParticipantRoster(binding: BrickBinding, adapter: AuthorizedBrickDataAdapter): TableParticipantRosterItem[] | undefined {
+  if (adapter.getRole() === 'gm') {
+    const members = adapter.getEnrolledMembers?.();
+    return members?.map(member => ({ kind: 'member', member }));
+  }
+  return resolveTableParticipants(binding, adapter)?.map(item => ({ kind: 'character', ...item }));
+}
+
 export function resolveMapSceneBinding(binding: BrickBinding, adapter: AuthorizedBrickDataAdapter): MapSceneView | undefined {
   if (binding.mode === 'pinned') return adapter.getMap?.(binding.entityId)
   if (binding.mode !== 'follow') return undefined
@@ -18,7 +30,7 @@ export function resolveMapSceneBinding(binding: BrickBinding, adapter: Authorize
 }
 
 export function createAuthorizedBrickAdapter(
-  actors: Actor[], encounters: Encounter[], activeEncounter: Encounter | null, activity: Activity[], session?: SessionSnapshot, role: Role = 'player', lore: LoreArticle[] = [], maps: MapSceneView[] = [],
+  actors: Actor[], encounters: Encounter[], activeEncounter: Encounter | null, activity: Activity[], session?: SessionSnapshot, role: Role = 'player', lore: LoreArticle[] = [], maps: MapSceneView[] = [], members?: CampaignMember[],
 ): AuthorizedBrickDataAdapter & { getEncounterOptions: () => Array<{ id: string; label: string }> } {
   const actorById = new Map(actors.map(actor => [actor.entityId, actor]));
   const encounterById = new Map(encounters.map(encounter => [encounter.id, encounter]));
@@ -37,6 +49,7 @@ export function createAuthorizedBrickAdapter(
     getParticipants: () => activeEncounter ? participantsFor(activeEncounter.id) : [],
     getParticipantsForEncounter: participantsFor,
     getSession: () => session,
+    getEnrolledMembers: () => role === 'gm' ? members : undefined,
     getRole: () => role,
     getLore: id => { const article = loreById.get(id); return article && !article.archived ? article : undefined },
     getLoreOptions: () => lore.filter(article => !article.archived).map(({ id, title }) => ({ id, label: title })),

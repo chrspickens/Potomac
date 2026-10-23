@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import type { Activity, Encounter, LoreArticle, Role, SessionSnapshot } from '../api.ts';
+import type { Activity, CampaignMember, Encounter, LoreArticle, Role, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
 import type { MapPieceView, MapSceneView } from '../api.ts';
 
@@ -44,6 +44,7 @@ export type AuthorizedBrickDataAdapter = {
   getParticipants(): Array<{ actor: Actor; status?: string }>;
   getParticipantsForEncounter?(encounterId: string): Array<{ actor: Actor; status?: string }> | undefined;
   getSession(): SessionSnapshot | undefined;
+  getEnrolledMembers?(): CampaignMember[] | undefined;
   getRole(): Role;
   getLore?(entityId: string): LoreArticle | undefined;
   getLoreOptions?(): Array<{ id: string; label: string }>;

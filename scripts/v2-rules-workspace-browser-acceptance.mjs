@@ -115,19 +115,18 @@ async function normalSetup(name, moduleId, campaignName) {
   }
 }
 async function enrollTwo(name) {
-  await click(name, 'Return to campaign'); await waitFor(name, `Boolean(document.querySelector('#home-v2-member-name'))`, 'Campaign Home member controls');
-  await setValue(name, '#home-v2-member-name', 'Avery');
-  await click(name, 'Enroll player', '[aria-label="Campaign members"]'); await waitFor(name, 'Boolean(document.querySelector("#home-v2-player-credential"))', 'Player A enrollment');
-  const first = { name: 'Avery', credential: await ev(name, `document.querySelector('#home-v2-player-credential')?.textContent`) };
-  first.principalId = (await (await api('/api/v2/session', first.credential)).json()).principalId;
-  await click(name, 'Hide credential', '[aria-label="Campaign members"]');
-  assert.equal(await ev(name, `Boolean(document.querySelector('#home-v2-player-credential'))`), false, 'hidden first credential is removed from the visible UI');
-  await setValue(name, '#home-v2-member-name', 'Morgan');
-  await click(name, 'Enroll player', '[aria-label="Campaign members"]'); await waitFor(name, 'Boolean(document.querySelector("#home-v2-player-credential"))', 'Player B enrollment');
-  const second = { name: 'Morgan', credential: await ev(name, `document.querySelector('#home-v2-player-credential')?.textContent`) };
-  second.principalId = (await (await api('/api/v2/session', second.credential)).json()).principalId;
-  await click(name, 'Hide credential', '[aria-label="Campaign members"]');
-  assert.equal(await ev(name, `Boolean(document.querySelectorAll('.home-quick-actions output').length===0)`), true, 'issued credential can be hidden after handoff');
+  await click(name, 'Return to campaign'); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, 'Campaign Home');
+  const admin = await ev(name, `document.querySelector('details.gm-admin summary')?.textContent.trim()`); assert.ok(admin, 'GM administration is available on Campaign Home');
+  await ev(name, `document.querySelector('details.gm-admin summary')?.click()`); await waitFor(name, `Boolean(document.querySelector('details.gm-admin[open]'))`, 'GM administration opened');
+  await ev(name, `window.prompt=()=> 'Avery'`); await click(name, 'Enroll player'); await waitFor(name, `document.querySelectorAll('.gm-admin-credentials article').length===1`, 'Player A admin enrollment');
+  const first = { name: 'Avery', memberId: await ev(name, `document.querySelector('.gm-admin-credentials article code')?.textContent`), credential: await ev(name, `document.querySelector('.gm-admin-credentials article')?.querySelectorAll('code')[1]?.textContent`) };
+  first.principalId = (await (await api('/api/v2/session', first.credential)).json()).principalId; assert.equal(first.memberId, first.principalId);
+  await click(name, 'Hide credential'); assert.equal(await ev(name, `document.querySelector('.gm-admin-credentials article')?.innerText.includes('Credential: Hidden')`), true, 'first credential can be hidden');
+  await click(name, 'Show credential'); assert.equal(await ev(name, `document.querySelector('.gm-admin-credentials article')?.querySelectorAll('code')[1]?.textContent===${JSON.stringify(first.credential)}`), true, 'hidden credential can be shown again');
+  await click(name, 'Hide credential'); await ev(name, `window.prompt=()=> 'Morgan'`); await click(name, 'Enroll player'); await waitFor(name, `document.querySelectorAll('.gm-admin-credentials article').length===2`, 'Player B admin enrollment');
+  const second = { name: 'Morgan', memberId: await ev(name, `document.querySelectorAll('.gm-admin-credentials article')[1]?.querySelector('code')?.textContent`), credential: await ev(name, `document.querySelectorAll('.gm-admin-credentials article')[1]?.querySelectorAll('code')[1]?.textContent`) };
+  second.principalId = (await (await api('/api/v2/session', second.credential)).json()).principalId; assert.equal(second.memberId, second.principalId);
+  assert.equal(await ev(name, `document.querySelectorAll('.gm-admin-credentials article').length`), 2, 'several player credentials remain independently available');
   await click(name, 'Prepare encounters');
   await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'return from Home to Encounters');
   await waitFor(name, `Boolean(document.querySelector('.v2-guided-preparation-form'))`, 'V2 encounter preparation form');

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { configuredHost, type Activity, type CampaignConfig, type ConnectionStatus, type LoreArticle, type MapSceneView, type Role, type SessionSnapshot, type Snapshot } from './api'
 import { campaignHomeActivity, campaignHomeIdentity, campaignHomeState, lastPreparedEncounter } from './campaign-home-model'
 import './campaign-home-v2.css'
@@ -12,20 +12,17 @@ type Props = {
   v2SessionEnabled?: boolean
   v2Credential?: string
   v2Ruleset?: { id: string; version: string; name?: string } | null
-  issuedCredential?: { memberId: string; credential: string } | null
-  onEnrollPlayer?: (displayName: string) => void
-  onHideCredential?: () => void
   error: string
   lore: LoreArticle[]
   maps: MapSceneView[]
   onOpen: (target: 'table' | 'characters' | 'encounters' | 'lore' | 'maps', id?: string) => void
   onCreate: (target: 'character' | 'encounter') => void
+  adminPanel?: ReactNode
 }
 
-export function CampaignHome({ role, snapshot, campaign, connection, session, v2SessionEnabled = false, v2Credential = '', v2Ruleset = null, issuedCredential = null, onEnrollPlayer, onHideCredential, error, lore, maps, onOpen, onCreate }: Props) {
+export function CampaignHome({ role, snapshot, campaign, connection, session, v2SessionEnabled = false, v2Credential = '', v2Ruleset = null, error, lore, maps, onOpen, onCreate, adminPanel }: Props) {
   const [v2Session, setV2Session] = useState<{ status: string; revision: number; encounter?: { entityId: string; title?: string; revision: number } }>()
   const [v2HostStatus, setV2HostStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
-  const [memberNameDraft, setMemberNameDraft] = useState('Player 1')
   useEffect(() => {
     if (!v2SessionEnabled || !configuredHost) { setV2Session(undefined); setV2HostStatus('checking'); return }
     let cancelled = false
@@ -65,7 +62,7 @@ export function CampaignHome({ role, snapshot, campaign, connection, session, v2
     <section className="home-session" aria-label="Current session">
         <div><p className="eyebrow">CURRENT SESSION</p><h2>{sessionLabel}</h2><p>{v2SessionEnabled ? v2Session?.encounter ? `${v2Session.status === 'finished' ? 'Last encounter' : 'Active encounter'}: ${v2Session.encounter.title || 'Current encounter'}` : v2Session?.status === 'live' ? 'A live session is underway.' : role === 'gm' ? 'No encounter is active.' : 'No current encounter is available.' : sessionEncounter ? `Active encounter: ${sessionEncounter.name}` : role === 'gm' ? 'No encounter is active.' : 'No current encounter is available.'}</p></div>
       <div className="home-actions">
-        <button type="button" onClick={() => onOpen('table', v2Session?.encounter?.entityId)}>{role === 'gm' ? 'Open Table' : 'Go to Table'}</button>
+        <button type="button" disabled={v2SessionEnabled && !v2Session?.encounter?.entityId} onClick={() => onOpen('table', v2Session?.encounter?.entityId)}>{role === 'gm' ? 'Open Table' : 'Go to Table'}</button>
         {role === 'gm' && preparedEncounter && <button type="button" onClick={() => onOpen('encounters', preparedEncounter.id)}>Continue encounter preparation</button>}
       </div>
     </section>
@@ -77,7 +74,7 @@ export function CampaignHome({ role, snapshot, campaign, connection, session, v2
       {v2Ruleset && <p className="home-scope-note">Maps remains a separate campaign app.</p>}
     </section> : <section className="home-player-status" aria-label="Your campaign status"><h2>Your next step</h2><p>{v2SessionEnabled && !v2Session ? v2HostStatus === 'connected' ? 'Checking the current session.' : 'Reconnect to check the current session.' : (v2SessionEnabled ? v2Session?.status === 'live' : currentSession?.status === 'active') ? 'Follow the live session and use your authorized character.' : currentSession?.status === 'paused' ? 'The session is paused. You can review your authorized campaign content.' : 'Wait for the GM to begin a session, or review your authorized campaign content.'}</p>{v2Ruleset ? <><p>Your host-authorized character is listed in Characters; use Table for authorized actions.</p><button type="button" onClick={() => onOpen('characters')}>View characters</button><button type="button" onClick={() => onOpen('table', v2Session?.encounter?.entityId)}>Open Table</button></> : <><p>{snapshot?.actors.length ? `Your authorized characters: ${snapshot.actors.map(actor => actor.name).join(', ')}` : 'No character is currently available to this account.'}</p><button type="button" onClick={() => onOpen('characters')}>View your characters</button></>}</section>}
 
-    {role === 'gm' && v2Ruleset && <section className="home-quick-actions" aria-label="Campaign members"><h2>Campaign members</h2><p>Enrollment is authorized and saved by the host. Share a newly issued credential privately, then hide it here.</p><label htmlFor="home-v2-member-name">Player display name</label><input id="home-v2-member-name" value={memberNameDraft} onChange={event => setMemberNameDraft(event.target.value)} maxLength={80} /><button type="button" disabled={!onEnrollPlayer || !memberNameDraft.trim()} onClick={() => { onEnrollPlayer?.(memberNameDraft); setMemberNameDraft('') }}>Enroll player</button>{issuedCredential && <div className="v2-player-handoff"><p>Member ID: <code>{issuedCredential.memberId}</code></p><label htmlFor="home-v2-player-credential">Reusable player credential</label><output id="home-v2-player-credential">{issuedCredential.credential}</output><button type="button" onClick={onHideCredential}>Hide credential</button></div>}</section>}
+    {role === 'gm' && adminPanel}
 
     <div className="home-content">
       <section className="home-preview" aria-label={v2Ruleset ? 'V2 campaign content' : 'Authorized campaign content'}><h2>{v2Ruleset ? `${v2Ruleset.name || 'V2'} content` : 'Campaign content'}</h2>

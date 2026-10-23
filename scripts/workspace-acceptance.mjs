@@ -371,6 +371,23 @@ try {
   await cdp('Input.insertText', { text: 'The Ashen Road Revised' }, gm.sessionId);
   await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
   assert.equal(await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open"), true, 'GM administration expands through its visible disclosure');
+  assert.equal(await evaluate(gm.sessionId, "Math.abs(document.querySelector('.gm-admin').getBoundingClientRect().width - document.querySelector('.home-session').getBoundingClientRect().width) < 2"), true, 'GM administration occupies the Campaign Home section width');
+  await evaluate(gm.sessionId, "(() => { const names=['Human Check One','Human Check Two']; window.prompt=()=>names.shift(); })()");
+  await pointerClickText(gm.sessionId, 'Enroll player', '.gm-admin button');
+  await waitForExpression(gm.sessionId, "document.querySelectorAll('.gm-admin-credentials article').length === 1", 'first UI enrollment appears in GM administration');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Player Human Check One enrolled.')", 'enrollment feedback appears as an app notification');
+  assert.equal(await evaluate(gm.sessionId, "getComputedStyle(document.querySelector('.app-notification')).position"), 'fixed', 'action feedback uses the notification treatment');
+  const firstUiCredential = await evaluate(gm.sessionId, "document.querySelector('.gm-admin-credentials article p:nth-of-type(2) code')?.textContent");
+  assert.ok(firstUiCredential && firstUiCredential.length > 30, 'first player credential is available to share');
+  await pointerClickText(gm.sessionId, 'Hide credential', '.gm-admin-credentials article button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.gm-admin-credentials article p:nth-of-type(2) code')?.textContent === 'Hidden'", 'credential can be hidden');
+  await pointerClickText(gm.sessionId, 'Show credential', '.gm-admin-credentials article button');
+  await waitForExpression(gm.sessionId, `document.querySelector('.gm-admin-credentials article p:nth-of-type(2) code')?.textContent === ${JSON.stringify(firstUiCredential)}`, 'hidden credential can be shown again');
+  await pointerClickText(gm.sessionId, 'Enroll player', '.gm-admin button');
+  await waitForExpression(gm.sessionId, "document.querySelectorAll('.gm-admin-credentials article').length === 2", 'second UI enrollment keeps the first credential card');
+  assert.equal(await evaluate(gm.sessionId, `document.querySelector('.gm-admin-credentials article p:nth-of-type(2) code')?.textContent === ${JSON.stringify(firstUiCredential)}`), true, 'later enrollment does not discard the earlier member ID and credential');
+  await pointerClickText(gm.sessionId, 'Dismiss', '.app-notification button');
+  assert.equal(await evaluate(gm.sessionId, "Boolean(document.querySelector('.app-notification'))"), false, 'action notification can be dismissed independently of credentials');
   await pointerClickText(gm.sessionId, 'Save campaign', '.campaign-setup button');
   await waitForExpression(gm.sessionId, "document.querySelector('.campaign-select strong')?.textContent === 'The Ashen Road Revised'", 'campaign save works with GM administration expanded');
   const expandedAdminCampaign = await (await request('/api/campaign', gmToken)).json();
@@ -482,17 +499,20 @@ try {
   // The GM and Player A have authorized roster entries; Player B has no grants.
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.session-strip')].at(-1)?.querySelector('strong')?.textContent === 'Edited Acceptance Encounter'", 'GM Table encounter context');
   await waitForExpression(player.sessionId, "[...document.querySelectorAll('.session-strip')].at(-1)?.querySelector('strong')?.textContent === 'Edited Acceptance Encounter'", 'Player A Table encounter context');
-  await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No participants'))", 'Player B empty authorized Table roster');
+  await waitForExpression(secondPlayer.sessionId, "[...document.querySelectorAll('.brick')].some(brick=>brick.querySelector('.brick-head strong')?.textContent==='Participants' && brick.textContent.includes('No characters have been added to this encounter yet.'))", 'Player B empty authorized Table roster');
   const tableRoster = await evaluate(player.sessionId, "[...document.querySelectorAll('.table-participants article strong')].map(item=>item.textContent)");
   assert.deepEqual(tableRoster.sort(), ['Mira Vell', 'Tarin Vale'], 'Player A Table shows only its two granted participants from the active encounter');
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent === 'Start Table session' && !document.querySelector('.session-strip[aria-label=\"Table workflow\"] button').disabled", 'GM Table workflow start control enabled for active encounter');
   assert.equal(await evaluate(player.sessionId, "document.querySelector('.session-strip[aria-label=\"Table workflow\"] button')?.textContent || ''"), '', 'player Table workflow has no GM start control');
   await clickText(gm.sessionId, 'Start Table session', '.session-strip[aria-label="Table workflow"] button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session started.'", 'GM receives start confirmation');
-  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session started.', 'GM sees consistent start confirmation');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent === 'Session started.'", 'GM receives start confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent"), 'Session started.', 'GM sees consistent start confirmation');
   const startedSession = await (await request('/api/session', gmToken)).json();
   assert.equal(startedSession.current.status, 'active', 'workflow banner creates an authoritative active session');
   assert.equal(startedSession.current.encounterId, createdEncounter.id, 'workflow banner starts the selected encounter');
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.table-member-participant')].some(card=>card.querySelector('strong')?.textContent==='Acceptance Player' && card.querySelector('.table-presence.is-present'))", 'GM member roster marks the granted encounter participant present');
+  assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.table-member-participant')].some(card=>card.querySelector('strong')?.textContent==='Acceptance Player Two' && card.querySelector('.table-presence.is-present'))"), false, 'GM member roster leaves an unenrolled-for-encounter account unmarked');
+  assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.table-member-participant')].filter(card=>card.querySelector('strong')?.textContent.startsWith('Human Check')).every(card=>!card.querySelector('.table-presence.is-present'))"), true, 'newly enrolled players without assigned characters are not marked present');
   await waitForExpression(gm.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", 'GM starts the live Table session against the committed active encounter');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed active Table session`);
@@ -519,7 +539,7 @@ try {
   await evaluate(player.sessionId, "document.querySelector('.character-action-form input[name=difficulty]').focus(); document.querySelector('.character-action-form input[name=difficulty]').select()");
   await cdp('Input.insertText', { text: '15' }, player.sessionId);
   await pointerClickText(player.sessionId, 'Roll Strength Check', '.character-action-form button');
-  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('strength-check accepted at revision'))", 'valid System A check receives host acceptance feedback');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.app-notification')].some(item=>item.textContent.includes('strength-check accepted at revision'))", 'valid System A check receives host acceptance feedback');
   const strengthActorAfterCheck = await (await request('/api/actors/actor-emberfall-01', gmToken)).json();
   assert.equal(strengthActorAfterCheck.revision, strengthRevisionBeforeValidation + 1, 'accepted System A check commits exactly one actor revision');
   const activeSessionId = (await (await request('/api/session', gmToken)).json()).current.id;
@@ -529,7 +549,7 @@ try {
   assert.equal(strengthEvents[0].payload.parameters.difficulty, 15, 'host audit records the difficulty explicitly entered in Character UI');
   const manaBeforeAction = strengthActorAfterCheck.data.resources.mana.current;
   await pointerClickText(player.sessionId, 'Spend 1 Mana', '.character-view button');
-  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.action-status')].some(item=>item.textContent.includes('spend-mana accepted at revision'))", 'no-input System A resource action remains a direct usable action');
+  await waitForExpression(player.sessionId, "[...document.querySelectorAll('.app-notification')].some(item=>item.textContent.includes('spend-mana accepted at revision'))", 'no-input System A resource action remains a direct usable action');
   const strengthActorAfterMana = await (await request('/api/actors/actor-emberfall-01', gmToken)).json();
   assert.equal(strengthActorAfterMana.revision, strengthActorAfterCheck.revision + 1, 'no-input resource action commits once');
   assert.equal(strengthActorAfterMana.data.resources.mana.current, manaBeforeAction - 1, 'no-input resource action retains its expected effect');
@@ -542,14 +562,14 @@ try {
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Paused'", `${label} sees committed paused Table session`);
   }
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session paused.'", 'GM receives pause confirmation');
-  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session paused.', 'GM sees correctly worded pause confirmation');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent === 'Session paused.'", 'GM receives pause confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent"), 'Session paused.', 'GM sees correctly worded pause confirmation');
   await clickText(gm.sessionId, 'Resume session', '.table-session-panel button');
   for (const [label, client] of [['GM', gm], ['Player A', player], ['Player B', secondPlayer]]) {
     await waitForExpression(client.sessionId, "document.querySelector('.table-session-panel strong')?.textContent === 'Active'", `${label} sees committed resumed Table session`);
   }
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session resumed.'", 'GM receives resume confirmation');
-  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session resumed.', 'GM sees correctly worded resume confirmation');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent === 'Session resumed.'", 'GM receives resume confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent"), 'Session resumed.', 'GM sees correctly worded resume confirmation');
   for (const [label, client] of [['Player A', player], ['Player B', secondPlayer]]) {
     assert.equal(await evaluate(client.sessionId, "document.querySelector('.table-session-panel')?.textContent.includes('Session controls are managed by the GM.') && ![...document.querySelectorAll('.table-session-panel button')].some(button=>/Start session|Pause session|Resume session|End session/.test(button.textContent))"), true, `${label} has no GM session controls`);
   }
@@ -568,11 +588,13 @@ try {
   assert.ok(player.secrets.every(item => !item.body.includes('The magistrate recognizes Mira.')), 'no captured player API payload contains the forbidden note');
 
   // Exercise the member enrollment and character grant controls through the actual GM UI.
+  await clickText(gm.sessionId, 'Home', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.campaign-home'))", 'GM administration is available from Campaign Home');
   await evaluate(gm.sessionId, "document.querySelector('.gm-admin').open = true");
   await evaluate(gm.sessionId, "window.prompt = (_message, fallback) => fallback || 'Acceptance UI Participant'");
   await clickText(gm.sessionId, 'Enroll player');
-  await waitForExpression(gm.sessionId, "document.querySelector('.gm-admin')?.textContent.includes('One-time credential')", 'UI-enrolled participant credential');
-  const uiParticipantCodes = await evaluate(gm.sessionId, "[...document.querySelectorAll('.gm-admin code')].map(element => element.textContent)");
+  await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.gm-admin-credentials article')].some(article=>article.textContent.includes('Acceptance UI Participant'))", 'UI-enrolled participant credential');
+  const uiParticipantCodes = await evaluate(gm.sessionId, "[...document.querySelector('.gm-admin-credentials article:last-child').querySelectorAll('code')].map(element => element.textContent)");
   assert.equal(uiParticipantCodes.length, 2, 'GM enrollment UI displays member identity and one-time credential');
   const [uiParticipantMemberId, uiParticipantToken] = uiParticipantCodes;
   assert.equal((await request('/api/state', uiParticipantToken)).status, 200, 'credential issued by the GM UI authenticates its participant');
@@ -582,10 +604,12 @@ try {
   await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.character-list button'))", 'character app participant grant selection');
   await clickText(gm.sessionId, 'Mira Vell', '.character-list button');
   const preLinkDetail = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
+  await clickText(gm.sessionId, 'Home', 'nav[aria-label="Applications"] button');
+  await waitForExpression(gm.sessionId, "Boolean(document.querySelector('.campaign-home'))", 'return to Campaign Home for GM member administration');
   await evaluate(gm.sessionId, "document.querySelector('.gm-admin').open = true");
   await evaluate(gm.sessionId, "window.prompt = (_message, fallback) => fallback || ''");
   await clickText(gm.sessionId, 'Grant selected character');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('granted to member')", 'character grant confirmation in GM UI');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('granted to member')", 'character grant confirmation in GM UI');
   const uiGrantedStateResponse = await request('/api/state', uiParticipantToken);
   const uiGrantedState = await uiGrantedStateResponse.json();
   assert.equal(uiGrantedStateResponse.status, 200);
@@ -603,8 +627,8 @@ try {
   const uiCharacterFormState = await evaluate(gm.sessionId, "(() => { const form=document.querySelector('.schema-form'); const input=[...form.querySelectorAll('label')].find(label=>label.textContent.trim().startsWith('Name'))?.querySelector('input'); return {name:input?.value,valid:form?.checkValidity(),invalid:[...form.querySelectorAll(':invalid')].map(item=>({name:item.name,value:item.value,required:item.required,min:item.min,label:item.closest('label')?.textContent})),buttonDisabled:form?.querySelector('button.primary')?.disabled} })()");
   assert.equal(uiCharacterFormState.name, 'UI Created Character', `character name field is populated: ${JSON.stringify(uiCharacterFormState)}`);
   await clickText(gm.sessionId, 'Create on host', '.schema-form button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.error-banner')?.textContent.includes('must be object') || document.querySelector('.action-status')?.textContent.includes('Character created and accepted by host')", 'UI character create result');
-  const uiCreateResult = await evaluate(gm.sessionId, "({error:document.querySelector('.error-banner')?.textContent || '',status:document.querySelector('.action-status')?.textContent || ''})");
+  await waitForExpression(gm.sessionId, "document.querySelector('.error-banner')?.textContent.includes('must be object') || document.querySelector('.app-notification')?.textContent.includes('Character created and accepted by host')", 'UI character create result');
+  const uiCreateResult = await evaluate(gm.sessionId, "({error:document.querySelector('.error-banner')?.textContent || '',status:document.querySelector('.app-notification')?.textContent || ''})");
   if (uiCreateResult.error) {
     knownAcceptanceGaps.push(`Character creation form was exercised, but host rejected its resource fields: ${uiCreateResult.error}`);
     await click(gm.sessionId, '.error-banner button');
@@ -621,7 +645,7 @@ try {
     await evaluate(gm.sessionId, "(() => { const input=[...document.querySelectorAll('.schema-form label')].find(label=>label.textContent.includes('Description / epithet'))?.querySelector('input'); if (!input) throw new Error('Epithet edit field missing'); input.focus(); input.select(); })()");
     await cdp('Input.insertText', { text: 'Edited through Characters' }, gm.sessionId);
     await clickText(gm.sessionId, 'Save changes', '.schema-form button');
-    await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Character fields updated on host.')", 'GM character update result');
+    await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Character fields updated on host.')", 'GM character update result');
     const updatedUiActor = await (await request('/api/actors/' + encodeURIComponent(uiCreatedActor.id), gmToken)).json();
     assert.equal(updatedUiActor.data.epithet, 'Edited through Characters', 'character field edit persisted on host');
     assert.equal(updatedUiActor.revision, uiCreatedActor.revision + 1, 'character field edit advanced authoritative revision');
@@ -636,7 +660,7 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form textarea')?.value === 'Prepared in the Encounters app'", 'encounter preparation summary input updated');
   await evaluate(gm.sessionId, "(() => { const item=[...document.querySelectorAll('.encounters-page .schema-form fieldset label')].find(label=>label.textContent.includes('UI Created Character')); if (!item) throw new Error('Created actor missing from participant selector'); const input=item.querySelector('input'); if (!input.checked) input.click(); })()");
   await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Encounter and participants saved on host.')", 'encounter update result');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Encounter and participants saved on host.')", 'encounter update result');
   let preparedEncounter;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     preparedEncounter = await (await request('/api/encounters/' + encodeURIComponent(createdEncounter.id), gmToken)).json();
@@ -669,7 +693,7 @@ try {
   await clickText(gm.sessionId, 'Mira Vell', '.character-list button');
   await evaluate(gm.sessionId, "(() => { const select=document.querySelector('.character-encounter-link select'); select.value=[...select.options].find(option=>option.textContent==='The Orchard Ruins')?.value; select.dispatchEvent(new Event('change',{bubbles:true})); })()");
   await clickText(gm.sessionId, 'Add as participant', '.character-encounter-link button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('linked to The Orchard Ruins on the host.')", 'character linked through host participant command');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('linked to The Orchard Ruins on the host.')", 'character linked through host participant command');
   const linkedPreparation = await (await request('/api/encounters', gmToken)).json();
   const orchardSummary = linkedPreparation.encounters.find(item => item.name === 'The Orchard Ruins');
   assert.ok(orchardSummary, 'linked encounter remains in the authorized summary list');
@@ -678,7 +702,7 @@ try {
   const linkedDetail = await linkedDetailResponse.json();
   assert.ok(linkedDetail.participants?.some(item => item.actorId === 'actor-emberfall-01'), 'Character app links the selected character to the host-authoritative roster');
   await clickText(gm.sessionId, 'Add as participant', '.character-encounter-link button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('is already linked to The Orchard Ruins.')", 'duplicate character link is reported without another roster entry');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('is already linked to The Orchard Ruins.')", 'duplicate character link is reported without another roster entry');
   const duplicateDetailResponse = await request(`/api/encounters/${encodeURIComponent(orchardSummary.id)}`, gmToken);
   assert.equal(duplicateDetailResponse.status, 200, 'GM rereads host-authoritative encounter detail after duplicate link attempt');
   const duplicateDetail = await duplicateDetailResponse.json();
@@ -710,17 +734,16 @@ try {
   assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 2, 'return from Maps restores Encounter A unsaved participant selection');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('The Glass Bridge')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'The Glass Bridge activation and Table handoff enabled');
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1424, height: 805, deviceScaleFactor: 1, mobile: false }, gm.sessionId);
-  if (await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  assert.equal(await evaluate(gm.sessionId, "Boolean(document.querySelector('.gm-admin'))"), false, 'GM administration stays on Campaign Home while preparing encounters');
   await pointerClickEncounter(gm.sessionId, 'The Glass Bridge', 'Activate and open Table');
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('The Glass Bridge')", 'Encounters application hands off to Table with shared context');
   assert.equal((await (await request('/api/state', gmToken)).json()).context.activeEncounter, 'encounter-a', 'center pointer click from collapsed administration activates the selected encounter in shared context');
   await clickText(gm.sessionId, 'Return to preparation');
   await waitForExpression(gm.sessionId, "document.querySelector('.active-encounter h2')?.textContent === 'The Glass Bridge'", 'Table returns to encounter preparation without changing context');
   await waitForExpression(gm.sessionId, "(() => { const card=[...document.querySelectorAll('.encounter-card')].find(item=>item.textContent.includes('Edited Acceptance Encounter')); const button=[...(card?.querySelectorAll('button') || [])].find(item=>item.textContent==='Activate and open Table'); return Boolean(button && !button.disabled); })()", 'selected encounter activation control enabled');
-  if (!await evaluate(gm.sessionId, "document.querySelector('.gm-admin')?.open")) await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
   await pointerClickEncounter(gm.sessionId, 'Edited Acceptance Encounter', 'Activate and open Table');
   await waitForExpression(gm.sessionId, "document.querySelector('.session-strip[aria-label=\\\"Table workflow\\\"] small')?.textContent.includes('Edited Acceptance Encounter')", 'Encounters application activates the selected encounter and opens Table');
-  await pointerClickText(gm.sessionId, 'GM administration · 0 pending', '.gm-admin summary');
+  assert.equal(await evaluate(gm.sessionId, "Boolean(document.querySelector('.gm-admin'))"), false, 'GM administration is not injected into the Table workflow');
   const uiEncounterActivation = await (await request('/api/state', gmToken)).json();
   assert.equal(uiEncounterActivation.context.activeEncounter, createdEncounter.id, 'Encounters application activation commits shared campaign context');
   const rosterBeforeTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
@@ -734,7 +757,7 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'return through Encounters rail hydrates full preparation details');
   assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 3, 'all participants remain selected after returning from Table');
   await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status')?.textContent.includes('Encounter and participants saved on host.')", 'encounter saves after Table re-entry');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Encounter and participants saved on host.')", 'encounter saves after Table re-entry');
   const rosterAfterTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
   assert.deepEqual(rosterAfterTableNavigation.participants.map(item=>item.actorId).sort(), rosterBeforeTableNavigation.participants.map(item=>item.actorId).sort(), 'saving after Table navigation preserves the authoritative participant roster');
   await clickText(gm.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
@@ -834,7 +857,7 @@ try {
   await waitForExpression(gm.sessionId, "document.querySelector('.character-view h3')?.textContent", 'pinned character after context update');
   assert.ok((await evaluate(gm.sessionId, "document.querySelector('.character-view h3')?.textContent || ''")).trim().length > 0, 'pinned character brick remains bound to an authorized character');
   await click(gm.sessionId, '.character-view .action-grid button');
-  await waitForExpression(gm.sessionId, "['accepted by host', 'accepted at revision'].some(text=>document.querySelector('.action-status')?.textContent.includes(text))", 'host-accepted action');
+  await waitForExpression(gm.sessionId, "['accepted by host', 'accepted at revision'].some(text=>document.querySelector('.app-notification')?.textContent.includes(text))", 'host-accepted action');
   const acceptedActionState = await (await request('/api/state', gmToken)).json();
   assert.ok(acceptedActionState.events.some(event => event.kind === 'action.applied' && event.payload.actionId === 'spend-mana'), 'GM character action is committed to authoritative event history');
   await waitForExpression(player.sessionId, "document.querySelector('.activity-item strong')?.textContent", 'player activity refresh after authorized action');
@@ -928,8 +951,8 @@ try {
   await clickText(gm.sessionId, 'Table', 'nav[aria-label="Applications"] button');
   await waitForExpression(gm.sessionId, "[...document.querySelectorAll('.table-session-panel button')].some(button=>button.textContent==='End session')", 'GM can finish the session after the rest of the active-session acceptance flow');
   await clickText(gm.sessionId, 'End session', '.table-session-panel button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent === 'Session ended.'", 'GM receives finish confirmation');
-  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.action-status[role=status]')?.textContent"), 'Session ended.', 'GM sees consistent finish confirmation');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent === 'Session ended.'", 'GM receives finish confirmation');
+  assert.equal(await evaluate(gm.sessionId, "document.querySelector('.app-notification[role=status] span')?.textContent"), 'Session ended.', 'GM sees consistent finish confirmation');
   assert.equal((await (await request('/api/session', gmToken)).json()).current.status, 'finished', 'finish feedback follows the committed authoritative session transition');
 
   console.log('PASS: fresh campaign setup/configuration; schema-valid character creation by API and UI; action-based character edits; participant enrollment and character grants by API and UI; encounter create/edit, participant assignment and encounter-app activation; three isolated browsers exercise Table roster projections and session start/pause/resume; player permission denials; two-player/member visibility isolation; host restart persistence for campaign, encounter context, characters and grants; dashboard layout, browser reload, action activity and secret redaction.');
