@@ -127,10 +127,10 @@ async function enrollTwo(name) {
   const second = { name: 'Morgan', memberId: await ev(name, `document.querySelectorAll('.gm-admin-credentials article')[1]?.querySelector('code')?.textContent`), credential: await ev(name, `document.querySelectorAll('.gm-admin-credentials article')[1]?.querySelectorAll('code')[1]?.textContent`) };
   second.principalId = (await (await api('/api/v2/session', second.credential)).json()).principalId; assert.equal(second.memberId, second.principalId);
   assert.equal(await ev(name, `document.querySelectorAll('.gm-admin-credentials article').length`), 2, 'several player credentials remain independently available');
+  if (name === 'gm') await screenshot(name, 'gm-player-credentials-handed-off.png');
   await click(name, 'Prepare encounters');
   await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'return from Home to Encounters');
   await waitFor(name, `Boolean(document.querySelector('.v2-guided-preparation-form'))`, 'V2 encounter preparation form');
-  if (name === 'gm') await screenshot(name, 'gm-player-credentials-handed-off.png');
   return [first, second];
 }
 async function ordinaryPlayer(name, player) {
