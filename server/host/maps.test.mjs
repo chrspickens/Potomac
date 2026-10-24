@@ -29,6 +29,21 @@ async function readWithTimeout(reader) {
   } finally { clearTimeout(timer); }
 }
 
+test('square battle-map colors are RGB validated, revisioned, player-read-only, and durable', async () => fixture(async ({ request, restart }) => {
+  const created = await json(await send(request, '/api/maps', { operationId: 'paint-map-create', baseRevision: 0, id: 'paint-map', name: 'Paint map', kind: 'battle', width: 20, height: 20, grid: { type: 'square', size: 5 } }));
+  const fill = { x: 1, y: 2, color: '#12aBef' };
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-cell', baseRevision: created.revision, command: 'update', grid: { type: 'square', size: 5, fills: [fill] } })).status, 200);
+  assert.deepEqual((await json(await request('/api/maps/paint-map'))).grid.fills, [{ x: 1, y: 2, color: '#12ABEF' }]);
+  const current = await json(await request('/api/maps/paint-map'));
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-invalid-rgb', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [{ ...fill, color: 'rgb(12, 34, 56)' }] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-malformed-cell', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [null] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-duplicate-cell', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [fill, fill] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-outside-map', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [{ ...fill, x: 4 }] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'player-paints', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [] } }, 'player')).status, 403);
+  await restart();
+  assert.deepEqual((await json(await request('/api/maps/paint-map'))).grid.fills, [{ x: 1, y: 2, color: '#12ABEF' }]);
+}));
+
 test('map scenes use revisioned idempotent commands, protect linked private destinations and manage shared image bytes', async () => fixture(async ({ request, restart, getBase }) => {
   const enrollment = await request('/api/members/enroll', 'gm', { displayName: 'Map player' });
   assert.equal(enrollment.status, 201);
