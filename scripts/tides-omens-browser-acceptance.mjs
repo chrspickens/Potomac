@@ -7,15 +7,16 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHost } from '../server/host/index.mjs';
+import { waitForChromiumDebugger } from './chromium-debugger.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const chrome = [process.env.POTOMAC_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean).find(existsSync);
 if (!chrome) throw new Error('Chrome/Edge not found. Set POTOMAC_CHROME.');
 const scratch = await mkdtemp(join(tmpdir(), 'potomac-tides-omens-acceptance-'));
 const freePort = async () => { const server = createServer(); await new Promise((ok, bad) => server.once('error', bad).listen(0, '127.0.0.1', ok)); const value = server.address().port; await new Promise((ok, bad) => server.close(error => error ? bad(error) : ok())); return value; };
-const hostPort = await freePort(), debugPort = await freePort(); let webPort;
+const hostPort = await freePort(); let webPort;
 let host, socket, sequence = 0; const children = [], pending = new Map(), sessions = {}, contexts = [];
-const child = (cmd, args, options = {}) => { const proc = spawn(cmd, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options }); let output = ''; proc.stdout.on('data', chunk => output += chunk); proc.stderr.on('data', chunk => output += chunk); children.push({ proc, get output() { return output; } }); return proc; };
+const child = (cmd, args, options = {}) => { const proc = spawn(cmd, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options }); let output = ''; proc.stdout.on('data', chunk => output += chunk); proc.stderr.on('data', chunk => output += chunk); Object.defineProperty(proc, 'output', { get: () => output }); children.push({ proc, get output() { return output; } }); return proc; };
 const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const id = ++sequence, timer = setTimeout(() => { pending.delete(id); bad(new Error(`CDP ${method} timed out`)); }, 15000); pending.set(id, message => { clearTimeout(timer); message.error ? bad(new Error(message.error.message)) : ok(message.result); }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
 const evaluate = async (name, expression) => { const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessions[name]); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; };
 const waitFor = async (name, expression, label) => { const until = Date.now() + 20000; while (Date.now() < until) { if (await evaluate(name, expression)) return; await delay(100); } throw new Error(`Timed out ${label}: ${await evaluate(name, 'document.body.innerText.slice(0,1600)')}`); };
@@ -44,20 +45,35 @@ async function startWeb() {
 }
 async function newPage(name) { const context = await cdp('Target.createBrowserContext'); contexts.push(context.browserContextId); const target = await cdp('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }); const attached = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true }); sessions[name] = attached.sessionId; await cdp('Page.enable', {}, attached.sessionId); await cdp('Runtime.enable', {}, attached.sessionId); await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-modules` }, attached.sessionId); await waitFor(name, `Boolean(document.querySelector('#v2-catalog-credential'))`, `${name} login`); }
 async function login(name, credential) {
-  await evaluate(name, `(()=>{const input=document.querySelector('#v2-catalog-credential');if(!input)return false;input.focus();input.select();return true})()`);
+  await evaluate(name, `(()=>{window.__authDiagnostic={submittedCredentialMatches:null,status:null,errorCode:null};const original=window.fetch.bind(window);window.fetch=async(input,init={})=>{const response=await original(input,init);if(String(input).includes('/api/v2/session')){const submitted=new Headers(init.headers).get('authorization')?.replace(/^Bearer\\s+/i,'');let errorCode=null;try{const body=await response.clone().json();errorCode=typeof body.error==='string'?body.error:null}catch{}window.__authDiagnostic={submittedCredentialMatches:submitted===${JSON.stringify(credential)},status:response.status,errorCode};}return response};return Boolean(document.querySelector('#v2-catalog-credential'))})()`);
+  await evaluate(name, `(()=>{const input=document.querySelector('#v2-catalog-credential');if(!input)return false;input.focus();return true})()`);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Control', code: 'ControlLeft', modifiers: 2 }, sessions[name]);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2 }, sessions[name]);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2 }, sessions[name]);
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Control', code: 'ControlLeft' }, sessions[name]);
+  // insertText dispatches Chromium's real beforeinput/input events; unlike a DOM value setter,
+  // React's controlled field observes the same edit path as keyboard or paste input.
   await cdp('Input.insertText', { text: credential }, sessions[name]);
   await waitFor(name, `(()=>{const input=document.querySelector('#v2-catalog-credential');const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Connect');return Boolean(input&&input.value===${JSON.stringify(credential)}&&button&&!button.disabled)})()`, `${name} credential form ready`);
   await click(name, 'Connect');
-  await waitFor(name, `Boolean(document.querySelector('#v2-module-picker')) || document.body.innerText.includes('Immutable campaign module')`, `${name} authenticated workspace`);
+  try {
+    await waitFor(name, `Boolean(document.querySelector('#v2-module-picker')) || document.body.innerText.includes('Immutable campaign module')`, `${name} authenticated workspace`);
+  } catch (error) {
+    const diagnostic = await evaluate(name, `({inputMatchesExpected:document.querySelector('#v2-catalog-credential')?.value===${JSON.stringify(credential)},buttonEnabled:[...document.querySelectorAll('button')].some(item=>item.textContent.trim()==='Connect'&&!item.disabled),...window.__authDiagnostic})`);
+    throw new Error(`${error.message}; sanitized auth diagnostic=${JSON.stringify(diagnostic)}`);
+  }
+  const diagnostic = await evaluate(name, 'window.__authDiagnostic');
+  assert.equal(diagnostic.submittedCredentialMatches, true, `${name} submitted the exact expected credential (boolean diagnostic only)`);
+  assert.equal(diagnostic.status, 200, `${name} credential was accepted by the host`);
 }
 const digest = 'sha256:d1a26989f1e831b5cb4679a415c7ab8299d748ebe65943b12bb3044b8f214273';
 const typeId = 'example.tides-omens.player-decision';
 try {
   await startHost();
   await startWeb();
-  child(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${join(scratch, 'chrome')}`, 'about:blank']);
-  let info; for (let i = 0; i < 200; i++) { try { info = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json(); break; } catch { await delay(100); } } assert.ok(info?.webSocketDebuggerUrl);
-  socket = new WebSocket(info.webSocketDebuggerUrl); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const msg = JSON.parse(event.data); if (msg.id && pending.has(msg.id)) { const done = pending.get(msg.id); pending.delete(msg.id); done(msg); } });
+  const chromeProfile = join(scratch, 'chrome');
+  const chromeProc = child(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', '--remote-debugging-port=0', `--user-data-dir=${chromeProfile}`, 'about:blank']);
+  socket = new WebSocket(await waitForChromiumDebugger({ process: chromeProc, profileDir: chromeProfile })); await new Promise((ok, bad) => { socket.addEventListener('open', ok, { once: true }); socket.addEventListener('error', bad, { once: true }); }); socket.addEventListener('message', event => { const msg = JSON.parse(event.data); if (msg.id && pending.has(msg.id)) { const done = pending.get(msg.id); pending.delete(msg.id); done(msg); } });
 
   await newPage('gm'); await login('gm', 'local-gm');
   const listed = await (await api('/api/v2/modules')).json(); const module = listed.modules.find(row => row.id === 'example.tides-omens'); assert.ok(module, 'Tides & Omens appears in the trusted catalog'); assert.equal(module.digest, digest);
@@ -89,6 +105,7 @@ try {
 
   const submitDecision = async (name, player, own, other, approach, fate) => {
     await newPage(name); await login(name, player.credential);
+    await waitFor(name, `document.querySelectorAll('#v2-entity-picker option').length>0`, `${name} authorized entities loaded`);
     const visibleIds = await evaluate(name, `([...document.querySelectorAll('#v2-entity-picker option')].map(option=>option.value))`);
     assert.ok(visibleIds.includes(own.entityId), `${name} sees own entity in generic list`); assert.equal(visibleIds.includes(other.entityId), false, `${name} cannot see the other private entity`);
     await setValue(name, '#v2-entity-picker', own.entityId);
@@ -123,6 +140,7 @@ try {
   pin = await (await api('/api/v2/campaign/lock')).json(); assert.equal(pin.lock.rootModule.digest, digest); assert.equal(pin.lock.entries.length, 5);
   for (const [name, player, own, other, finalState] of [['gm', null, entityA, entityB, resultA.state], ['player-a', a, entityA, entityB, resultA.state], ['player-b', b, entityB, entityA, resultB.state]]) {
     await cdp('Page.navigate', { url: `http://127.0.0.1:${webPort}/v2-modules` }, sessions[name]); await waitFor(name, `Boolean(document.querySelector('#v2-catalog-credential'))`, `${name} re-login after restart`); await login(name, player?.credential ?? 'local-gm');
+    await waitFor(name, `([...document.querySelectorAll('#v2-entity-picker option')].some(option=>option.value===${JSON.stringify(own.entityId)}))`, `${name} authorized entity restored after restart`);
     await setValue(name, '#v2-entity-picker', own.entityId);
     await waitFor(name, `document.body.innerText.includes('Entity revision ${finalState?.revision ?? own.revision}')`, `${name} own entity after restart`);
     const visibleIds = await evaluate(name, `([...document.querySelectorAll('#v2-entity-picker option')].map(option=>option.value))`);
