@@ -3,6 +3,7 @@ import { fixturesForCampaign } from './fixture-bootstrap'
 import { loadRememberedIdentity, rememberIdentity } from './identity'
 import type { OfflineOperation, OfflineReceipt } from './offline/storage'
 import type { MapScene, MapPiece, MapSceneCreate } from '@potomac/contracts'
+import type { EncounterMapImport } from '@potomac/contracts'
 
 export type { MapScene, MapPiece, MapGrid, MapSceneKind } from '@potomac/contracts'
 export type MapPieceView = MapPiece
@@ -19,12 +20,21 @@ export async function loadMap(role: Role, id: string): Promise<MapSceneView> {
   return http<MapSceneView>(`/api/maps/${encodeURIComponent(id)}`, role)
 }
 
+export async function loadEncounterMap(role: Role, encounterId: string): Promise<MapSceneView | null> {
+  try { return (await http<{ scene: MapSceneView }>(`/api/encounters/${encodeURIComponent(encounterId)}/map`, role)).scene }
+  catch (error) { if (error instanceof HostRequestError && error.status === 404) return null; throw error }
+}
+
 export async function createMap(role: Role, scene: Omit<MapSceneCreate, 'operationId'> & { operationId?: string }): Promise<{ operationId: string; status: 'applied'; sceneId: string; revision: number }> {
   return http('/api/maps', role, { method: 'POST', body: JSON.stringify({ ...scene, operationId: scene.operationId ?? crypto.randomUUID() }) })
 }
 
 export async function commandMap(role: Role, id: string, command: MapCommand): Promise<{ operationId: string; status: 'applied'; sceneId: string; revision: number }> {
   return http(`/api/maps/${encodeURIComponent(id)}/commands`, role, { method: 'POST', body: JSON.stringify(command) })
+}
+
+export async function importBattleMapIntoEncounter(encounterId: string, input: EncounterMapImport): Promise<{ operationId: string; status: 'applied'; sceneId: string; revision: number; sourceSceneId: string }> {
+  return http(`/api/encounters/${encodeURIComponent(encounterId)}/map/import`, 'gm', { method: 'POST', body: JSON.stringify(input) })
 }
 
 export async function uploadMapBackground(id: string, file: File, baseRevision: number): Promise<{ assetId: string; revision: number }> {

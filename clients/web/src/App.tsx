@@ -1,5 +1,5 @@
 import { Component, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { configuredHost, credentialForRole, commandSession, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, fetchMapBackground, getCampaignConfig, grantActorToMember, host, listCampaignMembers, listLore, listLoreLinkedToEncounter, listMaps, listMyOfflineReceipts, listReviewProposals, loadAuthorizedEncounter, loadCampaignEncounter, loadMap, loadReviewProposal, loadSessionSnapshot, saveCampaignConfig, saveEncounterParticipants, submitOfflineOperation, submitSessionAction, type CampaignMember, type CampaignSearchResult, type CampaignConfig, type Encounter, type ConnectionStatus, type LoreArticle, type MapPieceView, type MapSceneView, type ReviewProposal, type Role, type SessionSnapshot, type Snapshot } from './api'
+import { configuredHost, credentialForRole, commandSession, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, fetchMapBackground, getCampaignConfig, grantActorToMember, host, importBattleMapIntoEncounter, listCampaignMembers, listLore, listLoreLinkedToEncounter, listMaps, listMyOfflineReceipts, listReviewProposals, loadAuthorizedEncounter, loadCampaignEncounter, loadEncounterMap, loadMap, loadReviewProposal, loadSessionSnapshot, saveCampaignConfig, saveEncounterParticipants, submitOfflineOperation, submitSessionAction, type CampaignMember, type CampaignSearchResult, type CampaignConfig, type Encounter, type ConnectionStatus, type LoreArticle, type MapPieceView, type MapSceneView, type ReviewProposal, type Role, type SessionSnapshot, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import { openOfflineStorage, type OfflineOperation, type PrivateDraft, type QueuedOperation } from './offline/storage'
@@ -158,6 +158,10 @@ export default function App() {
   const [editingCharacter, setEditingCharacter] = useState(false)
   const [editedCharacterData, setEditedCharacterData] = useState<Record<string, unknown>>({})
   const [encounterDetails, setEncounterDetails] = useState<Encounter | null>(null)
+  const [encounterBattleMap, setEncounterBattleMap] = useState<MapSceneView | null>(null)
+  const [encounterMapAssociationId, setEncounterMapAssociationId] = useState<string | null>(null)
+  const [reusableBattleMaps, setReusableBattleMaps] = useState<MapSceneView[]>([])
+  const [battleMapImportSourceId, setBattleMapImportSourceId] = useState('')
   const [encounterNameInput, setEncounterNameInput] = useState('')
   const [encounterSummaryInput, setEncounterSummaryInput] = useState('')
   const [encounterStatusInput, setEncounterStatusInput] = useState<'prepared' | 'active' | 'completed'>('prepared')
@@ -644,9 +648,39 @@ export default function App() {
     setBusy(true); setError('')
     try {
       const detail = await loadCampaignEncounter(id)
+      const maps = connection === 'connected' ? await listMaps('gm') : mapScenes
+      setMapScenes(maps)
+      const associatedMap = connection === 'connected' ? await loadEncounterMap('gm', id) : maps.find(scene => scene.encounterId === id) || null
+      const currentMap = associatedMap?.kind === 'battle' ? associatedMap : null
+      const availableMaps = maps.filter(scene => scene.kind === 'battle' && !scene.archived && scene.id !== currentMap?.id)
       setEncounterDetails(detail); setEncounterNameInput(detail.name); setEncounterSummaryInput(detail.summary)
       setEncounterStatusInput(detail.status || 'prepared')
       setEncounterParticipantIds((detail.participants || []).map(item => item.actorId))
+      setEncounterBattleMap(currentMap)
+      setEncounterMapAssociationId(associatedMap?.id || null)
+      setReusableBattleMaps(availableMaps)
+      setBattleMapImportSourceId(availableMaps[0]?.id || '')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
+  const importEncounterBattleMap = async () => {
+    if (!encounterDetails || !battleMapImportSourceId || role !== 'gm' || connection !== 'connected') return
+    const source = reusableBattleMaps.find(scene => scene.id === battleMapImportSourceId)
+    if (!source) return
+    setBusy(true); setError('')
+    try {
+      const result = await importBattleMapIntoEncounter(encounterDetails.id, {
+        operationId: newId(), sourceSceneId: source.id, sourceRevision: source.revision,
+        copiedSceneId: newId(), expectedCurrentSceneId: encounterMapAssociationId
+      })
+      const copy = await loadMap('gm', result.sceneId)
+      const maps = await listMaps('gm')
+      setEncounterBattleMap(copy)
+      setEncounterMapAssociationId(copy.id)
+      setMapScenes(maps)
+      setReusableBattleMaps(maps.filter(scene => scene.kind === 'battle' && !scene.archived && scene.id !== copy.id))
+      setBattleMapImportSourceId(source.id)
+      setActionState('Independent battle map copy imported. The reusable design is unchanged.')
     } catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
   }
@@ -1018,6 +1052,11 @@ export default function App() {
       {role === 'gm' && encounterDetails && !creatingEncounter && <form className="schema-form" onSubmit={event => void saveEncounterEdits(event)}>
         <h2>Prepare {encounterDetails.name}</h2>
         <div className="preparation-handoffs" aria-label="Related preparation"><button type="button" onClick={() => handoffFromPreparation('characters')}>Create or link character</button><button type="button" onClick={() => handoffFromPreparation('maps')}>Create or link map</button><button type="button" onClick={() => handoffFromPreparation('lore')}>Create or link Lore</button>{preparationReturn && <button type="button" onClick={() => void returnToEncounterPreparation()}>Return to {preparationReturn.encounterName}</button>}</div>
+        <fieldset className="encounter-map-import"><legend>Battle map</legend>
+          {encounterBattleMap ? <p>Current encounter copy: <strong>{encounterBattleMap.name}</strong> · {encounterBattleMap.width} × {encounterBattleMap.height}{encounterBattleMap.grid.type !== 'none' ? ` · ${encounterBattleMap.grid.type} grid` : ''}. It is independent of its reusable design.</p> : <p>No battle map imported.</p>}
+          {reusableBattleMaps.length > 0 ? <><label>Reusable battle map design<select aria-label="Reusable battle map design" value={battleMapImportSourceId} onChange={event => setBattleMapImportSourceId(event.target.value)}>{reusableBattleMaps.map(scene => <option key={scene.id} value={scene.id}>{scene.name} · {scene.width} × {scene.height}</option>)}</select></label><button type="button" disabled={busy || connection !== 'connected' || !battleMapImportSourceId} onClick={() => void importEncounterBattleMap()}>{encounterBattleMap ? 'Replace with independent copy' : 'Import independent copy'}</button>{encounterBattleMap && <small>The previous encounter copy remains in Maps; replacing it does not delete the old map or its history.</small>}</> : <><p>No reusable battle map designs are available.</p><button type="button" onClick={() => handoffFromPreparation('maps')}>Create a battle map design</button></>}
+          {encounterBattleMap && <button type="button" onClick={() => { setPreparationReturn({ encounterId: encounterDetails.id, encounterName: encounterDetails.name, encounter: structuredClone(encounterDetails), name: encounterNameInput, summary: encounterSummaryInput, status: encounterStatusInput, participantIds: [...encounterParticipantIds] }); setMapTargetId(encounterBattleMap.id); setSection('maps') }}>Open encounter map in Maps</button>}
+        </fieldset>
         <label>Encounter name <input required maxLength={160} value={encounterNameInput} onChange={event => setEncounterNameInput(event.target.value)} /></label>
         <label>Player-visible summary <textarea maxLength={4000} value={encounterSummaryInput} onChange={event => setEncounterSummaryInput(event.target.value)} /></label>
         <label>Lifecycle <select value={encounterStatusInput} onChange={event => setEncounterStatusInput(event.target.value as 'prepared' | 'active' | 'completed')}>

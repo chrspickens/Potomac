@@ -878,13 +878,56 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       const mapMatch = url.pathname.match(/^\/api\/maps\/([^/]+)$/);
       const mapCommandMatch = url.pathname.match(/^\/api\/maps\/([^/]+)\/commands$/);
       const encounterMapMatch = url.pathname.match(/^\/api\/encounters\/([^/]+)\/map$/);
+      const encounterMapImportMatch = url.pathname.match(/^\/api\/encounters\/([^/]+)\/map\/import$/);
+      if (req.method === 'POST' && encounterMapImportMatch) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'forbidden' });
+        const encounterId = decodeURIComponent(encounterMapImportMatch[1]);
+        const body = await readBody(req);
+        const allowed = ['operationId','sourceSceneId','sourceRevision','copiedSceneId','expectedCurrentSceneId'];
+        if (!body || Object.keys(body).some(key => !allowed.includes(key)) || typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.operationId)
+          || typeof body.sourceSceneId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.sourceSceneId)
+          || !Number.isInteger(body.sourceRevision) || body.sourceRevision < 1
+          || typeof body.copiedSceneId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.copiedSceneId)
+          || !(body.expectedCurrentSceneId === null || typeof body.expectedCurrentSceneId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(body.expectedCurrentSceneId)))
+          return json(res, 400, { error: 'A valid source battle map and expected encounter map are required', reasonCode: 'invalid_command' });
+        const hash = createHash('sha256').update(canonicalJson({ encounterId, ...body })).digest('hex');
+        const cached = db.prepare('SELECT * FROM map_operations WHERE operation_id=?').get(body.operationId);
+        if (cached) return cached.principal_id === auth.principalId && cached.request_hash === hash ? json(res, 200, JSON.parse(cached.response)) : json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_conflict' });
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId, body.operationId)) return json(res, 409, { error: 'Operation ID is already in use', reasonCode: 'operation_conflict' });
+        const encounter = db.prepare('SELECT * FROM encounters WHERE id=?').get(encounterId);
+        if (!encounter) return json(res, 404, { error: 'Encounter not found', reasonCode: 'not_found' });
+        const source = mapSceneRow.get(body.sourceSceneId, campaignId);
+        if (!source || source.archived || source.kind !== 'battle') return json(res, 404, { error: 'Reusable battle map not found', reasonCode: 'invalid_reference' });
+        if (source.revision !== body.sourceRevision) return json(res, 409, { error: 'Battle map changed; refresh and try again', reasonCode: 'revision_conflict', currentRevision: source.revision });
+        const currentAssociation = db.prepare('SELECT scene_id FROM map_encounter_scenes WHERE campaign_id=? AND encounter_id=?').get(campaignId, encounterId);
+        if ((currentAssociation?.scene_id ?? null) !== body.expectedCurrentSceneId) return json(res, 409, { error: 'Encounter map changed; refresh and try again', reasonCode: 'revision_conflict', currentSceneId: currentAssociation?.scene_id ?? null });
+        if (mapSceneRow.get(body.copiedSceneId, campaignId)) return json(res, 409, { error: 'Imported map ID already exists', reasonCode: 'operation_conflict' });
+        const now = new Date().toISOString();
+        const response = transaction(() => {
+          const sourceAsset = source.background_id && db.prepare('SELECT * FROM map_assets WHERE id=? AND scene_id=? AND campaign_id=?').get(source.background_id, source.id, campaignId);
+          const copiedAssetId = sourceAsset ? randomUUID() : null;
+          const copiedName = `Encounter map: ${encounter.name}`.slice(0, 160);
+          db.prepare('INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,gm_notes,created_at,updated_at,background_id) VALUES(?,?,? ,\'battle\',1,?,?,?,\'gm\',?,?,?,?)')
+            .run(body.copiedSceneId, campaignId, copiedName, source.width, source.height, source.grid, source.gm_notes, now, now, copiedAssetId);
+          if (sourceAsset) db.prepare('INSERT INTO map_assets(id,campaign_id,scene_id,original_name,media_type,byte_size,sha256,created_at) VALUES(?,?,?,?,?,?,?,?)')
+            .run(copiedAssetId, campaignId, body.copiedSceneId, sourceAsset.original_name, sourceAsset.media_type, sourceAsset.byte_size, sourceAsset.sha256, now);
+          const copyPiece = db.prepare('INSERT INTO map_pieces(id,scene_id,kind,actor_id,label,x,y,visible,revision) VALUES(?,?,?,?,?,?,?,?,1)');
+          for (const piece of db.prepare('SELECT * FROM map_pieces WHERE scene_id=? ORDER BY id').all(source.id)) copyPiece.run(randomUUID(), body.copiedSceneId, piece.kind, piece.actor_id, piece.label, piece.x, piece.y, piece.visible);
+          db.prepare('INSERT INTO map_encounter_scenes(campaign_id,encounter_id,scene_id) VALUES(?,?,?) ON CONFLICT(campaign_id,encounter_id) DO UPDATE SET scene_id=excluded.scene_id').run(campaignId, encounterId, body.copiedSceneId);
+          insertEvent({ operationId: body.operationId, kind: 'map.imported', visibility: 'gm', payload: { encounterId, sourceSceneId: source.id, sceneId: body.copiedSceneId, revision: 1 } });
+          const result = { operationId: body.operationId, status: 'applied', sceneId: body.copiedSceneId, revision: 1, sourceSceneId: source.id };
+          db.prepare('INSERT INTO map_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId, auth.principalId, hash, JSON.stringify(result));
+          return result;
+        });
+        notify(); return json(res, 200, response);
+      }
       if (req.method === 'GET' && encounterMapMatch) {
         const encounterId=decodeURIComponent(encounterMapMatch[1]), encounter=db.prepare('SELECT * FROM encounters WHERE id=?').get(encounterId);
         if (!encounter || auth.role !== 'gm' && encounter.visibility !== 'public') return json(res,404,{error:'Encounter map not found'});
         const association=db.prepare('SELECT scene_id FROM map_encounter_scenes WHERE campaign_id=? AND encounter_id=?').get(campaignId,encounterId);
         const scene=association && mapSceneRow.get(association.scene_id,campaignId);
         if (!canReadMap(scene,auth)) return json(res,404,{error:'Encounter map not found'});
-        return json(res,200,{scene:{...mapProjection(scene,auth),pieces:mapPieces(scene,auth)}});
+        return json(res,200,{scene:{...mapProjection(scene,auth),encounterId,pieces:mapPieces(scene,auth)}});
       }
       if (req.method === 'GET' && mapMatch) {
         const scene = mapSceneRow.get(decodeURIComponent(mapMatch[1]), campaignId);
