@@ -297,6 +297,7 @@ try {
   await click('gm', '⚑ Encounters');
   await waitFor('gm', `document.body.innerText.includes('Preparation recovery') && document.body.innerText.includes('Player B')`, 'recovered pending manual grant after restart');
   assert.equal(await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`), secondAttemptOperation, 'unresolved create identity survives restart');
+  await waitFor('gm', `(()=>{const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Open recovered entity');return Boolean(button&&!button.disabled)})()`, 'recovered entity enabled after authenticated reconnect');
   await click('gm', 'Open recovered entity');
   await setValue('gm', '#v2-grant-member', b.principalId);
   await click('gm', 'Grant selected player read/act');
