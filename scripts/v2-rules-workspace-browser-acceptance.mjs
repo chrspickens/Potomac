@@ -105,8 +105,9 @@ async function normalSetup(name, moduleId, campaignName) {
     await screenshot(name, 'gm-campaign-home-v2-workflow.png');
     await click(name, 'View characters');
     await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Characters'`, 'Characters uses the V2 module roster view');
-    await click(name, '⚑ Encounters');
-    await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'Encounters uses trusted V2 preparation');
+    assert.equal(await ev(name, `document.querySelector('.v2-combat-header button')?.textContent.trim()`), 'Open Encounters', 'Characters labels the navigation destination instead of claiming to return Home');
+    await click(name, 'Open Encounters', '.v2-combat-header');
+    await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'Characters header returns to Encounters preparation');
     await click(name, '▦ Table');
     await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Table'`,'V2 Table is composed as the task app');
     assert.equal(await ev(name, `Boolean(document.querySelector('.app-topbar .status')||document.querySelector('.app-topbar .campaign-search'))`), false, 'V2 task apps do not display V1 connection or search status as a competing workflow');
