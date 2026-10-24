@@ -19,7 +19,7 @@ const child = (cmd, args, options = {}) => { const proc = spawn(cmd, args, { cwd
 const cdp = (method, params = {}, sessionId) => new Promise((ok, bad) => { const id = ++seq, timer = setTimeout(() => { pending.delete(id); bad(new Error(`CDP ${method} timeout`)); }, 20000); pending.set(id, message => { clearTimeout(timer); message.error ? bad(new Error(`CDP ${method}: ${message.error.message}`)) : ok(message.result); }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
 const ev = async (name, expression) => { const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessions[name]); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; };
 const waitFor = async (name, expression, what, timeout = 25000) => { const until = Date.now() + timeout; while (Date.now() < until) { if (await ev(name, expression)) return; await delay(100); } throw new Error(`Timeout ${what}: ${await ev(name, 'document.body.innerText.slice(-1800)')}`); };
-const click = async (name, label, rootSelector = 'body') => { const result = await ev(name, `(()=>{const r=document.querySelector(${JSON.stringify(rootSelector)})||document;const b=[...r.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)return {ok:false,buttons:[...r.querySelectorAll('button')].map(x=>[x.textContent.trim(),x.disabled]),tail:document.body.innerText.slice(-900)};b.click();return {ok:true}})()`); assert.equal(result.ok, true, `click ${label}: ${JSON.stringify(result)}`); };
+const click = async (name, label, rootSelector = 'body') => { const result = await ev(name, `(()=>{const r=document.querySelector(${JSON.stringify(rootSelector)})||document;const b=[...r.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)return JSON.stringify({ok:false,buttons:[...r.querySelectorAll('button')].map(x=>[x.textContent.trim(),x.disabled]),tail:document.body.innerText.slice(-900)});b.click();return 'ok'})()`); assert.equal(result, 'ok', `click ${label}: ${result}`); };
 const screenshot = async (name, filename) => {
   if (!process.env.POTOMAC_EVIDENCE_DIR) return;
   await mkdir(process.env.POTOMAC_EVIDENCE_DIR, { recursive: true });
@@ -92,50 +92,46 @@ async function normalSetup(name, moduleId, campaignName) {
   await setValue(name, 'select[aria-label="Reviewed V2 module"]', moduleId);
   if (name === 'gm') await screenshot(name, 'gm-campaign-home.png');
   await click(name, 'Create fresh experimental V2 campaign');
-  await waitFor(name, `Boolean(document.querySelector('.v2-combat-header')) && document.body.innerText.includes('Immutable campaign module')`, 'normal setup into Rules');
-  await waitFor(name, `(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Enroll a player');return Boolean(b&&!b.disabled)})()`, 'GM enrollment ready');
+  await waitFor(name, `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'normal setup opens the Encounters app');
   if (name === 'gm' && moduleId === 'example.revised5e') {
     await click(name, 'Return to campaign');
     await waitFor(name, `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Revised 5e Encounter · 1.3.0 (experimental V2)')`, 'Campaign Home confirms exact authoritative V2 ruleset lock');
     assert.equal(await ev(name, `document.body.innerText.includes('System not configured') || document.body.innerText.includes('Configure campaign in GM setup')`), false, 'a valid V2 lock is not shown as unconfigured');
     assert.equal(await ev(name, `Boolean(document.querySelector('.campaign-setup[aria-label="Campaign setup"]'))`), false, 'V1 campaign setup is not shown for a valid V2 lock');
     const homeGuidance = await ev(name, `(()=>({actions:document.querySelector('.home-quick-actions')?.innerText||'',content:document.querySelector('.home-preview')?.innerText||''}))()`);
-    assert.match(homeGuidance.actions, /Open Revised 5e Encounter workspace/);
-    assert.doesNotMatch(homeGuidance.actions, /Create encounter|Create character/);
-    assert.match(homeGuidance.content, /legacy Characters and Encounters pages list V1 records/);
-    assert.doesNotMatch(homeGuidance.content, /No authorized characters/);
+    assert.match(homeGuidance.actions, /Prepare encounters/);
+    assert.match(homeGuidance.content, /Trusted module records and actions appear in their task apps/);
+    assert.equal(await ev(name, `[...document.querySelectorAll('.app-rail nav button')].some(button=>button.textContent.includes('Rules'))`), false, 'V2 navigation has no redundant Rules tab');
     await screenshot(name, 'gm-campaign-home-v2-workflow.png');
-    await click(name, '♙ Characters');
-    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('legacy V1 records')`, 'Characters explains the legacy/V2 boundary');
-    await click(name, '⚑ Encounters');
-    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('legacy V1 sessions')`, 'Encounters explains the legacy/V2 boundary');
-    await click(name, '⌖ Maps');
-    await waitFor(name, `document.querySelector('.v2-navigation-guidance')?.innerText.includes('separate app')`, 'Maps explains that it is separate from the module workspace');
+    await click(name, 'View characters');
+    await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Characters'`, 'Characters uses the V2 module roster view');
+    assert.equal(await ev(name, `document.querySelector('.v2-combat-header button')?.textContent.trim()`), 'Open Encounters', 'Characters labels the navigation destination instead of claiming to return Home');
+    await click(name, 'Open Encounters', '.v2-combat-header');
+    await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'Characters header returns to Encounters preparation');
     await click(name, '▦ Table');
-    await waitFor(name, `document.body.innerText.includes('Choose a prepared encounter in Rules, then open it in Table')`,'V2 Table explains how to open a prepared encounter');
-    await screenshot(name, 'gm-v2-table-route-help.png');
-    await click(name, 'Open Rules to choose an encounter');
-    await waitFor(name, `Boolean(document.querySelector('.v2-combat-header')) && document.body.innerText.includes('Immutable campaign module')`, 'Rules workspace reopened from Campaign Home');
-    await screenshot(name, 'gm-rules-enrollment.png');
+    await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Table'`,'V2 Table is composed as the task app');
+    assert.equal(await ev(name, `Boolean(document.querySelector('.app-topbar .status')||document.querySelector('.app-topbar .campaign-search'))`), false, 'V2 task apps do not display V1 connection or search status as a competing workflow');
+    await click(name, '⚑ Encounters');
+    await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'Encounters reopens through task navigation');
   }
 }
 async function enrollTwo(name) {
-  await setValue(name, '#v2-player-display-name', 'Avery');
-  await click(name, 'Enroll a player'); await waitFor(name, 'document.querySelectorAll("output").length >= 1', 'Player A enrollment');
-  const first = await ev(name, `(()=>{const t=document.querySelector('output').textContent;const i=t.indexOf(': ');return {name:t.slice(0,i),credential:t.slice(i+2)}})()`);
-  first.principalId = (await (await api('/api/v2/session', first.credential)).json()).principalId;
-  await ev(name, `(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__copiedCredential=value}}})})()`);
-  await click(name, 'Copy credential');
-  await waitFor(name, `window.__copiedCredential===${JSON.stringify(first.credential)}`, 'player credential copy handoff');
-  await click(name, 'Hide credential');
-  assert.equal(await ev(name, `Boolean(document.querySelector('#credential-${first.principalId}'))`), false, 'hidden first credential is removed from the visible UI');
-  await setValue(name, '#v2-player-display-name', 'Morgan');
-  await click(name, 'Enroll a player'); await waitFor(name, 'document.querySelectorAll("output").length >= 1', 'Player B enrollment');
-  const second = await ev(name, `(()=>{const t=[...document.querySelectorAll('output')].at(-1).textContent;const i=t.indexOf(': ');return {name:t.slice(0,i),credential:t.slice(i+2)}})()`);
-  second.principalId = (await (await api('/api/v2/session', second.credential)).json()).principalId;
-  await click(name, 'Hide credential');
-  assert.equal(await ev(name, `Boolean(document.querySelectorAll('output').length===0)`), true, 'both issued credentials can be hidden after handoff');
+  await click(name, 'Return to campaign'); await waitFor(name, `Boolean(document.querySelector('.campaign-home'))`, 'Campaign Home');
+  const admin = await ev(name, `document.querySelector('details.gm-admin summary')?.textContent.trim()`); assert.ok(admin, 'GM administration is available on Campaign Home');
+  await ev(name, `document.querySelector('details.gm-admin summary')?.click()`); await waitFor(name, `Boolean(document.querySelector('details.gm-admin[open]'))`, 'GM administration opened');
+  await ev(name, `window.prompt=()=> 'Avery'`); await click(name, 'Enroll player'); await waitFor(name, `document.querySelectorAll('.gm-admin-credentials article').length===1`, 'Player A admin enrollment');
+  const first = { name: 'Avery', memberId: await ev(name, `document.querySelector('.gm-admin-credentials article code')?.textContent`), credential: await ev(name, `document.querySelector('.gm-admin-credentials article')?.querySelectorAll('code')[1]?.textContent`) };
+  first.principalId = (await (await api('/api/v2/session', first.credential)).json()).principalId; assert.equal(first.memberId, first.principalId);
+  await click(name, 'Hide credential'); assert.equal(await ev(name, `document.querySelector('.gm-admin-credentials article')?.innerText.includes('Credential: Hidden')`), true, 'first credential can be hidden');
+  await click(name, 'Show credential'); assert.equal(await ev(name, `document.querySelector('.gm-admin-credentials article')?.querySelectorAll('code')[1]?.textContent===${JSON.stringify(first.credential)}`), true, 'hidden credential can be shown again');
+  await click(name, 'Hide credential'); await ev(name, `window.prompt=()=> 'Morgan'`); await click(name, 'Enroll player'); await waitFor(name, `document.querySelectorAll('.gm-admin-credentials article').length===2`, 'Player B admin enrollment');
+  const second = { name: 'Morgan', memberId: await ev(name, `document.querySelectorAll('.gm-admin-credentials article')[1]?.querySelector('code')?.textContent`), credential: await ev(name, `document.querySelectorAll('.gm-admin-credentials article')[1]?.querySelectorAll('code')[1]?.textContent`) };
+  second.principalId = (await (await api('/api/v2/session', second.credential)).json()).principalId; assert.equal(second.memberId, second.principalId);
+  assert.equal(await ev(name, `document.querySelectorAll('.gm-admin-credentials article').length`), 2, 'several player credentials remain independently available');
   if (name === 'gm') await screenshot(name, 'gm-player-credentials-handed-off.png');
+  await click(name, 'Prepare encounters');
+  await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, 'return from Home to Encounters');
+  await waitFor(name, `Boolean(document.querySelector('.v2-guided-preparation-form'))`, 'V2 encounter preparation form');
   return [first, second];
 }
 async function ordinaryPlayer(name, player) {
@@ -147,13 +143,13 @@ async function ordinaryPlayer(name, player) {
   await waitFor(name, `document.querySelector('.app-topbar select')?.value==='player' && (()=>{try{return JSON.parse(localStorage.getItem('potomac.identity.v1')||'null')?.credential===${JSON.stringify(player.credential)}}catch{return false}})()`, `${name} authenticated with its issued player credential`);
   if (name === 'playerA') {
     await waitFor(name, `Boolean(document.querySelector('.home-player-status'))`, `${name} V2 Campaign Home guidance`);
-    await waitFor(name, `document.querySelector('.home-player-status')?.innerText.includes('assigned character and actions appear in the Revised 5e Encounter workspace')`, `${name} authoritative V2 lock guidance on Campaign Home`);
-    assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('assigned character and actions appear in the Revised 5e Encounter workspace')`), true, 'player Campaign Home points to the V2 workspace instead of reporting no authorized V1 character');
+    await waitFor(name, `document.querySelector('.home-player-status')?.innerText.includes('Your host-authorized character is listed in Characters')`, `${name} host-authorized task app guidance on Campaign Home`);
+    assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('use Table for authorized actions')`), true, 'player Campaign Home points to host-authorized Table actions');
     assert.equal(await ev(name, `document.querySelector('.home-player-status')?.innerText.includes('No character is currently available to this account.')`), false, 'player Campaign Home does not confuse an empty V1 snapshot with V2 ownership');
   }
-  await waitFor(name, ` [...document.querySelectorAll('.app-rail nav button')].some(b=>b.textContent.includes('Rules'))`, `${name} Rules navigation`);
-  await click(name, '⚙ Rules');
-  await waitFor(name, `Boolean(document.querySelector('.v2-combat-header'))`, `${name} generic Rules workspace`);
+  await waitFor(name, ` [...document.querySelectorAll('.app-rail nav button')].some(b=>b.textContent.includes('Encounters'))`, `${name} task navigation`);
+  await click(name, '⚑ Encounters');
+  await waitFor(name, `document.querySelector('.v2-combat-header h1')?.textContent==='Encounters'`, `${name} V2 Encounters app`);
 }
 async function commandForm(name, label, values) {
   const selector = `form[aria-label=${JSON.stringify(label)}]`;
@@ -241,8 +237,8 @@ try {
   await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
   await cdp('Page.reload', {}, sessions.gm);
   await waitFor('gm', `Boolean(document.querySelector('.campaign-home'))`, 'Campaign Home after host restart and browser refresh');
-  await waitFor('gm', `[...document.querySelectorAll('.app-rail nav button')].some(button=>button.textContent.includes('Rules'))`, 'restored Rules navigation after host restart and browser refresh');
-  await click('gm', '⚙ Rules');
+  await waitFor('gm', `[...document.querySelectorAll('.app-rail nav button')].some(button=>button.textContent.includes('Encounters'))`, 'restored Rules navigation after host restart and browser refresh');
+  await click('gm', '⚑ Encounters');
   await waitFor('gm', `Boolean(document.querySelector('.v2-guided-preparation-form'))`, 'guided preparation form after host restart and browser refresh');
   await setLabeledValue('gm', 'Encounter name', 'Ash Bridge');
   await setLabeledValue('gm', 'Player A character name', 'Asha');
@@ -252,7 +248,19 @@ try {
   await setLabeledValue('gm', 'Enemy name', 'Warden');
   await setTestStartingSquares('gm');
   await click('gm', 'Prepare encounter and assign players');
-  await waitFor('gm', `document.body.innerText.includes('prepared by the host and read/act access granted to the selected players') && document.body.innerText.includes('Ash Bridge') && Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'created Revised 5e encounter and generic contribution');
+  await waitFor('gm', `document.body.innerText.includes('prepared by the host and read/act access granted to the selected players') && document.body.innerText.includes('Ash Bridge')`, 'created Revised 5e encounter in Encounters');
+  await click('gm', '♙ Characters');
+  await waitFor('gm', `Boolean(document.querySelector('[aria-label="Authorized module characters"]'))`, 'GM module-owned character roster');
+  assert.equal(await ev('gm', `(()=>{const text=document.querySelector('[aria-label="Authorized module characters"]')?.innerText||'';return text.includes('Asha')&&text.includes('Borin')&&!text.includes('Warden')})()`), true, 'GM Characters shows owned module records and omits unowned enemies');
+  await ev('gm', `document.querySelector('[aria-label="Authorized module characters"]')?.scrollIntoView({block:'center'})`);
+  await screenshot('gm', 'gm-v2-characters-roster.png');
+  await click('gm', '⚑ Encounters');
+  await waitFor('gm', `Boolean(document.querySelector('#v2-entity-picker'))`, 'return to Encounters with the prepared roster');
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'created Revised 5e encounter actions in Table');
+  await ev('gm', `document.querySelector('[aria-label="example.revised5e.combat"]')?.scrollIntoView({block:'start'})`);
+  await screenshot('gm', 'gm-v2-table-actions.png');
+  await click('gm', '⚑ Encounters');
   const afterExactRetry = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.equal((afterExactRetry.entities ?? afterExactRetry).length, 1, 'exact preparation retry did not create a duplicate');
   assert.equal((afterExactRetry.entities ?? afterExactRetry)[0].entityId, committedEntityId, 'exact retry selected the original entity');
@@ -261,7 +269,13 @@ try {
 
   // Fail the second independent grant after entity creation and Player A's grant
   // have committed. The same identity must remain unresolved across restart.
+  await waitFor('gm', `Boolean(document.querySelector('.v2-guided-preparation-form'))`, 'Encounters form remains available after Table actions');
   await setLabeledValue('gm', 'Encounter name', 'Stone Harbor');
+  await setLabeledValue('gm', 'Player A character name', 'Asha');
+  await setLabeledValue('gm', 'Assign Player A', a.principalId);
+  await setLabeledValue('gm', 'Player B character name', 'Borin');
+  await setLabeledValue('gm', 'Assign Player B', b.principalId);
+  await setLabeledValue('gm', 'Enemy name', 'Warden');
   await ev('gm', `(()=>{const previous=fetch.bind(window);window.__failPlayerBGrant=true;window.fetch=async(url,init={})=>{if(window.__failPlayerBGrant&&String(url).includes('/api/v2/entities/')&&String(url).endsWith('/grants')&&init.method==='POST'&&JSON.parse(init.body).memberId===${JSON.stringify(b.principalId)}){window.__failPlayerBGrant=false;return new Response(JSON.stringify({error:'injected Player B grant failure'}),{status:503,headers:{'content-type':'application/json'}})}return previous(url,init)}})()`);
   await click('gm', 'Prepare encounter and assign players');
   await waitFor('gm', `document.body.innerText.includes('player access could not be confirmed')`, 'partial grant failure after entity and Player A grant');
@@ -279,8 +293,8 @@ try {
   await host.close(); host = undefined; await delay(150); await startHost('revised5e.sqlite', 'campaign-issue-166-revised5e');
   await cdp('Page.reload', {}, sessions.gm);
   await waitFor('gm', `Boolean(document.querySelector('.campaign-home'))`, 'Campaign Home after partial-grant host restart');
-  await waitFor('gm', ` [...document.querySelectorAll('.app-rail nav button')].some(button=>button.textContent.trim()==='⚙ Rules')`, 'V2 lock discovery and Rules navigation after restart');
-  await click('gm', '⚙ Rules');
+  await waitFor('gm', ` [...document.querySelectorAll('.app-rail nav button')].some(button=>button.textContent.trim()==='⚑ Encounters')`, 'V2 lock discovery and Rules navigation after restart');
+  await click('gm', '⚑ Encounters');
   await waitFor('gm', `document.body.innerText.includes('Preparation recovery') && document.body.innerText.includes('Player B')`, 'recovered pending manual grant after restart');
   assert.equal(await ev('gm', `sessionStorage.getItem(${JSON.stringify(`potomac.v2.generic.operation.${preparationKey}`)})`), secondAttemptOperation, 'unresolved create identity survives restart');
   await click('gm', 'Open recovered entity');
@@ -302,8 +316,9 @@ try {
   const afterNewPreparation = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.equal((afterNewPreparation.entities ?? afterNewPreparation).length, 3, 'confirmed recovery permits a genuinely new entity after the original operation keys are retired');
   await setValue('gm', '#v2-entity-picker', committedEntityId);
-  await waitFor('gm', `document.body.innerText.includes('Not started') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Start session')`, 'GM current-session start control');
-  assert.equal(await ev('gm', `(()=>[...document.querySelector('#v2-entity-picker').options].some(option=>option.value===${JSON.stringify(committedEntityId)}&&option.textContent.trim()==='Ash Bridge'))()`), true, 'Rules entity picker shows the projected encounter title while retaining its stable internal ID as value');
+  assert.equal(await ev('gm', `(()=>[...document.querySelector('#v2-entity-picker').options].some(option=>option.value===${JSON.stringify(committedEntityId)}&&option.textContent.trim()==='Ash Bridge'))()`), true, 'Encounters picker shows the projected title while retaining its stable internal ID as value');
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `document.body.innerText.includes('Not started') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Start session')`, 'GM current-session start control in Table');
   await click('gm', 'Start session');
   await waitFor('gm', `document.body.innerText.includes('Session started from the selected host encounter.') && document.body.innerText.includes('Live · Ash Bridge')`, 'GM session start is confirmed from the host projection');
   const startedSession = await (await api('/api/v2/session/current', 'local-gm')).json();
@@ -311,10 +326,17 @@ try {
   await click('gm', 'Return to campaign');
   await waitFor('gm', `Boolean(document.querySelector('.campaign-home')) && document.body.innerText.includes('Session live') && document.body.innerText.includes('Active encounter: Ash Bridge')`, 'Campaign Home reflects the live V2 host session');
   await screenshot('gm', 'gm-campaign-home-session-live.png');
-  await click('gm', '⚙ Rules');
-  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header'))`, 'Rules return after live session Home check');
+  await click('gm', '⚑ Encounters');
+  await waitFor('gm', `Boolean(document.querySelector('#v2-entity-picker'))`, 'Encounters return after live session Home check');
   await setValue('gm', '#v2-entity-picker', committedEntityId);
-  await waitFor('gm', `document.body.innerText.includes('Live · Ash Bridge')`, 'Rules session projection is consistent with Campaign Home');
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `document.body.innerText.includes('Live · Ash Bridge')`, 'Table session projection is consistent with Campaign Home');
+  await screenshot('gm', 'gm-v2-table-session.png');
+  await click('gm', '⚑ Encounters');
+  await waitFor('gm', `Boolean(document.querySelector('#v2-entity-picker'))`, 'Encounters reopens before live combat actions');
+  await setValue('gm', '#v2-entity-picker', committedEntityId);
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'live combat forms are composed in Table');
 
   await waitFor('gm', `document.querySelectorAll('progress[aria-label="Hit points 1"]').length === 1`, 'per-character hit point resources');
   const revisedEntities = await (await api('/api/v2/entities?typeId=example.revised5e.encounter', 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
@@ -324,9 +346,17 @@ try {
   const initCapture = await ev('gm', `window.__potomacCommands.find(item=>item.request.commandId==='example.revised5e.initialize')`); assert.equal(initCapture.status, 200, JSON.stringify(initCapture)); assert.equal(initCapture.response.status, 'applied', JSON.stringify(initCapture));
   await waitFor('gm', `document.body.innerText.includes('Committed: initiative rolled.') && document.body.innerText.includes('active')`, 'host-confirmed initiative result is summarized in plain language');
 
-  await ordinaryPlayer('playerA', a); await setValue('playerA', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerA');
+  await ordinaryPlayer('playerA', a);
+  await click('playerA', '♙ Characters');
+  await waitFor('playerA', `Boolean(document.querySelector('[aria-label="Authorized module characters"]'))`, 'Player A authorized module character roster');
+  assert.equal(await ev('playerA', `(()=>{const text=document.querySelector('[aria-label="Authorized module characters"]')?.innerText||'';return text.includes('Asha')&&!text.includes('Borin')&&!text.includes('Warden')})()`), true, 'Player A Characters reveals only the host-marked owned character');
+  await ev('playerA', `document.querySelector('[aria-label="Authorized module characters"]')?.scrollIntoView({block:'center'})`);
+  await screenshot('playerA', 'player-a-v2-characters-roster.png');
+  await click('playerA', '⚑ Encounters');
+  await waitFor('playerA', `Boolean(document.querySelector('#v2-entity-picker'))`, 'Player A returns to authorized Encounters');
+  await setValue('playerA', '#v2-entity-picker', committedEntityId); await click('playerA', 'Open in Table'); await installCommandCapture('playerA');
   await waitFor('playerA', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]')) && document.body.innerText.includes('Asha')`, 'Player A authorized contribution and projection');
-  await screenshot('playerA', 'player-a-rules.png');
+  await screenshot('playerA', 'player-a-table-actions.png');
   const gmPrincipalId = (await (await api('/api/v2/session', 'local-gm')).json()).principalId;
   assert.equal((await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`)), false, 'player UI does not render GM-only principal fields');
   const playerProjection = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, a.credential, { headers: { 'x-v2-lock-digest': lock.digest } })).json();
@@ -391,7 +421,7 @@ try {
   assert.equal((await retry(a, attackA.request)).status, 200, 'exact command retry replays the committed receipt');
   assert.equal((await retry(a, { ...attackA.request, input: { actorId: 'player-a', targetId: 'player-b' } })).status, 409, 'altered payload with the same operation ID conflicts');
   assert.equal((await retry(a, { ...attackA.request, operationId: `${attackA.request.operationId}-stale`, expectedRevision: attackA.request.expectedRevision - 1 })).status, 409, 'stale revision is rejected');
-  await ordinaryPlayer('playerB', b); await setValue('playerB', '#v2-entity-picker', committedEntityId); await installCommandCapture('playerB');
+  await ordinaryPlayer('playerB', b); await setValue('playerB', '#v2-entity-picker', committedEntityId); await click('playerB', 'Open in Table'); await installCommandCapture('playerB');
   await waitFor('playerB', `Boolean(document.querySelector('[aria-label="example.revised5e.combat"]'))`, 'Player B authorized contribution');
   const playerBProjection = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, b.credential, { headers: { 'x-v2-lock-digest': lock.digest } })).json();
   assert.deepEqual(playerBProjection.viewerOwnedPaths, ['actors.1'], 'Player B receives only its own character path marker');
@@ -442,7 +472,7 @@ try {
   }
   assert.deepEqual((await lockFor()).lock, lock.lock, 'exact root and full module capability closure survive host restart');
   const authoritativeAfterRestart = await (await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, 'local-gm', { headers: { 'x-v2-lock-digest': lock.digest } })).json();
-  assert.equal(authoritativeAfterRestart.data.status, 'complete', 'authoritative Rules projection reports the completed encounter after restart');
+  assert.equal(authoritativeAfterRestart.data.status, 'complete', 'authoritative Encounters projection reports the completed encounter after restart');
   const adjudicationPath = new URL(movementAdjudication.url).pathname;
   const adjudicationRetry = await api(adjudicationPath, 'local-gm', { method: 'POST', body: JSON.stringify(movementAdjudication.request), headers: { 'x-v2-lock-digest': lock.digest } });
   assert.equal(adjudicationRetry.status, 200, 'GM adjudication receipt survives host restart and lost acknowledgement retry');
@@ -450,40 +480,41 @@ try {
   assert.equal((await api(adjudicationPath, 'local-gm', { method: 'POST', body: JSON.stringify({ ...movementAdjudication.request, input: { changed: true } }), headers: { 'x-v2-lock-digest': lock.digest } })).status, 409, 'changed GM adjudication retry conflicts after restart');
   assert.equal((await retry(a, attackA.request)).status, 200, 'completed receipt remains idempotent after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(attackA.request.operationId).n, 1, 'one effect event exists for the UI command');
-  await click('gm', 'Open in Table');
-  await waitFor('gm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Participants and spatial view') && document.body.innerText.includes('Grid · 8 × 5')`, 'GM opens the exact V2 encounter in Table with its grid');
-  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(`revision ${authoritativeAfterRestart.revision}`)})`), true, 'GM Table displays the same authoritative revision as Rules');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Participants and spatial view') && document.body.innerText.includes('Grid · 8 × 5')`, 'GM Table shows the exact V2 encounter with its grid');
+  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(`revision ${authoritativeAfterRestart.revision}`)})`), true, 'GM Table displays the same authoritative revision as Encounters');
+  await ev('gm', `document.querySelector('[aria-label="Encounter participants"]')?.scrollIntoView({block:'start'})`);
   await screenshot('gm', 'gm-table-grid.png');
-  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(encounterId)})`), true, 'Table route retains the original stable entity reference');
+  assert.equal(await ev('gm', `document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`), true, 'Table route retains the original stable entity reference');
   assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(lock.lock.rootModule.digest)})`), true, 'Table displays the exact pinned module provenance');
-  assert.equal(await ev('gm', `document.body.innerText.includes('Session live')`), true, 'Table derives live-session status from the same host projection');
+  assert.equal(await ev('gm', `document.body.innerText.includes('Live · Ash Bridge')`), true, 'Table derives live-session status from the same host projection');
   assert.equal(await ev('gm', `document.querySelectorAll('.v2-table-grid').length`), 1, 'declared grid and actor positions render as a spatial table');
   await click('gm', 'Refresh authorized state');
-  await waitFor('gm', `document.body.innerText.includes('Authorized encounter state loaded from the host') && document.body.innerText.includes('Grid · 8 × 5')`, 'Table refresh reloads the latest authoritative projection');
-  await click('gm', 'Open in Rules');
-  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'return to Rules preserves selected encounter');
-  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(`Entity revision ${authoritativeAfterRestart.revision}`)})`), true, 'Rules return shows the same authoritative revision as Table');
-  await click('playerA', 'Open in Table');
+  await waitFor('gm', `document.body.innerText.includes('Authorized state refreshed from the host') && document.body.innerText.includes('Grid · 8 × 5')`, 'Table refresh reloads the latest authoritative projection');
+  await click('gm', '⚑ Encounters');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'return to Encounters preserves selected encounter');
+  assert.equal(await ev('gm', `document.body.innerText.includes(${JSON.stringify(`Entity revision ${authoritativeAfterRestart.revision}`)})`), true, 'Encounters return shows the same authoritative revision as Table');
   await waitFor('playerA', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'Player A opens an authorized host-filtered encounter in Table');
+  await ev('playerA', `document.querySelector('[aria-label="Encounter participants"]')?.scrollIntoView({block:'start'})`);
   await screenshot('playerA', 'player-a-table-grid.png');
   assert.equal(await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Table never renders GM-only actor ownership principals');
   assert.equal(await ev('playerA', `Boolean(document.querySelector('.v2-table-grid'))`), true, 'authorized player receives the declared spatial projection');
-  assert.equal(await ev('playerA', `document.body.innerText.includes('Session live')`), true, 'player Table receives the consistent live-session projection');
-  await click('playerA', 'Open in Rules');
-  await waitFor('playerA', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'player returns to Rules with the same encounter selected');
+  assert.equal(await ev('playerA', `document.body.innerText.includes('Live · Ash Bridge')`), true, 'player Table receives the consistent live-session projection');
+  await click('playerA', '⚑ Encounters');
+  await waitFor('playerA', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'player returns to Encounters with the same encounter selected');
   await cdp('Page.reload', {}, sessions.playerA);
   await waitFor('playerA', `Boolean(document.querySelector('.campaign-home'))`, 'player reconnects after page reload');
   await click('playerA', '▦ Table');
   await waitFor('playerA', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'normal Table navigation reconnects to the same authorized entity');
   assert.equal(await ev('playerA', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'reconnected Table projection remains privacy filtered');
-  await click('playerB', 'Open in Table');
   await waitFor('playerB', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Grid · 8 × 5')`, 'Player B opens the same authorized encounter in Table');
   assert.equal(await ev('playerB', `document.body.innerText.includes('Your character') && document.body.innerText.includes('Borin')`), true, 'Table preserves the authorized player ownership cue');
   assert.equal(await ev('playerB', `document.body.innerText.includes(${JSON.stringify(gmPrincipalId)})`), false, 'Player B Table projection excludes GM-only actor ownership');
-  await click('playerB', 'Open in Rules');
-  await waitFor('playerB', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'Player B returns to Rules with the same stable entity reference');
+  await click('playerB', '⚑ Encounters');
+  await waitFor('playerB', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(encounterId)}`, 'Player B returns to Encounters with the same stable entity reference');
   await click('gm', 'Refresh authorized state');
-  await waitFor('gm', `document.body.innerText.includes('Authorized state refreshed from the host') && document.body.innerText.includes('Live · Ash Bridge')`, 'GM refreshes the live session after player actions');
+  await waitFor('gm', `document.body.innerText.includes('Authorized state refreshed from the host')`, 'GM refreshes authoritative encounter state after player actions');
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `document.body.innerText.includes('Live · Ash Bridge')`, 'GM opens the live encounter in Table after player actions');
   await click('gm', 'Finish session');
   await waitFor('gm', `document.body.innerText.includes('Session finished. Encounter history remains available.') && document.body.innerText.includes('Finished')`, 'GM finishes the current session');
   const finishedSession = await (await api('/api/v2/session/current', 'local-gm')).json(); assert.equal(finishedSession.status, 'finished');
@@ -497,7 +528,7 @@ try {
   // The old encounter tests above remain useful coverage for exact retries, but
   // this scenario proves the new guided form, Table roster, two live rounds,
   // single-responder OA, host authority and session finish together.
-  await click('gm', '⚙ Rules');
+  await click('gm', '⚑ Encounters');
   await waitFor('gm', `Boolean(document.querySelector('.v2-guided-preparation-form'))`, 'new encounter preparation is available after returning to campaign');
   await setLabeledValue('gm', 'Encounter name', 'Three Opponents');
   await setLabeledValue('gm', 'Player A character name', 'Asha');
@@ -527,8 +558,10 @@ try {
   await click('gm', 'Open in Table');
   await waitFor('gm', `Boolean(document.querySelector('.v2-table-page')) && ['Asha','Borin','Warden','Bandit Two','Bandit Three'].every(name=>document.body.innerText.includes(name))`, 'Table shows all five committed participants and their positions');
   await screenshot('gm', 'gm-three-enemy-table.png');
-  await click('gm', 'Open in Rules');
-  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(rosterEncounterId)}`, 'Table returns to Rules with the same encounter selected');
+  await click('gm', '⚑ Encounters');
+  await waitFor('gm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(rosterEncounterId)}`, 'Table returns to Encounters with the same encounter selected');
+  await click('gm', 'Open in Table');
+  await waitFor('gm', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Start session')`, 'five-participant Table session controls');
   await click('gm', 'Start session');
   await waitFor('gm', `document.body.innerText.includes('Session started from the selected host encounter.') && document.body.innerText.includes('Live · Three Opponents')`, 'GM starts the five-participant live session');
   scriptedRolls = [20, 19, 18, 17, 16, 1, 1, 1, 1, 1, 1, 1];
@@ -542,6 +575,7 @@ try {
   await ordinaryPlayer('rosterPlayerB', b);
   for (const name of ['rosterPlayerA', 'rosterPlayerB']) {
     await setValue(name, '#v2-entity-picker', rosterEncounterId);
+    await click(name, 'Open in Table');
     await installCommandCapture(name);
   }
   await commandForm('rosterPlayerA', 'Move', { actorId: 'player-a', path: '[{"x":1,"y":2}]' });
@@ -585,8 +619,8 @@ try {
   const bAfterRevocation = await api(`/api/v2/entities/${encodeURIComponent(encounterId)}`, b.credential, { headers: { 'x-v2-lock-digest': lock.digest } });
   assert.equal(bAfterRevocation.status, 200, 'Player B remains authorized after Player A membership revocation');
   console.log('PASS revocation boundaries: direct grant removal preserves assigned-participant access; member revocation blocks Player A while Player B access remains intact.');
-  console.log('PASS Revised 5e Rules-to-Table: stable entity handoff, exact lock provenance, schema-declared grid/positions, authorized GM and Player A projection, owner-principal filtering, Rules return and reconnect persistence.');
-  console.log('PASS Revised 5e normal Rules: ordinary Campaign Home setup, exact trusted lock closure, guided character and encounter forms with roster assignment, host-confirmed initiative and player attacks, per-actor HP resources, two isolated player contexts, cross-player denial, nested owner-field filtering, exact/altered/stale retries, and restart persistence.');
+  console.log('PASS Revised 5e Encounters-to-Table: stable entity handoff, exact lock provenance, schema-declared grid/positions, authorized GM and Player A projection, owner-principal filtering, task app return and reconnect persistence.');
+  console.log('PASS Revised 5e task apps: Campaign Home → Characters → Encounters → Table navigation, exact trusted lock closure, guided encounter preparation with roster assignment, host-confirmed initiative and player attacks, per-actor HP resources, two isolated player contexts, cross-player denial, nested owner-field filtering, exact/altered/stale retries, and restart persistence.');
 
   // Separate fresh host and browser profiles provide a module-neutral Dice-pool scene/action/reaction walkthrough.
   for (const context of contexts.splice(0)) try { await cdp('Target.disposeBrowserContext', { browserContextId: context }); } catch {}
@@ -603,24 +637,22 @@ try {
   await setLabeledValue('diceGm', 'Player A character name', 'Asha'); await setLabeledValue('diceGm', 'Assign Player A', diceA.principalId);
   await setLabeledValue('diceGm', 'Player B character name', 'Borin'); await setLabeledValue('diceGm', 'Assign Player B', diceB.principalId);
   await click('diceGm', 'Prepare encounter and assign players');
-  await waitFor('diceGm', `document.body.innerText.includes('Lantern Bridge') && Boolean(document.querySelector('[aria-label="example.dicepool.scene-ui"]'))`, 'Dice-pool scene contribution in ordinary Rules');
+  await waitFor('diceGm', `document.body.innerText.includes('Lantern Bridge')`, 'Dice-pool scene prepared in Encounters');
   const diceScenes = await (await api('/api/v2/entities?typeId=example.dicepool.scene', 'local-gm', { headers: { 'x-v2-lock-digest': diceLock.digest } })).json();
   const sceneId = (diceScenes.entities ?? diceScenes)[0].entityId;
   await click('diceGm', 'Open in Table');
-  await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('No grid is declared') && document.body.innerText.includes('Asha')`, 'Dice-pool uses generic non-grid Table roster');
+  await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('No grid is declared') && document.body.innerText.includes('Asha') && Boolean(document.querySelector('[aria-label="example.dicepool.scene-ui"]'))`, 'Dice-pool Table shows its trusted scene actions and non-grid roster');
+  await ev('diceGm', `document.querySelector('[aria-label="Encounter participants"]')?.scrollIntoView({block:'start'})`);
   await screenshot('diceGm', 'dicepool-table-roster.png');
   assert.equal(await ev('diceGm', `Boolean(document.querySelector('.v2-table-grid'))`), false, 'non-grid module is not presented as a battle map');
-  assert.equal(await ev('diceGm', `document.body.innerText.includes(${JSON.stringify(sceneId)})`), true, 'Dice-pool Table handoff retains the original scene entity ID');
-  await click('diceGm', 'Open in Rules');
-  await waitFor('diceGm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(sceneId)}`, 'Dice-pool Rules return retains the same scene');
+  await waitFor('diceGm', `document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(sceneId)}`, 'Dice-pool Table handoff retains the original scene entity ID');
   await waitFor('diceGm', `document.body.innerText.includes('Not started') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Start session')`, 'Dice-pool scene offers the module-neutral session start');
   await click('diceGm', 'Start session');
   await waitFor('diceGm', `document.body.innerText.includes('Live · Lantern Bridge')`, 'Dice-pool scene starts a host-owned session');
-  await click('diceGm', 'Open in Table');
-  await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Session live') && document.body.innerText.includes('No grid is declared')`, 'non-grid Dice-pool Table shares the current-session projection');
-  await click('diceGm', 'Open in Rules');
+  await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.body.innerText.includes('Live · Lantern Bridge') && document.body.innerText.includes('No grid is declared')`, 'non-grid Dice-pool Table shares the current-session projection');
+  await click('diceGm', '⚑ Encounters');
   await waitFor('diceGm', `Boolean(document.querySelector('.v2-combat-header')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(sceneId)}`, 'Dice-pool session navigation preserves the selected scene');
-  await ordinaryPlayer('diceA', diceA); await installCommandCapture('diceA');
+  await ordinaryPlayer('diceA', diceA); await click('diceA', 'Open in Table'); await installCommandCapture('diceA');
   await commandForm('diceA', 'Resolve skill challenge', { actorId: 'player-a', difficulty: '8', push: 'false' });
   await waitFor('diceA', `document.body.innerText.includes('example.dicepool.skill-challenge committed by the host.')`, 'Dice-pool authorized skill action');
   const skill = await ev('diceA', `window.__potomacCommands.find(item=>item.request.commandId==='example.dicepool.skill-challenge')`); assert.equal(skill.status, 200);
@@ -634,14 +666,16 @@ try {
   const contest = await ev('diceA', `window.__potomacCommands.find(item=>item.request.commandId==='example.dicepool.contested-action')`); assert.equal(contest.status, 200); assert.equal(contest.response.status, 'pending', JSON.stringify(contest));
   const pendingRows = await host.db.prepare("SELECT window_id FROM v2_reaction_windows WHERE parent_operation_id=?").all(contest.request.operationId);
   assert.equal(pendingRows.length, 1, 'one durable reaction window is linked to the parent command'); const windowId = pendingRows[0].window_id;
-  await ordinaryPlayer('diceB', diceB); await click('diceB', 'Refresh authorized state');
+  await ordinaryPlayer('diceB', diceB); await click('diceB', 'Open in Table');
+  await waitFor('diceB', `Boolean(document.querySelector('.v2-table-page')) && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Refresh authorized state')`, 'Dice-pool responder Table reconnects');
+  await click('diceB', 'Refresh authorized state');
   await waitFor('diceB', `document.body.innerText.includes('Pending reaction') && document.body.innerText.includes('Accept Brace')`, 'authorized responder sees the pending reaction');
   await waitFor('diceB', `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept Brace' && !button.disabled)`, 'authorized responder control is enabled after its permission projection loads');
   assert.equal(await ev('diceA', ` [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Accept Brace')`), false, 'unauthorized initiator does not receive responder controls');
   const unauthorizedReaction = await api(`/api/v2/reactions/${encodeURIComponent(windowId)}/decisions`, diceA.credential, { method: 'POST', body: JSON.stringify({ operationId: 'issue-166-unauthorized-reaction', actionId: 'example.dicepool.brace', decision: 'accept', input: {} }), headers: { 'x-v2-lock-digest': diceLock.digest } });
   assert.ok([403, 404].includes(unauthorizedReaction.status), `unauthorized reaction responder rejected (${unauthorizedReaction.status})`);
   await click('diceB', 'Accept Brace');
-  await waitFor('diceB', `!document.body.innerText.includes(${JSON.stringify(windowId)})`, 'reaction resolved and continuation projection refreshed');
+  await waitFor('diceB', `document.querySelector('.v2-message')?.textContent.includes('Reaction accept committed by the host.')`, 'reaction resolved and continuation projection refreshed');
   const parentEffects = host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(contest.request.operationId).n;
   assert.equal(parentEffects, 1, `continuation commits parent effects once; pending=${JSON.stringify(host.db.prepare('SELECT status FROM v2_extension_pending_commands WHERE operation_id=?').get(contest.request.operationId))}; window=${JSON.stringify(host.db.prepare('SELECT status FROM v2_reaction_windows WHERE parent_operation_id=?').get(contest.request.operationId))}`);
   assert.equal((await api('/api/v2/commands', diceA.credential, { method: 'POST', body: JSON.stringify(contest.request), headers: { 'x-v2-lock-digest': diceLock.digest } })).status, 200, 'exact parent retry replays its receipt after reaction completion');
@@ -649,11 +683,13 @@ try {
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_events WHERE operation_id=?').get(contest.request.operationId).n, 1, 'parent retry does not duplicate effects');
   await host.close(); host = undefined; await delay(150); await startHost('dicepool.sqlite', 'campaign-issue-166-dicepool');
   await click('diceB', 'Refresh authorized state'); await waitFor('diceB', `document.body.innerText.includes('Lantern Bridge') && document.body.innerText.includes('resolved')`, 'Dice-pool continuation result persists after second host start');
+  await click('diceGm', 'Open in Table');
+  await waitFor('diceGm', `Boolean(document.querySelector('.v2-table-page')) && document.querySelector('#v2-entity-picker')?.value===${JSON.stringify(sceneId)}`, 'Dice-pool Table reconnects after host restart');
   await click('diceGm', 'Refresh authorized state'); await waitFor('diceGm', `document.body.innerText.includes('Live · Lantern Bridge')`, 'Dice-pool live session survives host restart');
   await waitFor('diceGm', `(()=>{const button=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Finish session');return Boolean(button&&!button.disabled)})()`, 'GM session controls finish loading after the authorized refresh');
   await click('diceGm', 'Finish session'); await waitFor('diceGm', `document.body.innerText.includes('Finished')`, 'GM finishes the module-neutral Dice-pool session');
   assert.deepEqual((await lockFor()).lock, diceLock.lock, 'Dice-pool exact lock is unchanged after restart');
   assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_reaction_windows WHERE parent_operation_id=? AND status=?').get(contest.request.operationId, 'resolved').n, 1, 'reaction resolution persists exactly once');
-  console.log('PASS Dice-pool normal Rules: separate fresh host, exact root lock, non-grid current-session start/Table projection/finish across restart, guided scene and roster assignment, generic resource contribution, authorized skill action, GM-only field filtering, pending continuation, authorized Player B one-time reaction, unauthorized Player A rejection, parent-effect exactly-once retry and restart persistence.');
+  console.log('PASS Dice-pool task apps: separate fresh host, exact root lock, non-grid current-session start/Table projection/finish across restart, guided scene and roster assignment, generic resource contribution, authorized skill action, GM-only field filtering, pending continuation, authorized Player B one-time reaction, unauthorized Player A rejection, parent-effect exactly-once retry and restart persistence.');
 } catch (error) { console.error(error); console.error(children.map(item => item.output).join('\n')); process.exitCode = 1; }
 finally { try { host?.close(); } catch {} for (const context of contexts) try { await cdp('Target.disposeBrowserContext', { browserContextId: context }); } catch {} try { await cdp('Browser.close'); } catch {} try { socket?.close(); } catch {} for (const item of children) try { if (item.proc.exitCode === null) item.proc.kill(); } catch {} await Promise.all(children.map(item => item.proc.exitCode !== null ? Promise.resolve() : new Promise(resolveExit => { item.proc.once('exit', resolveExit); setTimeout(resolveExit, 1500); }))); await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
