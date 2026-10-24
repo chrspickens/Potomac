@@ -112,7 +112,7 @@ export function V2ModulesApp({ initialCredential, initialModuleId, initialEntity
       request('/api/v2/session/current', {}, false, current.digest, activeCredential)
     ]);
     const records = responses.flatMap(rows => rows.entities ?? rows) as Entity[];
-    setEntities(records); setSelectedEntityId(value => records.some(row => row.entityId === initialEntityId) ? initialEntityId! : records.some(row => row.entityId === value) ? value : records[0]?.entityId ?? ''); setReactions((reactionRows.reactions ?? reactionRows) as ReactionProjection[]); setCurrentSession(sessionProjection as CurrentSession);
+    setEntities(records); setSelectedEntityId(value => selectV2TaskEntity(records, module?.preparation.map(profile => profile.entityTypeId) ?? [], view, value).entity?.entityId ?? ''); setReactions((reactionRows.reactions ?? reactionRows) as ReactionProjection[]); setCurrentSession(sessionProjection as CurrentSession);
   };
   const connectCredential = async (activeCredential: string) => {
     setCredential(activeCredential); setBusy(true);
