@@ -132,7 +132,7 @@ export type OfflineReceipt = {
 
 /** Host-authoritative scene and piece DTOs shared by the Maps app and bricks. */
 export type MapSceneKind = "world" | "battle";
-export type MapGrid = { type: "square" | "hex" | "none"; size: number; units?: string };
+export type MapGrid = { type: "square" | "hex" | "none"; size: number; units?: string; fills?: Array<{ x: number; y: number; color: string }> };
 export type MapScene = {
   id: string; campaignId: string; name: string; kind: MapSceneKind; revision: number;
   width: number; height: number; grid: MapGrid; visibility: "gm" | "shared";

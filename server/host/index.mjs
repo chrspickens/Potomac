@@ -47,6 +47,19 @@ CREATE TABLE IF NOT EXISTS map_operations (operation_id TEXT PRIMARY KEY, princi
 
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_CAMPAIGN_ASSET_BYTES = 100 * 1024 * 1024;
+const validBattleGrid = (grid, kind, width, height) => {
+  if (!grid || !['none','square','hex'].includes(grid.type) || !Number.isFinite(grid.size) || grid.size < 0 || grid.size > 10000 || grid.type !== 'none' && grid.size < 1 || grid.units !== undefined && (typeof grid.units !== 'string' || grid.units.length > 32)) return false;
+  if (grid.fills === undefined) return true;
+  if (!Array.isArray(grid.fills) || grid.fills.length > 10000 || grid.fills.length > 0 && (kind !== 'battle' || grid.type !== 'square')) return false;
+  const cells = new Set();
+  for (const fill of grid.fills) {
+    if (!fill || Object.keys(fill).some(key => !['x','y','color'].includes(key)) || !Number.isInteger(fill.x) || !Number.isInteger(fill.y) || fill.x < 0 || fill.y < 0 || fill.x >= Math.ceil(width / grid.size) || fill.y >= Math.ceil(height / grid.size) || typeof fill.color !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(fill.color)) return false;
+    const cellId = `${fill.x},${fill.y}`;
+    if (cells.has(cellId)) return false;
+    cells.add(cellId);
+  }
+  return true;
+};
 const v2AuthorityProof = Symbol('v2AuthorityProof');
 const ASSET_TYPES = {
   'image/png': { extension: '.png', signature: bytes => bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) },
@@ -958,7 +971,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (Object.keys(body).some(key => !commandFields.includes(key))) return json(res,400,{error:'Fields are not valid for this map command',reasonCode:'invalid_command'});
         const next = { name: body.name ?? current?.name, kind: body.kind ?? current?.kind, width: body.width ?? current?.width, height: body.height ?? current?.height,
           grid: body.grid ?? (current ? JSON.parse(current.grid) : { type: body.kind === 'world' ? 'none' : 'square', size: 1 }), visibility: body.visibility ?? current?.visibility ?? 'gm', gmNotes: body.gmNotes ?? current?.gm_notes ?? '' };
-        if ((creating || command === 'update') && (typeof next.name !== 'string' || !next.name.trim() || next.name.length > 160 || !['world','battle'].includes(next.kind) || !Number.isFinite(next.width) || next.width < 1 || next.width > 100000 || !Number.isFinite(next.height) || next.height < 1 || next.height > 100000 || !next.grid || !['none','square','hex'].includes(next.grid.type) || !Number.isFinite(next.grid.size) || next.grid.size < 0 || next.grid.size > 10000 || next.grid.type !== 'none' && next.grid.size < 1 || next.grid.units !== undefined && (typeof next.grid.units !== 'string' || next.grid.units.length > 32) || typeof next.gmNotes !== 'string' || next.gmNotes.length > 8000)) return json(res, 400, { error: 'Map fields or geometry are invalid', reasonCode: 'invalid_map' });
+        if ((creating || command === 'update') && (typeof next.name !== 'string' || !next.name.trim() || next.name.length > 160 || !['world','battle'].includes(next.kind) || !Number.isFinite(next.width) || next.width < 1 || next.width > 100000 || !Number.isFinite(next.height) || next.height < 1 || next.height > 100000 || !validBattleGrid(next.grid, next.kind, next.width, next.height) || typeof next.gmNotes !== 'string' || next.gmNotes.length > 8000)) return json(res, 400, { error: 'Map fields or geometry are invalid', reasonCode: 'invalid_map' });
+        if (next.grid && Array.isArray(next.grid.fills)) next.grid = { ...next.grid, fills: next.grid.fills.map(fill => ({ ...fill, color: fill.color.toUpperCase() })) };
         if (!creating && command.startsWith('piece.') && command === 'piece.put') {
           const piece = body.piece;
           const conflictingPiece = piece && db.prepare('SELECT scene_id FROM map_pieces WHERE id=?').get(piece.id);

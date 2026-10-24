@@ -32,7 +32,7 @@ async function readWithTimeout(reader) {
 test('importing a battle map makes an independent encounter copy without consuming the reusable design', async () => fixture(async ({ request, restart, getBase }) => {
   const createdEncounter = await request('/api/encounters', 'gm', { id: 'map-import-encounter', name: 'Vault encounter' });
   assert.equal(createdEncounter.status, 201);
-  const source = await json(await send(request, '/api/maps', { operationId: 'import-source-create', baseRevision: 0, id: 'reusable-vault', name: 'Vault layout', kind: 'battle', width: 40, height: 30, grid: { type: 'square', size: 5 } }));
+  const source = await json(await send(request, '/api/maps', { operationId: 'import-source-create', baseRevision: 0, id: 'reusable-vault', name: 'Vault layout', kind: 'battle', width: 40, height: 30, grid: { type: 'square', size: 5, fills: [{ x: 2, y: 3, color: '#A1B2C3' }] } }));
   await send(request, '/api/maps/reusable-vault/commands', { operationId: 'import-source-piece', baseRevision: source.revision, command: 'piece.put', piece: { id: 'source-pin', kind: 'pin', label: 'Door', x: 10, y: 15, visible: true } });
   const image = Buffer.alloc(24); Buffer.from([137,80,78,71,13,10,26,10]).copy(image); image.writeUInt32BE(2,16); image.writeUInt32BE(3,20);
   const upload = await fetch(`${getBase()}/api/maps/reusable-vault/background`, { method: 'POST', headers: { authorization: 'Bearer local-gm', 'content-type': 'image/png', 'x-file-name': 'vault.png', 'x-operation-id': 'import-source-background', 'x-base-revision': '2' }, body: image });
@@ -78,6 +78,21 @@ test('importing a battle map makes an independent encounter copy without consumi
   const world = await send(request, '/api/maps', { operationId: 'import-world-create', baseRevision: 0, id: 'import-world', name: 'World', kind: 'world', width: 20, height: 20 });
   assert.equal(world.status, 200);
   assert.equal((await send(request, '/api/encounters/map-import-encounter/map/import', { ...importRequest, operationId: 'import-world-reject', sourceSceneId: 'import-world', copiedSceneId: 'bad-world-copy' })).status, 404);
+}));
+
+test('square battle-map colors are RGB validated, revisioned, player-read-only, and durable', async () => fixture(async ({ request, restart }) => {
+  const created = await json(await send(request, '/api/maps', { operationId: 'paint-map-create', baseRevision: 0, id: 'paint-map', name: 'Paint map', kind: 'battle', width: 20, height: 20, grid: { type: 'square', size: 5 } }));
+  const fill = { x: 1, y: 2, color: '#12aBef' };
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-cell', baseRevision: created.revision, command: 'update', grid: { type: 'square', size: 5, fills: [fill] } })).status, 200);
+  assert.deepEqual((await json(await request('/api/maps/paint-map'))).grid.fills, [{ x: 1, y: 2, color: '#12ABEF' }]);
+  const current = await json(await request('/api/maps/paint-map'));
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-invalid-rgb', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [{ ...fill, color: 'rgb(12, 34, 56)' }] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-malformed-cell', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [null] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-duplicate-cell', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [fill, fill] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-outside-map', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [{ ...fill, x: 4 }] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'player-paints', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [] } }, 'player')).status, 403);
+  await restart();
+  assert.deepEqual((await json(await request('/api/maps/paint-map'))).grid.fills, [{ x: 1, y: 2, color: '#12ABEF' }]);
 }));
 
 test('map scenes use revisioned idempotent commands, protect linked private destinations and manage shared image bytes', async () => fixture(async ({ request, restart, getBase }) => {
