@@ -17,7 +17,7 @@ The Maps application has one campaign-owned scene model for World and Battle map
 
 Maps presents separate World Maps and Battle Map Designs collections. World maps focus on location pins and Lore destinations. An unassigned Battle Map is a reusable design. A GM imports a selected design from encounter preparation; the host checks source revision and current encounter association, then atomically creates an independent GM-only scene, copies its dimensions, grid, background metadata and pieces with new scene-local IDs, and associates that copy with the encounter. The source remains unchanged and may be imported into other encounters.
 
-The copied background asset points to the same content-addressed bytes, so copying metadata does not duplicate stored image bytes. The encounter copy has its own scene revision, visibility and pieces. The operation has an idempotent receipt and a GM-only audit event. A stale source or changed encounter association conflicts instead of silently replacing the selected map. Replacing a copy leaves the previous scene and history in Maps.
+The copied background asset points to the same content-addressed bytes, so copying metadata does not duplicate stored image bytes. The encounter copy has its own scene revision, visibility and pieces. The operation has an idempotent receipt and a GM-only audit event. A stale source or changed encounter association conflicts instead of silently replacing the selected map. Replacing a copy leaves the previous scene and history in Maps. A GM may also remove the encounter association; the detached scene and its history remain available in Maps.
 
 Map/Lore destinations remain World Map behavior and are not copied into a Battle Map import. The import command is GM-only and does not grant player read access. The host continues to filter the imported scene and background under current encounter and map visibility.
 
@@ -25,7 +25,7 @@ Existing map records and encounter associations remain readable; the schema does
 
 ## Consequences
 
-Each encounter copy can diverge from its reusable design by intent. GMs must re-import if they want later design edits copied into an encounter. Old imported copies remain addressable until explicitly archived. Map collection tabs are a presentation choice and do not grant access. World map cross-links and Lore destinations continue to resolve under host authorization.
+Each encounter copy can diverge from its reusable design by intent. GMs must re-import if they want later design edits copied into an encounter. Replacing or detaching a copy does not erase the prior scene or its history. Map collection tabs are a presentation choice and do not grant access. World map cross-links and Lore destinations continue to resolve under host authorization.
 
 ## Validation
 

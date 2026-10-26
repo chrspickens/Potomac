@@ -261,6 +261,33 @@ const canonicalize = value => Array.isArray(value) ? value.map(canonicalize)
   : value !== null && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])])) : value;
 const archiveChecksum = value => createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
 
+test('backup schema 9 preserves entity kinds and restores older untyped records as creatures', async () => withDirectory(async directory => {
+  const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'campaign.json');
+  const host = createHost({ databasePath: sourcePath });
+  host.db.prepare("INSERT INTO catalog_entities(id,campaign_id,name,kind,revision,created_at,updated_at) VALUES('item-1','foundation-demo','Silver Key','item',1,'now','now')").run();
+  exportCampaignBackup(sourcePath, backupPath);
+  host.close();
+
+  const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  assert.equal(archive.schemaVersion, 9);
+  const currentDestination = join(directory, 'current.sqlite');
+  restoreCampaignBackup(backupPath, currentDestination);
+  const current = createHost({ databasePath: currentDestination });
+  try { assert.equal(current.db.prepare("SELECT kind FROM catalog_entities WHERE id='item-1'").get().kind, 'item'); }
+  finally { current.close(); }
+
+  archive.schemaVersion = 8;
+  archive.manifest.potomacDataVersion = 8;
+  for (const entity of archive.data.catalog_entities) delete entity.kind;
+  archive.integrity.sha256 = archiveChecksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data });
+  const legacyPath = join(directory, 'legacy-v8.json'), legacyDestination = join(directory, 'legacy-v8.sqlite');
+  writeFileSync(legacyPath, JSON.stringify(archive));
+  restoreCampaignBackup(legacyPath, legacyDestination);
+  const legacy = createHost({ databasePath: legacyDestination });
+  try { assert.equal(legacy.db.prepare("SELECT kind FROM catalog_entities WHERE id='item-1'").get().kind, 'creature'); }
+  finally { legacy.close(); }
+}));
+
 test('pre-Lore v2 campaign backups restore without synthesizing Lore records', async () => withDirectory(async directory => {
   const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'campaign.json'), destination = join(directory, 'restored.sqlite');
   const host = createHost({ databasePath: sourcePath });

@@ -1,5 +1,5 @@
-import { Component, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { configuredHost, credentialForRole, commandSession, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, fetchMapBackground, getCampaignConfig, grantActorToMember, host, importBattleMapIntoEncounter, listCampaignMembers, listLore, listLoreLinkedToEncounter, listMaps, listMyOfflineReceipts, listReviewProposals, loadAuthorizedEncounter, loadCampaignEncounter, loadEncounterMap, loadMap, loadReviewProposal, loadSessionSnapshot, saveCampaignConfig, saveEncounterParticipants, submitOfflineOperation, submitSessionAction, type CampaignMember, type CampaignSearchResult, type CampaignConfig, type Encounter, type ConnectionStatus, type LoreArticle, type MapPieceView, type MapSceneView, type ReviewProposal, type Role, type SessionSnapshot, type Snapshot } from './api'
+import { Component, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { configuredHost, credentialForRole, commandSession, connectPlayerCredential, createCampaignEncounter, decideReviewProposal, editCampaignEncounter, editCharacterFields, enrollLocalPlayer, fetchEntityImage, fetchMapBackground, getCampaignConfig, grantActorToMember, host, importBattleMapIntoEncounter, removeEncounterBattleMap, listCampaignMembers, listEntities, listLore, listLoreLinkedToEncounter, listMaps, listMyOfflineReceipts, listReviewProposals, loadAuthorizedEncounter, loadCampaignEncounter, loadEncounterMap, loadMap, loadReviewProposal, loadSessionSnapshot, saveCampaignConfig, saveEncounterEntities, saveEncounterParticipants, submitOfflineOperation, submitSessionAction, type CampaignMember, type CampaignSearchResult, type CampaignConfig, type Encounter, type EntityRecord, type ConnectionStatus, type LoreArticle, type MapPieceView, type MapSceneView, type ReviewProposal, type Role, type SessionSnapshot, type Snapshot } from './api'
 import { forgetRememberedIdentity, loadRememberedIdentity } from './identity'
 import { cachePlayerSnapshot, clearRememberedPlayerData, loadCachedPlayerSnapshot } from './offline/snapshots'
 import { openOfflineStorage, type OfflineOperation, type PrivateDraft, type QueuedOperation } from './offline/storage'
@@ -24,11 +24,125 @@ import { GmAdminPanel } from './gm-admin-panel'
 import './campaign-home.css'
 import './v2-navigation.css'
 import { V2ModulesApp } from './v2-modules'
+import { EntitiesApp } from './entities-app'
 import { isLoopbackV2Origin, v2CampaignSetupBlockReason } from './campaign-v2-setup'
+import { mapMarkerRadius, positionForEntityMove } from './maps'
 
 const profileKey = 'potomac.workspace.demo-profile'
 const newId = () => crypto.randomUUID()
 const displayError = (cause: unknown) => cause instanceof Error ? cause.message : 'Request failed'
+type EntityPosition = { x: number; y: number }
+type EncounterEntitySelection = { entityId: string; quantity: number; positions: EntityPosition[] }
+type PreviewEntityMarker = { key: string; name: string; imageUrl?: string; position: EntityPosition }
+const defaultEntityPosition = (index: number): EntityPosition => ({ x: 0.1 + (index % 5) * 0.2, y: 0.1 + (Math.floor(index / 5) % 5) * 0.2 })
+const positionsForQuantity = (positions: EntityPosition[] | undefined, quantity: number) => Array.from({ length: quantity }, (_, index) => positions?.[index] || defaultEntityPosition(index))
+const snapNormalizedPosition = (position: EntityPosition, scene?: MapSceneView | null): EntityPosition => {
+  if (!scene) return position
+  const grid = scene.grid.type === 'none' ? { type: 'square' as const, size: Math.max(scene.width, scene.height) / 20 } : scene.grid
+  const point = positionForEntityMove({ x: position.x * scene.width, y: position.y * scene.height }, { ...scene, grid })
+  return { x: point.x / scene.width, y: point.y / scene.height }
+}
+
+function EncounterBattleMapPreview({ scene, imageUrl, loading, unavailable, markers, onMoveMarker, onDropEntity }: { scene: MapSceneView; imageUrl?: string; loading: boolean; unavailable: boolean; markers: PreviewEntityMarker[]; onMoveMarker: (key: string, position: EntityPosition) => void; onDropEntity: (entityId: string, position: EntityPosition) => void }) {
+  const previewId = useId()
+  const syntheticGrid = scene.grid.type === 'none' ? { type: 'square' as const, size: Math.min(scene.width, scene.height) / 20 } : scene.grid
+  const gridOrigin = syntheticGrid.type === 'square' ? syntheticGrid.origin || { x: 0, y: 0 } : { x: 0, y: 0 }
+  const placementScene = { ...scene, grid: syntheticGrid }
+  const gridLineStride = 1
+  const squareGridStep = syntheticGrid.size * gridLineStride
+  const squareStartX = gridOrigin.x - Math.ceil(gridOrigin.x / squareGridStep) * squareGridStep
+  const squareStartY = gridOrigin.y - Math.ceil(gridOrigin.y / squareGridStep) * squareGridStep
+  const squareColumnCount = Math.ceil((scene.width - squareStartX) / squareGridStep) + 1
+  const squareRowCount = Math.ceil((scene.height - squareStartY) / squareGridStep) + 1
+  const points = (() => {
+    if (syntheticGrid.type !== 'hex') return []
+    const rowStep = syntheticGrid.size * Math.sqrt(3) / 2
+    const columns = Math.ceil(scene.width / syntheticGrid.size) + 1
+    const rows = Math.ceil(scene.height / rowStep) + 1
+    const stride = Math.max(1, Math.ceil(Math.sqrt(columns * rows / 3000)))
+    const hexPoints: EntityPosition[] = []
+    for (let row = 0; row < rows; row += stride) for (let column = 0; column < columns; column += stride)
+      hexPoints.push({ x: column * syntheticGrid.size + (row % 2) * syntheticGrid.size / 2, y: row * rowStep })
+    return hexPoints
+  })()
+  const [dragKey, setDragKey] = useState('')
+  const [dragPoint, setDragPoint] = useState<EntityPosition | null>(null)
+  const [viewZoom, setViewZoom] = useState(1)
+  const [viewPan, setViewPan] = useState({ x: 0, y: 0 })
+  const [markerScalePercent, setMarkerScalePercent] = useState(100)
+  const [mapPanStart, setMapPanStart] = useState<{ clientX: number; clientY: number; panX: number; panY: number } | null>(null)
+  const previewStageRef = useRef<SVGSVGElement | null>(null)
+  const previewViewRef = useRef({ zoom: 1, pan: { x: 0, y: 0 } })
+  previewViewRef.current = { zoom: viewZoom, pan: viewPan }
+  useEffect(() => { setViewZoom(1); setViewPan({ x: 0, y: 0 }); setMarkerScalePercent(100); setMapPanStart(null) }, [scene.id])
+  useEffect(() => {
+    const stage = previewStageRef.current
+    if (!stage) return
+    const preventPageScrollWhileZooming = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const { zoom, pan } = previewViewRef.current
+      const nextZoom = Math.max(1, Math.min(4, zoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15)))
+      const x = scene.width / 2, y = scene.height / 2
+      setViewPan({ x: x - (x - pan.x) / zoom * nextZoom, y: y - (y - pan.y) / zoom * nextZoom })
+      setViewZoom(nextZoom)
+    }
+    stage.addEventListener('wheel', preventPageScrollWhileZooming, { passive: false })
+    return () => stage.removeEventListener('wheel', preventPageScrollWhileZooming)
+  }, [scene.id, scene.width, scene.height])
+  const localPoint = (event: { currentTarget: SVGSVGElement; clientX: number; clientY: number }) => {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    return { x: (event.clientX - bounds.left) / bounds.width * scene.width, y: (event.clientY - bounds.top) / bounds.height * scene.height }
+  }
+  const markerPoint = (event: { currentTarget: SVGSVGElement; clientX: number; clientY: number }) => {
+    const viewportPoint = localPoint(event)
+    const point = positionForEntityMove({ x: (viewportPoint.x - viewPan.x) / viewZoom, y: (viewportPoint.y - viewPan.y) / viewZoom }, placementScene)
+    return { x: point.x / scene.width, y: point.y / scene.height }
+  }
+  const zoomAround = (x: number, y: number, nextZoom: number) => {
+    const boundedZoom = Math.max(1, Math.min(4, nextZoom))
+    setViewPan(pan => ({ x: x - (x - pan.x) / viewZoom * boundedZoom, y: y - (y - pan.y) / viewZoom * boundedZoom }))
+    setViewZoom(boundedZoom)
+  }
+  const idPart = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, '-')
+  const markerRadius = mapMarkerRadius(scene.width, scene.height, syntheticGrid.size) * markerScalePercent / 100
+  return <figure className="encounter-battle-map-preview">
+    <div className="encounter-preview-tools" aria-label="Map preview controls"><button type="button" aria-label="Zoom out" disabled={viewZoom <= 1} onClick={() => zoomAround(scene.width / 2, scene.height / 2, viewZoom / 1.25)}>−</button><span>{Math.round(viewZoom * 100)}%</span><button type="button" aria-label="Zoom in" disabled={viewZoom >= 4} onClick={() => zoomAround(scene.width / 2, scene.height / 2, viewZoom * 1.25)}>+</button><button type="button" onClick={() => { setViewZoom(1); setViewPan({ x: 0, y: 0 }) }}>Reset view</button><label className="encounter-preview-scale">Icon size <input aria-label="Entity icon size" type="range" min="50" max="250" step="10" value={markerScalePercent} onChange={event => setMarkerScalePercent(Number(event.target.value))} /><span>{markerScalePercent}%</span></label><button type="button" onClick={() => setMarkerScalePercent(100)}>Auto</button><small>Drag the map to pan · use the wheel or buttons to zoom</small></div>
+    <svg ref={previewStageRef} className="encounter-battle-map-stage" viewBox={`0 0 ${scene.width} ${scene.height}`} preserveAspectRatio="none" role="group" aria-label={`${scene.name} battle map preview; drag entity markers to position them; drag the map to pan`} onPointerDown={event => { if ((event.target as Element).closest('.encounter-preview-marker')) return; event.currentTarget.setPointerCapture(event.pointerId); setMapPanStart({ clientX: event.clientX, clientY: event.clientY, panX: viewPan.x, panY: viewPan.y }) }} onPointerMove={event => { if (dragKey) setDragPoint(markerPoint(event)); else if (mapPanStart) { const bounds = event.currentTarget.getBoundingClientRect(); setViewPan({ x: mapPanStart.panX + (event.clientX - mapPanStart.clientX) / bounds.width * scene.width, y: mapPanStart.panY + (event.clientY - mapPanStart.clientY) / bounds.height * scene.height }) } }} onPointerUp={event => { if (dragKey) onMoveMarker(dragKey, markerPoint(event)); setDragKey(''); setDragPoint(null); setMapPanStart(null) }} onPointerCancel={() => { setDragKey(''); setDragPoint(null); setMapPanStart(null) }} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); const entityId = event.dataTransfer.getData('application/x-potomac-entity-id'); if (entityId) onDropEntity(entityId, markerPoint(event)) }}>
+      <g transform={`translate(${viewPan.x} ${viewPan.y}) scale(${viewZoom})`}>
+      <rect width={scene.width} height={scene.height} fill="#101d27" />
+      {imageUrl && <image href={imageUrl} x="0" y="0" width={scene.width} height={scene.height} preserveAspectRatio="xMidYMid meet" />}
+      {scene.grid.type === 'square' && scene.grid.fills?.map(fill => <rect key={`${fill.x},${fill.y}`} x={gridOrigin.x + fill.x * scene.grid.size} y={gridOrigin.y + fill.y * scene.grid.size} width={scene.grid.size} height={scene.grid.size} fill={fill.color} opacity=".58" />)}
+      {syntheticGrid.type === 'square' && <g className="encounter-preview-grid">{Array.from({ length: squareColumnCount }, (_, index) => squareStartX + index * squareGridStep).filter(x => x >= 0).map(x => <line key={`x${x}`} x1={x} y1="0" x2={x} y2={scene.height} />)}{Array.from({ length: squareRowCount }, (_, index) => squareStartY + index * squareGridStep).filter(y => y >= 0).map(y => <line key={`y${y}`} x1="0" y1={y} x2={scene.width} y2={y} />)}</g>}
+      {syntheticGrid.type === 'hex' && <g className="encounter-preview-grid">{points.map((point, index) => <polygon key={index} points={Array.from({ length: 6 }, (_, side) => `${point.x + syntheticGrid.size / Math.sqrt(3) * Math.cos(Math.PI / 3 * side)},${point.y + syntheticGrid.size / Math.sqrt(3) * Math.sin(Math.PI / 3 * side)}`).join(' ')} />)}</g>}
+      {markers.map((marker, markerIndex) => {
+        const point = dragKey === marker.key && dragPoint ? { x: dragPoint.x * scene.width, y: dragPoint.y * scene.height } : positionForEntityMove({ x: marker.position.x * scene.width, y: marker.position.y * scene.height }, placementScene)
+        const radius = markerRadius
+        const iconRadius = radius * .72
+        const clipId = `encounter-entity-${idPart(previewId)}-${markerIndex}`
+        return <g key={marker.key} className={`encounter-preview-marker${dragKey === marker.key ? ' is-dragging' : ''}`} transform={`translate(${point.x} ${point.y})`} tabIndex={0} role="button" aria-label={`${marker.name}, drag to reposition`} aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" onPointerDown={event => { event.preventDefault(); event.stopPropagation(); previewStageRef.current?.setPointerCapture(event.pointerId); setDragKey(marker.key); setDragPoint({ x: point.x / scene.width, y: point.y / scene.height }) }} onKeyDown={event => {
+          const delta = event.shiftKey ? syntheticGrid.size / 4 : syntheticGrid.size
+          const offsets = { ArrowLeft: [-delta, 0], ArrowRight: [delta, 0], ArrowUp: [0, -delta], ArrowDown: [0, delta] } as const
+          const offset = offsets[event.key as keyof typeof offsets]
+          if (!offset) return
+          event.preventDefault()
+          const next = positionForEntityMove({ x: point.x + offset[0], y: point.y + offset[1] }, placementScene)
+          onMoveMarker(marker.key, { x: next.x / scene.width, y: next.y / scene.height })
+        }}>
+          <circle r={radius} className="encounter-preview-marker-fill" />
+          {marker.imageUrl && <><defs><clipPath id={clipId} clipPathUnits="userSpaceOnUse"><circle r={iconRadius} /></clipPath></defs><image href={marker.imageUrl} x={-iconRadius} y={-iconRadius} width={iconRadius * 2} height={iconRadius * 2} preserveAspectRatio="xMidYMid meet" clipPath={`url(#${clipId})`} /></>}
+          {!marker.imageUrl && <text fontSize={radius * 1.2} textAnchor="middle" dominantBaseline="central">✦</text>}
+          <circle r={radius} className="encounter-preview-marker-ring" />
+        </g>
+      })}
+      {loading && <text x={scene.width / 2} y={scene.height / 2} className="encounter-preview-message">Loading map…</text>}
+      {!loading && unavailable && <text x={scene.width / 2} y={scene.height / 2} className="encounter-preview-message">Map image unavailable</text>}
+      {!loading && !imageUrl && !unavailable && <text x={scene.width / 2} y={scene.height / 2} className="encounter-preview-message">No background image</text>}
+      </g>
+    </svg>
+    <figcaption><strong>{scene.name}</strong><span>{scene.width} × {scene.height} · {scene.grid.type === 'none' ? 'temporary placement grid' : `${scene.grid.type} grid`}{scene.grid.fills?.length ? ` · ${scene.grid.fills.length} colored squares` : ''} · drag markers or use arrow keys to position</span></figcaption>
+  </figure>
+}
 type TrustedV2Module = { id: string; name: string; version: string; digest: string }
 type V2CampaignLock = { lock: { campaignId: string; rootModule: { id: string; version: string; digest: string } }; digest: string }
 type V2SetupState = 'loading' | 'unavailable' | 'ready' | 'error'
@@ -122,7 +236,7 @@ export default function App() {
   const decisionIds = useRef(new Map<string, string>())
   const syncInFlight = useRef(false)
   const syncRequested = useRef(false)
-  const [section, setSection] = useState<'home' | 'dashboard' | 'table' | 'characters' | 'encounters' | 'lore' | 'maps'>('home')
+  const [section, setSection] = useState<'home' | 'dashboard' | 'table' | 'characters' | 'encounters' | 'entities' | 'lore' | 'maps'>('home')
   const [v2SetupState, setV2SetupState] = useState<V2SetupState>('loading')
   const [v2SetupMessage, setV2SetupMessage] = useState('')
   const [trustedV2Modules, setTrustedV2Modules] = useState<TrustedV2Module[]>([])
@@ -162,10 +276,41 @@ export default function App() {
   const [encounterMapAssociationId, setEncounterMapAssociationId] = useState<string | null>(null)
   const [reusableBattleMaps, setReusableBattleMaps] = useState<MapSceneView[]>([])
   const [battleMapImportSourceId, setBattleMapImportSourceId] = useState('')
+  const [battleMapPreviewUrl, setBattleMapPreviewUrl] = useState('')
+  const [battleMapPreviewState, setBattleMapPreviewState] = useState<'loading' | 'unavailable' | ''>('')
+  useEffect(() => {
+    const source = reusableBattleMaps.find(scene => scene.id === battleMapImportSourceId) || encounterBattleMap
+    if (!source?.background || connection !== 'connected') {
+      setBattleMapPreviewUrl('')
+      setBattleMapPreviewState('')
+      return
+    }
+    let active = true
+    let objectUrl = ''
+    setBattleMapPreviewUrl('')
+    setBattleMapPreviewState('loading')
+    void fetchMapBackground('gm', source.id).then(blob => {
+      if (!active) return
+      objectUrl = URL.createObjectURL(blob)
+      setBattleMapPreviewUrl(objectUrl)
+      setBattleMapPreviewState('')
+    }).catch(() => {
+      if (active) setBattleMapPreviewState('unavailable')
+    })
+    return () => {
+      active = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [reusableBattleMaps, battleMapImportSourceId, encounterBattleMap, connection])
   const [encounterNameInput, setEncounterNameInput] = useState('')
   const [encounterSummaryInput, setEncounterSummaryInput] = useState('')
   const [encounterStatusInput, setEncounterStatusInput] = useState<'prepared' | 'active' | 'completed'>('prepared')
   const [encounterParticipantIds, setEncounterParticipantIds] = useState<string[]>([])
+  const [catalogEntities, setCatalogEntities] = useState<EntityRecord[]>([])
+  const [encounterEntityCatalogCache, setEncounterEntityCatalogCache] = useState<EntityRecord[]>([])
+  const [encounterEntitySelections, setEncounterEntitySelections] = useState<EncounterEntitySelection[]>([])
+  const [encounterEntitySearch, setEncounterEntitySearch] = useState('')
+  const [encounterEntityImageUrls, setEncounterEntityImageUrls] = useState<Record<string, string>>({})
   const [creatingEncounter, setCreatingEncounter] = useState(false)
   const [openedLoreEncounterId, setOpenedLoreEncounterId] = useState('')
   const [preparationReturn, setPreparationReturn] = useState<{
@@ -176,8 +321,18 @@ export default function App() {
     summary: string
     status: 'prepared' | 'active' | 'completed'
     participantIds: string[]
+    entitySelections: EncounterEntitySelection[]
   } | null>(null)
-  const [searchReturn, setSearchReturn] = useState<{ section: 'home' | 'dashboard' | 'table' | 'characters' | 'encounters' | 'lore' | 'maps'; actorId: string; mapId?: string; loreId?: string } | null>(null)
+  const encounterEntityRecords = useMemo(() => [...new Map([...encounterEntityCatalogCache, ...catalogEntities, ...(encounterDetails?.entities || [])].map(entity => [entity.id, entity])).values()], [encounterEntityCatalogCache, catalogEntities, encounterDetails?.entities])
+  useEffect(() => {
+    let active = true
+    const urls: Record<string, string> = {}
+    void Promise.all(encounterEntityRecords.filter(entity => entity.image).map(async entity => {
+      try { urls[entity.id] = URL.createObjectURL(await fetchEntityImage(entity.id)) } catch { /* A missing icon should not hide the entity marker. */ }
+    })).then(() => { if (active) setEncounterEntityImageUrls(urls); else Object.values(urls).forEach(URL.revokeObjectURL) })
+    return () => { active = false; Object.values(urls).forEach(URL.revokeObjectURL) }
+  }, [encounterEntityRecords])
+  const [searchReturn, setSearchReturn] = useState<{ section: 'home' | 'dashboard' | 'table' | 'characters' | 'encounters' | 'entities' | 'lore' | 'maps'; actorId: string; mapId?: string; loreId?: string } | null>(null)
 
   useEffect(() => {
     let stopped = false
@@ -235,6 +390,15 @@ export default function App() {
     try { saveWorkspace(workspace) } catch { setError('Layout could not be saved in this browser.') }
   }, [workspace, loadedWorkspace])
   useEffect(() => { setEncounterDraft(snapshot?.context.activeEncounter?.id || '') }, [snapshot?.context.activeEncounter?.id])
+  useEffect(() => {
+    if (role !== 'gm' || connection !== 'connected') { setCatalogEntities([]); return }
+    let active = true
+    const query = section === 'encounters' ? encounterEntitySearch : ''
+    const timer = window.setTimeout(() => {
+      void listEntities(query, section === 'encounters' ? 'creature' : undefined).then(items => { if (active) { setCatalogEntities(items); setEncounterEntityCatalogCache(current => [...new Map([...current, ...items].map(entity => [entity.id, entity])).values()]) } }).catch(() => { if (active) setCatalogEntities([]) })
+    }, query ? 180 : 0)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [role, connection, section, encounterEntitySearch, snapshot?.context.campaignId])
   useEffect(() => {
     if (!snapshot) { setSessionSnapshot(undefined); return }
     if (connection !== 'connected') { setSessionSnapshot(snapshot.session); return }
@@ -654,8 +818,11 @@ export default function App() {
       const currentMap = associatedMap?.kind === 'battle' ? associatedMap : null
       const availableMaps = maps.filter(scene => scene.kind === 'battle' && !scene.archived && scene.id !== currentMap?.id)
       setEncounterDetails(detail); setEncounterNameInput(detail.name); setEncounterSummaryInput(detail.summary)
+      setEncounterEntityCatalogCache(current => [...new Map([...current, ...(detail.entities || [])].map(entity => [entity.id, entity])).values()])
       setEncounterStatusInput(detail.status || 'prepared')
       setEncounterParticipantIds((detail.participants || []).map(item => item.actorId))
+      setEncounterEntitySelections((detail.entities || []).map(item => ({ entityId: item.id, quantity: item.quantity, positions: positionsForQuantity(item.positions, item.quantity) })))
+      setEncounterEntitySearch('')
       setEncounterBattleMap(currentMap)
       setEncounterMapAssociationId(associatedMap?.id || null)
       setReusableBattleMaps(availableMaps)
@@ -684,17 +851,29 @@ export default function App() {
     } catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
   }
+  const removeEncounterBattleMapAssignment = async () => {
+    if (!encounterDetails || !encounterMapAssociationId || role !== 'gm' || connection !== 'connected') return
+    setBusy(true); setError('')
+    try {
+      await removeEncounterBattleMap(encounterDetails.id, encounterMapAssociationId)
+      setMapScenes(await listMaps('gm'))
+      setEncounterBattleMap(null); setEncounterMapAssociationId(null)
+      setActionState('Battle map removed from this encounter. The saved map remains available in Maps.')
+    } catch (cause) { setError(displayError(cause)) }
+    finally { setBusy(false) }
+  }
   const returnToEncounterPreparation = async () => {
     const target = preparationReturn
     if (!target || role !== 'gm' || connection !== 'connected') return
     setSection('encounters'); setPreparationReturn(null); setOpenedLoreEncounterId('')
     setEncounterDetails(target.encounter); setEncounterNameInput(target.name); setEncounterSummaryInput(target.summary)
     setEncounterStatusInput(target.status); setEncounterParticipantIds(target.participantIds)
+    setEncounterEntitySelections(target.entitySelections)
     setActionState(`Returned to preparation for ${target.encounterName}.`)
   }
   const handoffFromPreparation = (target: 'characters' | 'maps' | 'lore') => {
     if (!encounterDetails) return
-    setPreparationReturn({ encounterId: encounterDetails.id, encounterName: encounterDetails.name, encounter: structuredClone(encounterDetails), name: encounterNameInput, summary: encounterSummaryInput, status: encounterStatusInput, participantIds: [...encounterParticipantIds] })
+    setPreparationReturn({ encounterId: encounterDetails.id, encounterName: encounterDetails.name, encounter: structuredClone(encounterDetails), name: encounterNameInput, summary: encounterSummaryInput, status: encounterStatusInput, participantIds: [...encounterParticipantIds], entitySelections: structuredClone(encounterEntitySelections) })
     if (target === 'maps') setMapTargetId(undefined)
     if (target === 'lore') setLoreTargetId(undefined)
     setSection(target)
@@ -754,10 +933,18 @@ export default function App() {
       if (updated.revision === undefined) throw new Error('Encounter revision missing from host response')
       const latest = await saveEncounterParticipants(updated.id, updated.revision,
         encounterParticipantIds.map((actorId, index) => ({ actorId, status: 'active', activationOrder: index })))
-      setEncounterDetails(latest)
-      setTableEncounters(current => [...current.filter(item => item.id !== latest.id), latest])
+      if (latest.revision === undefined) throw new Error('Encounter revision missing from host response')
+      const placementMap = encounterBattleMap || reusableBattleMaps.find(scene => scene.id === battleMapImportSourceId)
+      const saved = await saveEncounterEntities(latest.id, latest.revision, encounterEntitySelections.map(selection => ({
+        entityId: selection.entityId,
+        quantity: selection.quantity,
+        positions: positionsForQuantity(selection.positions, selection.quantity).map(position => snapNormalizedPosition(position, placementMap))
+      })))
+      setEncounterDetails(saved)
+      setEncounterEntitySelections((saved.entities || []).map(item => ({ entityId: item.id, quantity: item.quantity, positions: positionsForQuantity(item.positions, item.quantity) })))
+      setTableEncounters(current => [...current.filter(item => item.id !== saved.id), saved])
       setSnapshot(await host.load('gm'))
-      setActionState('Encounter and participants saved on host.')
+      setActionState('Encounter, participants, entity quantities, and map placements saved on host.')
     } catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
   }
@@ -934,6 +1121,28 @@ export default function App() {
     onCloseProposal={() => setActiveProposal(null)}
     onToggleCredential={memberId => setIssuedCredentials(current => current.map(item => item.memberId === memberId ? { ...item, visible: !item.visible } : item))}
   /> : undefined
+  const selectedBattleMap = reusableBattleMaps.find(scene => scene.id === battleMapImportSourceId)
+  const encounterPreviewScene = encounterBattleMap || selectedBattleMap
+  const encounterPreviewMarkers = encounterEntitySelections.flatMap(selection => {
+    const entity = encounterEntityRecords.find(item => item.id === selection.entityId)
+    if (!entity) return []
+    return positionsForQuantity(selection.positions, selection.quantity).map((position, index) => ({ key: `${selection.entityId}:${index}`, name: entity.name, imageUrl: encounterEntityImageUrls[entity.id], position }))
+  })
+  const moveEncounterEntity = (key: string, position: EntityPosition) => {
+    const separator = key.lastIndexOf(':')
+    const entityId = key.slice(0, separator), index = Number(key.slice(separator + 1))
+    setEncounterEntitySelections(current => current.map(selection => selection.entityId === entityId
+      ? { ...selection, positions: selection.positions.map((currentPosition, positionIndex) => positionIndex === index ? position : currentPosition) }
+      : selection))
+  }
+  const dropEntityOnMap = (entityId: string, position: EntityPosition) => setEncounterEntitySelections(current => {
+    const existing = current.find(selection => selection.entityId === entityId)
+    if (!existing) return [...current, { entityId, quantity: 1, positions: [position] }]
+    if (existing.quantity >= 1000) return current
+    return current.map(selection => selection.entityId === entityId
+      ? { ...selection, quantity: selection.quantity + 1, positions: [...positionsForQuantity(selection.positions, selection.quantity), position] }
+      : selection)
+  })
   return <CharacterPreparationContext.Provider value={{ encounters: tableEncounters, onReturn: preparationReturn ? () => void returnToPreparation() : undefined, onLinkEncounter: async (actorId, encounterId) => {
     if (role !== 'gm' || connection !== 'connected') return
     setBusy(true); setError('')
@@ -947,8 +1156,8 @@ export default function App() {
     } catch (cause) { setError(displayError(cause)) }
     finally { setBusy(false) }
   } }}><LoreTargetContext.Provider value={setLoreTargetId}><LoreRelationsContext.Provider value={loreRelations}><LoreArticlesContext.Provider value={loreArticles}><div className="app-shell">
-    <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{campaign?.name || snapshot?.context.campaignId || 'Connecting…'}</strong><small>{v2CampaignLock ? `${trustedV2Modules.find(module => module.id === v2CampaignLock.lock.rootModule.id && module.version === v2CampaignLock.lock.rootModule.version && module.digest === v2CampaignLock.lock.rootModule.digest)?.name || v2CampaignLock.lock.rootModule.id} · ${v2CampaignLock.lock.rootModule.version} (V2)` : campaign?.systemModuleId ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : v2SetupState === 'loading' ? 'Checking ruleset lock…' : 'Configure campaign in GM setup'}</small></div><nav aria-label="Applications"><button className={section === 'home' ? 'active' : ''} onClick={() => setSection('home')}>⌂ <span>Home</span></button><button className={section === 'table' ? 'active' : ''} onClick={() => setSection('table')}>▦ <span>Table</span></button><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▤ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><button className={section === 'encounters' ? 'active' : ''} onClick={() => setSection('encounters')}>⚑ <span>Encounters</span></button><button className={section === 'maps' ? 'active' : ''} onClick={() => { setMapTargetId(undefined); setSection('maps') }}>⌖ <span>Maps</span></button><button className={section === 'lore' ? 'active' : ''} onClick={() => { setLoreTargetId(undefined); setSection('lore') }}>▤ <span>Lore</span></button></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
-    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">{section === 'home' ? 'CAMPAIGN' : `WORKSPACE / ${section.toUpperCase()}`}</span><strong>{section === 'home' ? 'Campaign Home' : section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'table' ? 'Table' : section === 'characters' ? 'Characters' : section === 'lore' ? 'Lore' : section === 'maps' ? 'Maps' : 'Encounters'}</strong></div><div className="topbar-right">{!v2TaskAppActive && searchReturn && <button type="button" onClick={returnFromSearchResult}>Back to origin</button>}{!v2TaskAppActive && (campaignSearchAvailable(host.mode) ? <CampaignSearch key={`${role}:${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} role={role} identityKey={`${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} connected={connection === 'connected' && Boolean(snapshot)} onOpen={openSearchResult} /> : <span className="capability-note" role="status">Campaign search requires a configured host.</span>)}{!v2TaskAppActive && <span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>}{configuredHost && <button onClick={() => { setPlayerCredentialDraft(''); setPlayerCredentialDialogOpen(true) }}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId(''); setSearchReturn(null) }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>    <dialog className="player-credential-dialog" ref={playerCredentialDialogRef} aria-labelledby="player-credential-title" onCancel={event => { event.preventDefault(); setPlayerCredentialDialogOpen(false); setPlayerCredentialDraft('') }}>
+    <aside className="app-rail"><div className="rail-brand"><span className="brand-mark">◆</span><span>Potomac</span></div><div className="campaign-select"><small>CAMPAIGN</small><strong>{campaign?.name || snapshot?.context.campaignId || 'Connecting…'}</strong><small>{v2CampaignLock ? `${trustedV2Modules.find(module => module.id === v2CampaignLock.lock.rootModule.id && module.version === v2CampaignLock.lock.rootModule.version && module.digest === v2CampaignLock.lock.rootModule.digest)?.name || v2CampaignLock.lock.rootModule.id} · ${v2CampaignLock.lock.rootModule.version} (V2)` : campaign?.systemModuleId ? `${campaign.systemModuleId}@${campaign.systemModuleVersion}` : v2SetupState === 'loading' ? 'Checking ruleset lock…' : 'Configure campaign in GM setup'}</small></div><nav aria-label="Applications"><button className={section === 'home' ? 'active' : ''} onClick={() => setSection('home')}>⌂ <span>Home</span></button><button className={section === 'table' ? 'active' : ''} onClick={() => setSection('table')}>▦ <span>Table</span></button><button className={section === 'dashboard' ? 'active' : ''} onClick={() => setSection('dashboard')}>▤ <span>Dashboard</span></button><button className={section === 'characters' ? 'active' : ''} onClick={() => setSection('characters')}>♙ <span>Characters</span></button><button className={section === 'encounters' ? 'active' : ''} onClick={() => setSection('encounters')}>⚑ <span>Encounters</span></button>{role === 'gm' && <button className={section === 'entities' ? 'active' : ''} onClick={() => setSection('entities')}>◇ <span>Entities</span></button>}<button className={section === 'maps' ? 'active' : ''} onClick={() => { setMapTargetId(undefined); setSection('maps') }}>⌖ <span>Maps</span></button><button className={section === 'lore' ? 'active' : ''} onClick={() => { setLoreTargetId(undefined); setSection('lore') }}>▤ <span>Lore</span></button></nav><div className="rail-bottom"><button onClick={changeProfile}>◉ <span>Local profile: {profileId}</span></button><p>Preferences only · not identity</p></div></aside>
+    <div className="app-main"><header className="app-topbar"><div><span className="eyebrow">{section === 'home' ? 'CAMPAIGN' : `WORKSPACE / ${section.toUpperCase()}`}</span><strong>{section === 'home' ? 'Campaign Home' : section === 'dashboard' ? dashboard?.name || 'Dashboard' : section === 'table' ? 'Table' : section === 'characters' ? 'Characters' : section === 'entities' ? 'Entities' : section === 'lore' ? 'Lore' : section === 'maps' ? 'Maps' : 'Encounters'}</strong></div><div className="topbar-right">{!v2TaskAppActive && searchReturn && <button type="button" onClick={returnFromSearchResult}>Back to origin</button>}{!v2TaskAppActive && (campaignSearchAvailable(host.mode) ? <CampaignSearch key={`${role}:${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} role={role} identityKey={`${snapshot?.context.campaignId || ''}:${snapshot?.memberId || 'role-token'}:${identityRevision}:${snapshot?.context.cursor || 0}`} connected={connection === 'connected' && Boolean(snapshot)} onOpen={openSearchResult} /> : <span className="capability-note" role="status">Campaign search requires a configured host.</span>)}{!v2TaskAppActive && <span className={`status status-${connection}`} role="status">● {host.mode === 'demo' ? 'LOCAL PREVIEW' : connection === 'disconnected' && snapshot && lastSyncedAt ? `OFFLINE · cached ${new Date(lastSyncedAt).toLocaleString()}` : connection.toUpperCase()}</span>}{configuredHost && <button onClick={() => { setPlayerCredentialDraft(''); setPlayerCredentialDialogOpen(true) }}>Use player credential</button>}{configuredHost && loadRememberedIdentity(configuredHost) && <button onClick={() => void forgetDevice()}>Forget this device</button>}<label>Role <select value={role} onChange={event => { setSnapshot(null); setRole(event.target.value as Role); setSelectedActorId(''); setSearchReturn(null) }}><option value="gm">GM</option><option value="player">Player</option></select></label></div></header>    <dialog className="player-credential-dialog" ref={playerCredentialDialogRef} aria-labelledby="player-credential-title" onCancel={event => { event.preventDefault(); setPlayerCredentialDialogOpen(false); setPlayerCredentialDraft('') }}>
       <form onSubmit={event => void usePlayerCredential(event)}>
         <h2 id="player-credential-title">Sign in with your player credential</h2>
         <p>Paste the reusable credential your GM gave you. It stays in this browser profile for this campaign.</p>
@@ -988,7 +1197,7 @@ export default function App() {
     {role === 'player' && queued.length > 0 && <section className="action-status" aria-label="Your local operation status"><strong>Local edits</strong>{queued.slice(-8).map(row => <p key={row.operation.operationId}>{row.operation.actionId} · {row.state}{row.receipt?.reasonCode ? ` · ${row.receipt.reasonCode}` : ''}{row.lastError === 'transport' ? ' · host acknowledgement unavailable; retrying' : ''} · {row.operation.operationId.slice(0, 8)}{row.state === 'queued' && row.firstSubmittedAt === undefined && <button onClick={() => void cancelUnsentEdit(row.operation.operationId)}>Cancel unsent edit</button>}</p>)}</section>}
     {role === 'player' && snapshot?.memberId && <section className="action-status" aria-label="Private local drafts"><label><input type="checkbox" checked={draftNextEdit} onChange={event => setDraftNextEdit(event.target.checked)} /> Save next permitted action as a private draft (do not submit)</label><label>Require this authorized character to stay unchanged <select aria-label="Dependency guard" value={dependencyEntityId} onChange={event => { dependencyEntityIdRef.current = event.target.value; setDependencyEntityId(event.target.value) }}><option value="">No dependency guard</option>{snapshot.actors.filter(actor => actor.entityId !== selectedActor?.entityId).map(actor => <option key={actor.entityId} value={actor.entityId}>{actor.name} · revision {actor.revision}</option>)}</select></label>{drafts.length > 0 && <div><strong>Private drafts · {drafts.length}</strong>{drafts.map(draft => { const payload = draft.payload as { kind?: string; operation?: OfflineOperation; reason?: { code?: string; message?: string } } | null; return <div key={draft.draftId}><p>{payload?.operation?.actionId || 'Saved edit'} · local only {payload?.kind === 'offline-intent' && <button onClick={() => void submitPrivateDraft(draft)}>Queue for host</button>}{payload?.kind === 'offline-conflict' && <button onClick={() => void editPrivateDraft(draft)}>Edit private draft parameters</button>}<button onClick={() => void discardPrivateDraft(draft)}>Discard draft</button></p>{payload?.kind === 'offline-conflict' && <details><summary>Review saved intent · {payload.reason?.code || 'conflict'}</summary><p>{payload.reason?.message || 'Original offline intent retained locally.'}</p><p>Original operation <code>{payload.operation?.operationId}</code></p><pre>{JSON.stringify(payload.operation?.parameters, null, 2)}</pre></details>}</div> })}</div>}</section>}
     {role === 'player' && queued.filter(row => row.state === 'conflicted' || row.state === 'rejected').map(row => <div className="action-status" key={row.operation.operationId}><ConflictRecovery queuedOperation={row} reason={{ code: row.receipt?.reasonCode || (row.state === 'rejected' ? 'gm_rejected' : 'conflict'), message: conflictMessage(row.receipt?.reasonCode || (row.state === 'rejected' ? 'gm_rejected' : 'conflict')) }} authorizedCurrentActor={connection === 'connected' ? snapshot?.actors.find(actor => actor.entityId === row.operation.entityId) : null} authorizedCurrentDependencies={connection === 'connected' ? (row.operation.dependencies || []).map(dependency => snapshot?.actors.find(actor => actor.entityId === dependency.entityId)).filter((actor): actor is Actor => Boolean(actor)) : []} canDiscardLocalOutcome onRetainAsPrivateDraft={draft => withPlayerStorage(storage => storage.savePrivateDraft(draft).then(() => {}))} onDiscardLocalOutcome={operationId => withPlayerStorage(storage => storage.deleteLocalOutcome(operationId))} onCreateOperation={operation => withPlayerStorage(async storage => { await storage.enqueueOperation(operation); if (connection === 'connected' && snapshot) void syncPending(snapshot) })} /></div>)}
-    {v2CampaignLock && (section === 'characters' || section === 'encounters' || section === 'table') ? <V2ModulesApp key={`${role}:${snapshot?.memberId || 'gm'}:${section}`} view={section} initialCredential={credentialForRole(role)} initialEntityId={v2TableEntityId || undefined} onOpenInTable={openV2Table} onExit={() => setSection(section === 'characters' ? 'encounters' : 'home')} /> : section === 'home' ? <CampaignHome role={role} snapshot={snapshot} campaign={campaign} connection={connection} session={sessionSnapshot} v2SessionEnabled={Boolean(v2CampaignLock)} v2Credential={credentialForRole(role)} v2Ruleset={v2CampaignLock ? { id: v2CampaignLock.lock.rootModule.id, version: v2CampaignLock.lock.rootModule.version, name: trustedV2Modules.find(module => module.id === v2CampaignLock.lock.rootModule.id && module.version === v2CampaignLock.lock.rootModule.version && module.digest === v2CampaignLock.lock.rootModule.digest)?.name } : null} error={error} lore={loreArticles} maps={mapScenes} adminPanel={gmAdminPanel} onOpen={openCampaignHomeTarget} onCreate={createFromCampaignHome} /> : section === 'maps' ? <MapsApp key={`${role}:${snapshot?.context.campaignId || 'connecting'}`} role={role} connection={connection} campaignId={snapshot?.context.campaignId || ''} actors={snapshot?.actors || []} encounters={tableEncounters} loreArticles={loreArticles} hostAvailable={Boolean(configuredHost)} initialSceneId={mapTargetId} cachedScenes={snapshot?.role === role ? mapScenes : []} cachedBackgrounds={snapshot?.role === role ? mapBackgrounds : {}} cacheTimes={snapshot?.role === role ? mapCacheTimes : {}} onSceneChange={setMapScenes} onSelectedSceneChange={setMapTargetId} onHandoff={(app, entityId, originSceneId) => { if (app === 'lore' && entityId) { setLoreReturnMapId(originSceneId); setLoreTargetId(entityId); setSection('lore'); return } setSection(app); if (app === 'characters' && entityId) setSelectedActorId(entityId); if (app === 'encounters' && entityId) { const target = tableEncounters.find(item => item.id === entityId); if (target) { setEncounterDetails(target); setEncounterNameInput(target.name); setEncounterSummaryInput(target.summary) } } }} /> : section === 'dashboard' || section === 'table' ? <main className="dashboard-page">
+    {section === 'entities' ? <EntitiesApp isGm={role === 'gm'} hostAvailable={Boolean(configuredHost)} /> : v2CampaignLock && (section === 'characters' || section === 'encounters' || section === 'table') ? <V2ModulesApp key={`${role}:${snapshot?.memberId || 'gm'}:${section}`} view={section} initialCredential={credentialForRole(role)} initialEntityId={v2TableEntityId || undefined} onOpenInTable={openV2Table} onExit={() => setSection(section === 'characters' ? 'encounters' : 'home')} /> : section === 'home' ? <CampaignHome role={role} snapshot={snapshot} campaign={campaign} connection={connection} session={sessionSnapshot} v2SessionEnabled={Boolean(v2CampaignLock)} v2Credential={credentialForRole(role)} v2Ruleset={v2CampaignLock ? { id: v2CampaignLock.lock.rootModule.id, version: v2CampaignLock.lock.rootModule.version, name: trustedV2Modules.find(module => module.id === v2CampaignLock.lock.rootModule.id && module.version === v2CampaignLock.lock.rootModule.version && module.digest === v2CampaignLock.lock.rootModule.digest)?.name } : null} error={error} lore={loreArticles} maps={mapScenes} adminPanel={gmAdminPanel} onOpen={openCampaignHomeTarget} onCreate={createFromCampaignHome} /> : section === 'maps' ? <MapsApp key={`${role}:${snapshot?.context.campaignId || 'connecting'}`} role={role} connection={connection} campaignId={snapshot?.context.campaignId || ''} actors={snapshot?.actors || []} encounters={tableEncounters} loreArticles={loreArticles} hostAvailable={Boolean(configuredHost)} initialSceneId={mapTargetId} cachedScenes={snapshot?.role === role ? mapScenes : []} cachedBackgrounds={snapshot?.role === role ? mapBackgrounds : {}} cacheTimes={snapshot?.role === role ? mapCacheTimes : {}} onSceneChange={setMapScenes} onSelectedSceneChange={setMapTargetId} onHandoff={(app, entityId, originSceneId) => { if (app === 'lore' && entityId) { setLoreReturnMapId(originSceneId); setLoreTargetId(entityId); setSection('lore'); return } setSection(app); if (app === 'characters' && entityId) setSelectedActorId(entityId); if (app === 'encounters' && entityId) { const target = tableEncounters.find(item => item.id === entityId); if (target) { setEncounterDetails(target); setEncounterNameInput(target.name); setEncounterSummaryInput(target.summary) } } }} /> : section === 'dashboard' || section === 'table' ? <main className="dashboard-page">
       <div className="page-intro"><div><p className="eyebrow">{section === 'table' ? 'APPLICATION / TABLE' : 'YOUR CAMPAIGN, YOUR LAYOUT'}</p><h1>{section === 'table' ? 'Table' : dashboard?.name || 'Start a dashboard'}</h1><p>{section === 'table' ? 'Live session, authorized participants and recent activity.' : 'Personal panels follow shared play, while your arrangement stays yours.'}</p></div><div className="intro-actions">{section === 'table' && role === 'gm' && <button onClick={() => void returnToPreparation()}>Return to preparation</button>}<button className={editing ? 'primary' : ''} onClick={() => setEditing(!editing)}>{editing ? 'Done editing' : 'Edit layout'}</button></div></div>
       {section === 'table' && <section className="session-strip" aria-label="Table workflow"><div><p className="eyebrow">GM WORKFLOW</p><strong>{sessionSnapshot?.current ? sessionSnapshot.current.status === 'finished' ? 'Session ended' : `Session ${sessionSnapshot.current.status}` : 'Ready for a session'}</strong><small>{activeEncounter ? `Current encounter: ${activeEncounter.name}` : 'Choose and activate a prepared encounter before starting.'}</small></div>{role === 'gm' && activeEncounter && !sessionSnapshot?.current && <button className="primary" disabled={busy || connection !== 'connected'} onClick={() => void changeSession('start', { id: activeEncounter.id, revision: activeEncounter.revision || 0 })}>Start Table session</button>}</section>}
       <div className="dashboard-toolbar"><label>Group <select value={activeGroup?.id || ''} onChange={event => { const group = workspace.groups.find(item => item.id === event.target.value); update({ ...workspace, activeGroupId: event.target.value, activeDashboardId: group?.dashboardIds[0] || '' }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div className="dashboard-tabs" role="tablist" aria-label="Dashboards">{groupDashboards.map(item => <button role="tab" aria-selected={item.id === dashboard?.id} className={item.id === dashboard?.id ? 'active' : ''} key={item.id} onClick={() => update({ ...workspace, activeDashboardId: item.id })}>{item.name}</button>)}</div>{editing && <div className="toolbar-actions"><label>Move to <select aria-label="Move dashboard to group" value={activeGroup?.id || ''} disabled={!dashboard} onChange={event => { if (!dashboard) return; const groupId = event.target.value; update({ ...workspace, activeGroupId: groupId, groups: workspace.groups.map(group => ({ ...group, dashboardIds: group.id === groupId ? [...group.dashboardIds.filter(id => id !== dashboard.id), dashboard.id] : group.dashboardIds.filter(id => id !== dashboard.id) })) }) }}>{workspace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><button onClick={createGroup}>+ Group</button><button onClick={renameGroup} disabled={!activeGroup}>Rename group</button><button onClick={createDashboard}>+ Dashboard</button><button onClick={renameDashboard} disabled={!dashboard}>Rename</button><button onClick={deleteDashboard} disabled={!dashboard}>Delete</button><button className="primary" onClick={() => setPicker(!picker)}>+ Add brick</button></div>}</div>
@@ -1053,9 +1262,14 @@ export default function App() {
         <h2>Prepare {encounterDetails.name}</h2>
         <div className="preparation-handoffs" aria-label="Related preparation"><button type="button" onClick={() => handoffFromPreparation('characters')}>Create or link character</button><button type="button" onClick={() => handoffFromPreparation('maps')}>Create or link map</button><button type="button" onClick={() => handoffFromPreparation('lore')}>Create or link Lore</button>{preparationReturn && <button type="button" onClick={() => void returnToEncounterPreparation()}>Return to {preparationReturn.encounterName}</button>}</div>
         <fieldset className="encounter-map-import"><legend>Battle map</legend>
-          {encounterBattleMap ? <p>Current encounter copy: <strong>{encounterBattleMap.name}</strong> · {encounterBattleMap.width} × {encounterBattleMap.height}{encounterBattleMap.grid.type !== 'none' ? ` · ${encounterBattleMap.grid.type} grid` : ''}. It is independent of its reusable design.</p> : <p>No battle map imported.</p>}
-          {reusableBattleMaps.length > 0 ? <><label>Reusable battle map design<select aria-label="Reusable battle map design" value={battleMapImportSourceId} onChange={event => setBattleMapImportSourceId(event.target.value)}>{reusableBattleMaps.map(scene => <option key={scene.id} value={scene.id}>{scene.name} · {scene.width} × {scene.height}</option>)}</select></label><button type="button" disabled={busy || connection !== 'connected' || !battleMapImportSourceId} onClick={() => void importEncounterBattleMap()}>{encounterBattleMap ? 'Replace with independent copy' : 'Import independent copy'}</button>{encounterBattleMap && <small>The previous encounter copy remains in Maps; replacing it does not delete the old map or its history.</small>}</> : <><p>No reusable battle map designs are available.</p><button type="button" onClick={() => handoffFromPreparation('maps')}>Create a battle map design</button></>}
-          {encounterBattleMap && <button type="button" onClick={() => { setPreparationReturn({ encounterId: encounterDetails.id, encounterName: encounterDetails.name, encounter: structuredClone(encounterDetails), name: encounterNameInput, summary: encounterSummaryInput, status: encounterStatusInput, participantIds: [...encounterParticipantIds] }); setMapTargetId(encounterBattleMap.id); setSection('maps') }}>Open encounter map in Maps</button>}
+          {encounterBattleMap ? <div className="encounter-map-current"><p>Assigned encounter map: <strong>{encounterBattleMap.name}</strong> · {encounterBattleMap.width} × {encounterBattleMap.height}{encounterBattleMap.grid.type !== 'none' ? ` · ${encounterBattleMap.grid.type} grid` : ''}. It is independent of its reusable design.</p><button type="button" disabled={busy || connection !== 'connected'} onClick={() => void removeEncounterBattleMapAssignment()}>Remove map from encounter</button></div> : <p>No battle map imported.</p>}
+          {reusableBattleMaps.length > 0 ? <>
+            <label>Reusable battle map design<select aria-label="Reusable battle map design" value={battleMapImportSourceId} onChange={event => setBattleMapImportSourceId(event.target.value)}>{reusableBattleMaps.map(scene => <option key={scene.id} value={scene.id}>{scene.name} · {scene.width} × {scene.height}</option>)}</select></label>
+            {encounterPreviewScene && <EncounterBattleMapPreview scene={encounterPreviewScene} imageUrl={battleMapPreviewUrl || undefined} loading={battleMapPreviewState === 'loading'} unavailable={battleMapPreviewState === 'unavailable'} markers={encounterPreviewMarkers} onMoveMarker={moveEncounterEntity} onDropEntity={dropEntityOnMap} />}
+            <button type="button" disabled={busy || connection !== 'connected' || !battleMapImportSourceId} onClick={() => void importEncounterBattleMap()}>{encounterBattleMap ? 'Replace with independent copy' : 'Import independent copy'}</button>
+            {encounterBattleMap && <small>The previous encounter copy remains in Maps; replacing it does not delete the old map or its history.</small>}
+          </> : <>{encounterPreviewScene && <EncounterBattleMapPreview scene={encounterPreviewScene} imageUrl={battleMapPreviewUrl || undefined} loading={battleMapPreviewState === 'loading'} unavailable={battleMapPreviewState === 'unavailable'} markers={encounterPreviewMarkers} onMoveMarker={moveEncounterEntity} onDropEntity={dropEntityOnMap} />}<p>No reusable battle map designs are available.</p><button type="button" onClick={() => handoffFromPreparation('maps')}>Create a battle map design</button></>}
+          {encounterBattleMap && <button type="button" onClick={() => { setPreparationReturn({ encounterId: encounterDetails.id, encounterName: encounterDetails.name, encounter: structuredClone(encounterDetails), name: encounterNameInput, summary: encounterSummaryInput, status: encounterStatusInput, participantIds: [...encounterParticipantIds], entitySelections: structuredClone(encounterEntitySelections) }); setMapTargetId(encounterBattleMap.id); setSection('maps') }}>Open encounter map in Maps</button>}
         </fieldset>
         <label>Encounter name <input required maxLength={160} value={encounterNameInput} onChange={event => setEncounterNameInput(event.target.value)} /></label>
         <label>Player-visible summary <textarea maxLength={4000} value={encounterSummaryInput} onChange={event => setEncounterSummaryInput(event.target.value)} /></label>
@@ -1066,7 +1280,19 @@ export default function App() {
           <input type="checkbox" checked={encounterParticipantIds.includes(actor.entityId)} onChange={event => setEncounterParticipantIds(current => event.target.checked ? [...current, actor.entityId] : current.filter(id => id !== actor.entityId))} />
           {actor.name}
         </label>)}{!snapshot?.actors.length && <p>No characters available yet.</p>}</fieldset>
-        <button disabled={busy || connection !== 'connected'}>Save encounter and participants</button>
+        <fieldset className="encounter-entities"><legend>Entities in this encounter</legend>
+          <label htmlFor="encounter-entity-search">Search created entities</label>
+          <input id="encounter-entity-search" type="search" value={encounterEntitySearch} onChange={event => setEncounterEntitySearch(event.target.value)} placeholder="Search by name" />
+          {encounterEntitySelections.length > 0 && <ul aria-label="Selected encounter entities">{encounterEntitySelections.map(selection => {
+            const item = catalogEntities.find(entity => entity.id === selection.entityId) || encounterDetails.entities?.find(entity => entity.id === selection.entityId)
+            return <li key={selection.entityId}><strong>{item?.name || 'Unavailable entity'}</strong><label>Count <input type="number" min={1} max={1000} value={selection.quantity} onChange={event => { const quantity = Number(event.target.value); if (Number.isInteger(quantity) && quantity >= 1 && quantity <= 1000) setEncounterEntitySelections(current => current.map(row => row.entityId === selection.entityId ? { ...row, quantity, positions: positionsForQuantity(row.positions, quantity) } : row)) }} /></label><button type="button" onClick={() => setEncounterEntitySelections(current => current.filter(row => row.entityId !== selection.entityId))}>Remove</button></li>
+          })}</ul>}
+          <div className="encounter-entity-picker">{catalogEntities.map(item => {
+            const selected = encounterEntitySelections.some(row => row.entityId === item.id)
+            return <button key={item.id} type="button" aria-pressed={selected} disabled={selected} draggable={!selected} onDragStart={event => { event.dataTransfer.setData('application/x-potomac-entity-id', item.id); event.dataTransfer.effectAllowed = 'copy' }} onClick={() => setEncounterEntitySelections(current => [...current, { entityId: item.id, quantity: 1, positions: [defaultEntityPosition(current.length)] }])}>{selected ? 'Added' : `Add ${item.name} · drag to map`}</button>
+          })}{!catalogEntities.length && <p>{encounterEntitySearch.trim() ? 'No matching creatures.' : 'No creatures created yet. Add creatures in the Entities app first.'}</p>}</div>
+        </fieldset>
+        <button disabled={busy || connection !== 'connected'}>Save encounter, participants, and entities</button>
         <button type="button" onClick={() => setEncounterDetails(null)}>Close</button>
       </form>}
       {role === 'gm' && snapshot?.context.activeEncounter && <button disabled={busy || connection !== 'connected'}

@@ -8,7 +8,7 @@ import type { EncounterMapImport } from '@potomac/contracts'
 export type { MapScene, MapPiece, MapGrid, MapSceneKind } from '@potomac/contracts'
 export type MapPieceView = MapPiece
 export type MapSceneView = MapScene & { pieces: MapPieceView[]; encounterId?: string | null }
-export type MapCommand = { operationId: string; baseRevision: number; command: 'update' | 'archive' | 'restore' | 'publish' | 'revoke' | 'piece.put' | 'piece.delete' | 'link.put' | 'link.delete' | 'lore-link.put' | 'lore-link.delete' | 'encounter.set'; name?: string; kind?: MapScene['kind']; width?: number; height?: number; grid?: MapScene['grid']; visibility?: MapScene['visibility']; gmNotes?: string; piece?: Omit<MapPiece, 'revision'>; pieceId?: string; targetSceneId?: string; targetLoreEntryId?: string; label?: string; encounterId?: string | null }
+export type MapCommand = { operationId: string; baseRevision: number; command: 'update' | 'archive' | 'restore' | 'publish' | 'revoke' | 'piece.put' | 'piece.delete' | 'link.put' | 'link.delete' | 'lore-link.put' | 'lore-link.delete' | 'encounter.set'; name?: string; kind?: MapScene['kind']; width?: number; height?: number; grid?: MapScene['grid']; scalePieces?: boolean; visibility?: MapScene['visibility']; gmNotes?: string; piece?: Omit<MapPiece, 'revision'>; pieceId?: string; targetSceneId?: string; targetLoreEntryId?: string; label?: string; encounterId?: string | null }
 
 export async function listMaps(role: Role): Promise<MapSceneView[]> {
   if (!baseUrl) return []
@@ -37,11 +37,15 @@ export async function importBattleMapIntoEncounter(encounterId: string, input: E
   return http(`/api/encounters/${encodeURIComponent(encounterId)}/map/import`, 'gm', { method: 'POST', body: JSON.stringify(input) })
 }
 
+export async function removeEncounterBattleMap(encounterId: string, expectedCurrentSceneId: string, operationId = crypto.randomUUID()): Promise<void> {
+  await http(`/api/encounters/${encodeURIComponent(encounterId)}/map`, 'gm', { method: 'DELETE', body: JSON.stringify({ operationId, expectedCurrentSceneId }) })
+}
+
 export async function uploadMapBackground(id: string, file: File, baseRevision: number): Promise<{ assetId: string; revision: number }> {
   if (!baseUrl) throw new Error('Map backgrounds require a configured host')
   const response = await fetch(`${baseUrl}/api/maps/${encodeURIComponent(id)}/background`, { method: 'POST', headers: { authorization: `Bearer ${tokenFor('gm')}`, 'content-type': file.type, 'x-file-name': file.name, 'x-operation-id': crypto.randomUUID(), 'x-base-revision': String(baseRevision) }, body: file })
   const body = await response.json().catch(() => ({})) as { error?: string; assetId?: string; revision?: number }
-  if (!response.ok || !body.assetId || !Number.isSafeInteger(body.revision)) throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status)
+  if (!response.ok || !body.assetId || !Number.isSafeInteger(body.revision)) throw new HostRequestError(body.error || (response.status === 502 ? 'The local host could not be reached during the image upload. Check the connection and try again.' : `Host request failed (${response.status})`), response.status)
   return { assetId: body.assetId, revision: body.revision! }
 }
 
@@ -53,7 +57,10 @@ export async function fetchMapBackground(role: Role, id: string): Promise<Blob> 
 }
 
 export type Role = 'gm' | 'player'
-export type Encounter = { id: string; name: string; summary: string; status?: 'prepared' | 'active' | 'completed'; revision?: number; participants?: Array<{ actorId: string; initiative?: number | null; status?: string; activationOrder?: number | null }>; loreIds?: string[] }
+export type EntityKind = 'item' | 'creature'
+export type EntityRecord = { id: string; name: string; kind: EntityKind; revision: number; createdAt: string; updatedAt: string; image: { id: string; name: string; mediaType: string; byteSize: number; sha256: string } | null }
+export type EncounterEntity = EntityRecord & { quantity: number; positions: Array<{ x: number; y: number }> }
+export type Encounter = { id: string; name: string; summary: string; status?: 'prepared' | 'active' | 'completed'; revision?: number; participants?: Array<{ actorId: string; initiative?: number | null; status?: string; activationOrder?: number | null }>; entities?: EncounterEntity[]; loreIds?: string[] }
 export type LoreKind = 'location' | 'person' | 'faction' | 'quest' | 'item' | 'handout' | 'note'
 export type LoreVisibility = 'gm' | 'shared'
 export type LoreArticle = { id: string; campaignId?: string; title: string; summary?: string; kind: LoreKind; tags: string[]; body: string; revision: number; visibility: LoreVisibility; archived: boolean; updatedAt?: string; gmNotes?: string; linkedEncounterIds?: string[] }
@@ -251,6 +258,35 @@ export async function editCampaignEncounter(id: string, baseRevision: number, fi
 }
 export async function saveEncounterParticipants(id: string, baseRevision: number, participants: NonNullable<Encounter['participants']>): Promise<Encounter> {
   return http('/api/encounters/' + encodeURIComponent(id) + '/participants', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, participants }) })
+}
+export async function saveEncounterEntities(id: string, baseRevision: number, entities: Array<{ entityId: string; quantity: number; positions: Array<{ x: number; y: number }> }>): Promise<Encounter> {
+  return http('/api/encounters/' + encodeURIComponent(id) + '/entities', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision, entities }) })
+}
+export async function listEntities(query = '', kind?: EntityKind): Promise<EntityRecord[]> {
+  if (!baseUrl) return []
+  const params = new URLSearchParams()
+  if (query.trim()) params.set('q', query.trim())
+  if (kind) params.set('kind', kind)
+  const response = await http<{ entities: EntityRecord[] }>(`/api/entities${params.size ? `?${params}` : ''}`, 'gm')
+  return response.entities
+}
+export async function createEntity(name: string, kind: EntityKind = 'creature', operationId = crypto.randomUUID()): Promise<EntityRecord> {
+  if (!baseUrl) throw new Error('Entity records require a configured host')
+  const response = await http<{ entity: EntityRecord }>('/api/entities', 'gm', { method: 'POST', body: JSON.stringify({ name, kind, operationId }) })
+  return response.entity
+}
+export async function uploadEntityImage(entity: EntityRecord, file: File): Promise<EntityRecord> {
+  if (!baseUrl) throw new Error('Entity images require a configured host')
+  const response = await fetch(`${baseUrl}/api/entities/${encodeURIComponent(entity.id)}/image`, { method: 'POST', headers: { authorization: `Bearer ${tokenFor('gm')}`, 'content-type': file.type, 'x-file-name': file.name, 'x-operation-id': crypto.randomUUID(), 'x-base-revision': String(entity.revision) }, body: file })
+  const body = await response.json().catch(() => ({})) as { error?: string; entity?: EntityRecord }
+  if (!response.ok || !body.entity) throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status)
+  return body.entity
+}
+export async function fetchEntityImage(id: string): Promise<Blob> {
+  if (!baseUrl) throw new Error('Entity images require a configured host')
+  const response = await fetch(`${baseUrl}/api/entities/${encodeURIComponent(id)}/image/content`, { headers: { authorization: `Bearer ${tokenFor('gm')}` } })
+  if (!response.ok) { const body = await response.json().catch(() => ({})); throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status) }
+  return response.blob()
 }
 
 export async function listLore(role: Role): Promise<LoreArticle[]> {

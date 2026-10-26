@@ -11,7 +11,7 @@ import { loadTrustedV2Catalog, lockForTrustedModule } from './v2-catalog.mjs';
 import { createV2HostAdapter } from './v2-host.mjs';
 
 export const BACKUP_FORMAT = 'potomac.campaign-backup';
-export const BACKUP_SCHEMA_VERSION = 6;
+export const BACKUP_SCHEMA_VERSION = 9;
 const TRUSTED_V2_CATALOG = await loadTrustedV2Catalog();
 const V2_COLLECTIONS = ['campaign', 'modules', 'actors', 'encounters', 'encounter_participants', 'members', 'actor_grants', 'events', 'operations', 'offline_receipts', 'offline_proposals', 'offline_decisions'];
 const PR45_V3_COLLECTIONS = [...V2_COLLECTIONS, 'sessions', 'session_state', 'session_operations'];
@@ -27,6 +27,10 @@ const LEGACY_COLLECTIONS = [...LEGACY_TABLE_COLLECTIONS, 'assets'];
 const TABLES = {
   campaign: ['id', 'context', 'name', 'system_module_id', 'system_module_version', 'revision'], modules: ['id', 'version', 'manifest'],
   encounters: ['id', 'name', 'summary', 'status', 'revision', 'created_at', 'updated_at', 'visibility', 'gm_notes'],
+  catalog_entities: ['id', 'campaign_id', 'name', 'kind', 'revision', 'image_asset_id', 'created_at', 'updated_at'],
+  entity_assets: ['id', 'campaign_id', 'entity_id', 'original_name', 'media_type', 'byte_size', 'sha256', 'created_at'],
+  encounter_entities: ['encounter_id', 'entity_id', 'quantity', 'positions_json'],
+  entity_operations: ['operation_id', 'principal_id', 'request_hash', 'response'],
   encounter_participants: ['encounter_id', 'actor_id', 'initiative', 'status', 'activation_order'],
   actors: ['id', 'module_id', 'module_version', 'revision', 'data', 'visibility', 'owner_role', 'owner_member_id', 'legacy_shared', 'archived'],
   members: ['id', 'display_name', 'credential_hash', 'created_at', 'revoked_at'],
@@ -67,6 +71,19 @@ const TABLES = {
 const V2_TABLE_COLLECTIONS = ['v2_campaign_locks','v2_authority_versions','v2_effect_entities','v2_effect_receipts','v2_effect_events','v2_extension_entities','v2_extension_workflows','v2_extension_receipts','v2_extension_events','v2_extension_pending_commands','v2_reaction_windows','v2_reaction_submissions','v2_reaction_events'];
 const V6_TABLE_COLLECTIONS = [...TABLE_COLLECTIONS, ...V2_TABLE_COLLECTIONS];
 const V6_COLLECTIONS = [...V6_TABLE_COLLECTIONS, 'assets'];
+const ENTITY_TABLES = ['catalog_entities', 'entity_assets', 'encounter_entities', 'entity_operations'];
+const V7_TABLE_COLLECTIONS = [...V6_TABLE_COLLECTIONS, ...ENTITY_TABLES];
+const V7_COLLECTIONS = [...V7_TABLE_COLLECTIONS, 'assets'];
+const V7_BASE_TABLE_COLLECTIONS = [...TABLE_COLLECTIONS, ...ENTITY_TABLES];
+const V7_BASE_COLLECTIONS = [...V7_BASE_TABLE_COLLECTIONS, 'assets'];
+const V8_TABLE_COLLECTIONS = V7_TABLE_COLLECTIONS;
+const V8_COLLECTIONS = V7_COLLECTIONS;
+const V8_BASE_TABLE_COLLECTIONS = V7_BASE_TABLE_COLLECTIONS;
+const V8_BASE_COLLECTIONS = V7_BASE_COLLECTIONS;
+const V9_TABLE_COLLECTIONS = V8_TABLE_COLLECTIONS;
+const V9_COLLECTIONS = V8_COLLECTIONS;
+const V9_BASE_TABLE_COLLECTIONS = V8_BASE_TABLE_COLLECTIONS;
+const V9_BASE_COLLECTIONS = V8_BASE_COLLECTIONS;
 const canonicalize = value => Array.isArray(value) ? value.map(canonicalize)
   : value !== null && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])])) : value;
 const checksum = value => createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
@@ -78,7 +95,7 @@ const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_ASSET_BYTES = 384 * 1024 * 1024;
 
 function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_CATALOG) {
-  if (!archive || archive.format !== BACKUP_FORMAT || ![2, 3, 4, 5, BACKUP_SCHEMA_VERSION].includes(archive.schemaVersion)) fail('format or schema version is unsupported');
+  if (!archive || archive.format !== BACKUP_FORMAT || ![2, 3, 4, 5, 6, 7, 8, BACKUP_SCHEMA_VERSION].includes(archive.schemaVersion)) fail('format or schema version is unsupported');
   const version = archive.schemaVersion;
   if (!archive.manifest || archive.manifest.potomacDataVersion !== version || typeof archive.manifest.campaignId !== 'string' || !archive.manifest.campaignId || !Array.isArray(archive.manifest.modules) || !Array.isArray(archive.manifest.includedCollections)) fail('manifest is invalid');
   if (!archive.data || checksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data }) !== archive.integrity?.sha256) fail('integrity check failed');
@@ -92,17 +109,22 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
       : version === 3 && matchesCollections(V3_COLLECTIONS) ? 'lore-v3'
         : version === 4 && matchesCollections(V4_COLLECTIONS) ? 'v4'
           : version === 5 && matchesCollections(COLLECTIONS) ? 'v5'
-            : version === 5 && matchesCollections(LEGACY_COLLECTIONS) ? 'v5-legacy'
-              : version === 6 && matchesCollections(V6_COLLECTIONS) ? 'v6' : null;
+          : version === 5 && matchesCollections(LEGACY_COLLECTIONS) ? 'v5-legacy'
+              : version === 6 && matchesCollections(V6_COLLECTIONS) ? 'v6'
+                : version === 7 && matchesCollections(V7_COLLECTIONS) ? 'v7'
+                  : version === 7 && matchesCollections(V7_BASE_COLLECTIONS) ? 'v7-base'
+                    : version === 8 && matchesCollections(V8_COLLECTIONS) ? 'v8'
+                    : version === 8 && matchesCollections(V8_BASE_COLLECTIONS) ? 'v8-base'
+                      : version === 9 && matchesCollections(V9_COLLECTIONS) ? 'v9'
+                        : version === 9 && matchesCollections(V9_BASE_COLLECTIONS) ? 'v9-base' : null;
   if (!archiveLayout) fail('collection manifest is incomplete or does not match its schema');
   const expectedCollections = archiveLayout === 'v2' ? V2_COLLECTIONS
       : archiveLayout === 'pr45-v3' ? PR45_V3_COLLECTIONS
-      : archiveLayout === 'lore-v3' ? V3_COLLECTIONS : archiveLayout === 'v4' ? V4_COLLECTIONS : archiveLayout === 'v5-legacy' ? LEGACY_COLLECTIONS : archiveLayout === 'v6' ? V6_COLLECTIONS : COLLECTIONS;
+      : archiveLayout === 'lore-v3' ? V3_COLLECTIONS : archiveLayout === 'v4' ? V4_COLLECTIONS : archiveLayout === 'v5-legacy' ? LEGACY_COLLECTIONS : archiveLayout === 'v6' ? V6_COLLECTIONS : archiveLayout === 'v7' ? V7_COLLECTIONS : archiveLayout === 'v7-base' ? V7_BASE_COLLECTIONS : archiveLayout === 'v8' ? V8_COLLECTIONS : archiveLayout === 'v8-base' ? V8_BASE_COLLECTIONS : archiveLayout === 'v9' ? V9_COLLECTIONS : archiveLayout === 'v9-base' ? V9_BASE_COLLECTIONS : COLLECTIONS;
   for (const collection of expectedCollections) if (!Array.isArray(archive.data[collection])) fail(`collection ${collection} is missing or invalid`);
   if (Object.keys(archive.data).some(collection => !expectedCollections.includes(collection))) fail('archive contains an unsupported collection');
   if (archiveLayout === 'v5-legacy') archive.data.map_lore_links = [];
-  if (archiveLayout !== 'v6') for (const collection of V2_COLLECTIONS) archive.data[collection] ??= [];
-  if (archiveLayout !== 'v4' && archiveLayout !== 'v5' && archiveLayout !== 'v6') {
+  if (archiveLayout !== 'v4' && archiveLayout !== 'v5' && archiveLayout !== 'v6' && archiveLayout !== 'v7' && archiveLayout !== 'v7-base') {
     for (const collection of COLLECTIONS) archive.data[collection] ??= [];
     for (const collection of MAP_COLLECTIONS) archive.data[collection] ??= [];
     for (const row of archive.data.actors) row.archived ??= 0;
@@ -111,6 +133,7 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
     if (archiveLayout === 'v2' || archiveLayout === 'lore-v3')
       archive.data.session_state = [{ campaign_id: archive.manifest.campaignId, current_session_id: null, revision: 0 }];
   }
+  for (const collection of ENTITY_TABLES) archive.data[collection] ??= [];
   if (!Array.isArray(archive.data.assets)) fail('asset collection is missing or invalid');
   if (archive.data.campaign.length !== 1 || archive.data.campaign[0].id !== archive.manifest.campaignId) fail('campaign metadata does not match manifest');
   const modules = new Map(archive.data.modules.map(row => [`${row.id}@${row.version}`, row]));
@@ -135,7 +158,7 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
   if (Boolean(pinned.system_module_id) !== Boolean(pinned.system_module_version)) fail('campaign system pin is incomplete');
   if (pinned.system_module_id && !available.has(`${pinned.system_module_id}@${pinned.system_module_version}`)) fail('pinned campaign module is unavailable');
   if (!Number.isInteger(pinned.revision) || pinned.revision < 1) fail('campaign revision is invalid');
-  if (archiveLayout === 'v6') {
+  if (['v6','v7','v8','v9'].includes(archiveLayout)) {
     const locks = archive.data.v2_campaign_locks;
     if (locks.length > 1 || Boolean(locks.length) !== Boolean(archive.manifest.v2)) fail('V2 campaign lock metadata is missing or inconsistent');
     if (locks.length) {
@@ -194,7 +217,7 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
   if (context.activeEncounter !== null && context.activeEncounter !== undefined && !encounterIds.has(context.activeEncounter)) fail('active encounter reference is invalid');
   const ids = (name, key) => new Set(archive.data[name].map(row => row[key]));
   const actors = ids('actors', 'id'), members = ids('members', 'id'), proposals = ids('offline_proposals', 'id');
-  const v2GrantActors = new Set(archiveLayout === 'v6' ? archive.data.v2_effect_entities.map(row => `v2:${archive.manifest.campaignId}:${row.entity_id}`) : []);
+  const v2GrantActors = new Set(['v6', 'v7', 'v8'].includes(archiveLayout) ? archive.data.v2_effect_entities.map(row => `v2:${archive.manifest.campaignId}:${row.entity_id}`) : []);
   for (const participant of archive.data.encounter_participants)
     if (!encounterIds.has(participant.encounter_id) || !actors.has(participant.actor_id)) fail('participant references a missing encounter or actor');
   for (const grant of archive.data.actor_grants) if (!actors.has(grant.actor_id) && !v2GrantActors.has(grant.actor_id) || !members.has(grant.member_id)) fail('actor grant references a missing actor or member');
@@ -221,6 +244,29 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
   }
   for (const row of archive.data.lore_links) if (row.campaign_id !== archive.manifest.campaignId || !loreIds.has(row.source_id) || !['lore', 'actor', 'encounter'].includes(row.target_kind) || (row.target_kind === 'lore' && !loreIds.has(row.target_id)) || (row.target_kind === 'actor' && !actors.has(row.target_id)) || (row.target_kind === 'encounter' && !encounterIds.has(row.target_id))) fail('Lore link references an unavailable record');
   for (const asset of archive.data.lore_assets) if (!loreIds.has(asset.entry_id) || asset.campaign_id !== archive.manifest.campaignId || !Number.isSafeInteger(asset.byte_size) || asset.byte_size < 0 || !/^[a-f0-9]{64}$/.test(asset.sha256) || !archive.data.assets.some(bytes => bytes.sha256 === asset.sha256 && bytes.size === asset.byte_size)) fail('Lore asset references unavailable metadata or bytes');
+  if (['v7','v7-base','v8','v8-base','v9','v9-base'].includes(archiveLayout)) {
+    const entityIds = new Set(archive.data.catalog_entities.map(row => row.id));
+    const entityAssets = new Map(archive.data.entity_assets.map(row => [row.id, row]));
+    if (entityIds.size !== archive.data.catalog_entities.length || archive.data.catalog_entities.some(row => typeof row.id !== 'string' || !row.id || row.id.length > 128 || row.campaign_id !== archive.manifest.campaignId || typeof row.name !== 'string' || !row.name.trim() || row.name.length > 160 || row.kind !== undefined && !['item','creature'].includes(row.kind) || archiveLayout.startsWith('v9') && !row.kind || !Number.isInteger(row.revision) || row.revision < 1 || typeof row.created_at !== 'string' || !row.created_at || typeof row.updated_at !== 'string' || !row.updated_at || row.image_asset_id != null && !entityAssets.has(row.image_asset_id))) fail('entity catalog records are invalid');
+    for (const row of archive.data.catalog_entities) row.kind ??= 'creature';
+    if (entityAssets.size !== archive.data.entity_assets.length || archive.data.entity_assets.some(asset => {
+      const bytesRow = archive.data.assets.find(bytes => bytes.sha256 === asset.sha256 && bytes.size === asset.byte_size);
+      const bytes = bytesRow && Buffer.from(bytesRow.bytes, 'base64');
+      const validImage = asset.media_type === 'image/png' && bytes?.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || asset.media_type === 'image/jpeg' && bytes?.[0] === 255 && bytes?.[1] === 216 && bytes?.[2] === 255 || asset.media_type === 'image/gif' && ['GIF87a','GIF89a'].includes(bytes?.toString('ascii',0,6)) || asset.media_type === 'image/webp' && bytes?.toString('ascii',0,4) === 'RIFF' && bytes?.toString('ascii',8,12) === 'WEBP';
+      return typeof asset.id !== 'string' || !asset.id || asset.campaign_id !== archive.manifest.campaignId || !entityIds.has(asset.entity_id) || typeof asset.original_name !== 'string' || asset.original_name.length < 1 || asset.original_name.length > 160 || /[\\/\u0000-\u001f\u007f]/.test(asset.original_name) || asset.original_name.trim() !== asset.original_name || typeof asset.created_at !== 'string' || !asset.created_at || !Number.isSafeInteger(asset.byte_size) || asset.byte_size < 1 || asset.byte_size > MAX_ASSET_BYTES || !/^[a-f0-9]{64}$/.test(asset.sha256) || !validImage || !archive.data.catalog_entities.some(row => row.id === asset.entity_id && row.image_asset_id === asset.id);
+    })) fail('entity image metadata is invalid');
+    if (new Set(archive.data.entity_operations.map(row => row.operation_id)).size !== archive.data.entity_operations.length || archive.data.entity_operations.some(row => typeof row.operation_id !== 'string' || !row.operation_id || typeof row.principal_id !== 'string' || !row.principal_id || !/^[a-f0-9]{64}$/.test(row.request_hash) || typeof row.response !== 'string')) fail('entity operation receipts are invalid');
+    const encounterEntityKeys = new Set();
+    for (const row of archive.data.encounter_entities) {
+      const key = `${row.encounter_id}:${row.entity_id}`;
+      if (!encounterIds.has(row.encounter_id) || !entityIds.has(row.entity_id) || !Number.isInteger(row.quantity) || row.quantity < 1 || row.quantity > 1000 || encounterEntityKeys.has(key)) fail('encounter entity reference is invalid');
+      encounterEntityKeys.add(key);
+      if (archiveLayout === 'v8' || archiveLayout === 'v8-base') {
+        let positions; try { positions = JSON.parse(row.positions_json); } catch { fail('encounter entity positions are malformed'); }
+        if (!Array.isArray(positions) || positions.length !== row.quantity || positions.some(point => !point || Object.keys(point).some(key => !['x','y'].includes(key)) || !Number.isFinite(point.x) || point.x < 0 || point.x > 1 || !Number.isFinite(point.y) || point.y < 0 || point.y > 1)) fail('encounter entity positions are invalid');
+      } else row.positions_json ??= '[]';
+    }
+  }
   for (const row of archive.data.assets) {
     if (!row || !/^[a-f0-9]{64}$/.test(row.sha256) || !Number.isSafeInteger(row.size) || row.size < 0 || row.size > MAX_ASSET_BYTES || typeof row.bytes !== 'string' || Buffer.from(row.bytes, 'base64').toString('base64') !== row.bytes || Buffer.from(row.bytes, 'base64').length !== row.size || checksumBytes(Buffer.from(row.bytes, 'base64')) !== row.sha256) fail('asset bytes failed validation');
   }
@@ -229,11 +275,11 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
   const assetHashes = new Set(archive.data.assets.map(asset => asset.sha256));
   const referencedHashes = new Set(archive.data.lore_assets.map(asset => asset.sha256));
   if (archiveLayout === 'v4' && (assetHashes.size !== referencedHashes.size || [...assetHashes].some(hash => !referencedHashes.has(hash)))) fail('asset objects do not match Lore references');
-  if (archiveLayout === 'v5' || archiveLayout === 'v5-legacy') {
+  if (archiveLayout === 'v5' || archiveLayout === 'v5-legacy' || archiveLayout === 'v7' || archiveLayout === 'v7-base' || archiveLayout === 'v8' || archiveLayout === 'v8-base') {
     const scenes = ids('map_scenes','id'), pieces = ids('map_pieces','id');
     for (const scene of archive.data.map_scenes) {
       let grid; try { grid=JSON.parse(scene.grid); } catch { fail('map grid is malformed'); }
-      if (scene.campaign_id !== archive.manifest.campaignId || !['world','battle'].includes(scene.kind) || !['gm','shared'].includes(scene.visibility) || ![0,1].includes(scene.archived) || !Number.isInteger(scene.revision) || scene.revision < 1 || !Number.isFinite(scene.width) || scene.width < 1 || scene.width > 100000 || !Number.isFinite(scene.height) || scene.height < 1 || scene.height > 100000 || !grid || !['none','square','hex'].includes(grid.type) || !Number.isFinite(grid.size) || grid.size<0 || grid.size>10000 || grid.units!==undefined&&(typeof grid.units!=='string'||grid.units.length>32) || scene.background_id && !archive.data.map_assets.some(asset => asset.id === scene.background_id && asset.scene_id === scene.id)) fail('map scene is invalid');
+      if (scene.campaign_id !== archive.manifest.campaignId || !['world','battle'].includes(scene.kind) || !['gm','shared'].includes(scene.visibility) || ![0,1].includes(scene.archived) || !Number.isInteger(scene.revision) || scene.revision < 1 || !Number.isFinite(scene.width) || scene.width < 1 || scene.width > 100000 || !Number.isFinite(scene.height) || scene.height < 1 || scene.height > 100000 || !grid || !['none','square','hex'].includes(grid.type) || !Number.isFinite(grid.size) || grid.size<0 || grid.size>10000 || grid.units!==undefined&&(typeof grid.units!=='string'||grid.units.length>32) || grid.origin!==undefined&&(grid.type!=='square'||!grid.origin||Object.keys(grid.origin).some(key=>!['x','y'].includes(key))||!Number.isFinite(grid.origin.x)||grid.origin.x<0||grid.origin.x>=grid.size||!Number.isFinite(grid.origin.y)||grid.origin.y<0||grid.origin.y>=grid.size) || scene.background_id && !archive.data.map_assets.some(asset => asset.id === scene.background_id && asset.scene_id === scene.id)) fail('map scene is invalid');
     }
     const sceneRows=new Map(archive.data.map_scenes.map(row=>[row.id,row]));
     for (const piece of archive.data.map_pieces) { const scene=sceneRows.get(piece.scene_id); if (!scene || piece.kind === 'actor' && !actors.has(piece.actor_id) || piece.kind === 'actor' && !archive.data.actors.some(actor=>actor.id===piece.actor_id&&actor.module_id===pinned.system_module_id&&actor.module_version===pinned.system_module_version) || !['actor','pin'].includes(piece.kind) || !Number.isFinite(piece.x) || !Number.isFinite(piece.y) || piece.x < 0 || piece.y < 0 || piece.x>scene.width || piece.y>scene.height || ![0,1].includes(piece.visible) || !Number.isInteger(piece.revision) || piece.revision < 1) fail('map piece is invalid'); }
@@ -248,7 +294,8 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
       if (asset.campaign_id !== archive.manifest.campaignId || !scenes.has(asset.scene_id) || !archive.data.map_scenes.some(scene=>scene.id===asset.scene_id&&scene.background_id===asset.id) || !Number.isSafeInteger(asset.byte_size) || asset.byte_size < 0 || !/^[a-f0-9]{64}$/.test(asset.sha256) || !object || !signature) fail('map asset reference is invalid');
     }
     const referencedMapHashes = archive.data.map_assets.map(asset => asset.sha256);
-    if (assetHashes.size !== new Set([...referencedHashes, ...referencedMapHashes]).size || [...assetHashes].some(hash => !referencedHashes.has(hash) && !referencedMapHashes.includes(hash))) fail('asset objects do not match Lore or map references');
+    const referencedEntityHashes = ['v7','v7-base','v8','v8-base'].includes(archiveLayout) ? archive.data.entity_assets.map(asset => asset.sha256) : [];
+    if (assetHashes.size !== new Set([...referencedHashes, ...referencedMapHashes, ...referencedEntityHashes]).size || [...assetHashes].some(hash => !referencedHashes.has(hash) && !referencedMapHashes.includes(hash) && !referencedEntityHashes.includes(hash))) fail('asset objects do not match Lore, map or entity references');
   }
   return archive;
 }
@@ -265,10 +312,10 @@ export function exportCampaignBackup(databasePath, outputPath, { modulesDirector
     const hasV2Tables = snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='v2_campaign_locks'").get() !== undefined;
     const hasV2 = hasV2Tables && snapshot.prepare('SELECT 1 FROM v2_campaign_locks LIMIT 1').get() !== undefined;
     if (hasV2Tables && !hasV2 && V2_TABLE_COLLECTIONS.some(table => table !== 'v2_campaign_locks' && table !== 'v2_authority_versions' && snapshot.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())) fail('V2 records exist without a campaign lock');
-    const collections = hasV2 ? V6_TABLE_COLLECTIONS : TABLE_COLLECTIONS;
+    const collections = hasV2 ? V9_TABLE_COLLECTIONS : V9_BASE_TABLE_COLLECTIONS;
     const data = Object.fromEntries(collections.map(table => [table, snapshot.prepare(`SELECT ${TABLES[table].join(',')} FROM ${table} ORDER BY rowid`).all()]));
     data.assets = [];
-    const requiredHashes = [...new Set([...data.lore_assets, ...data.map_assets].map(asset => asset.sha256))].sort();
+    const requiredHashes = [...new Set([...data.lore_assets, ...data.map_assets, ...data.entity_assets].map(asset => asset.sha256))].sort();
     if (existsSync(assetsDirectory)) {
       if (!lstatSync(assetsDirectory).isDirectory()) fail('asset directory is not a regular directory');
       for (const name of readdirSync(assetsDirectory)) {
@@ -292,11 +339,12 @@ export function exportCampaignBackup(databasePath, outputPath, { modulesDirector
     data.assets = data.assets || [];
     const v2Lock = hasV2 ? data.v2_campaign_locks[0] : undefined;
     if (hasV2 && (!v2Lock || data.v2_campaign_locks.length !== 1)) fail('V2 export requires one pinned campaign capability lock');
-    const manifest = { potomacDataVersion: hasV2 ? 6 : 5, campaignId: data.campaign[0].id, modules, createdAt: now.toISOString(), includedCollections: hasV2 ? [...V6_COLLECTIONS] : [...COLLECTIONS], excludedData: ['browser layouts', 'browser caches', 'private browser drafts'] };
+    const manifest = { potomacDataVersion: BACKUP_SCHEMA_VERSION, campaignId: data.campaign[0].id, modules, createdAt: now.toISOString(), includedCollections: hasV2 ? [...V9_COLLECTIONS] : [...V9_BASE_COLLECTIONS], excludedData: ['browser layouts', 'browser caches', 'private browser drafts'] };
     if (v2Lock) manifest.v2 = { lock: JSON.parse(v2Lock.lock_json), lockDigest: v2Lock.lock_digest, authorityVersion: data.v2_authority_versions[0]?.version };
-    const content = { format: BACKUP_FORMAT, schemaVersion: hasV2 ? 6 : 5, manifest, data };
+    const content = { format: BACKUP_FORMAT, schemaVersion: BACKUP_SCHEMA_VERSION, manifest, data };
     const archive = { ...content, integrity: { algorithm: 'sha256', sha256: checksum(content) } };
     validateArchive(archive, modulesDirectory, trustedCatalog);
+    archive.integrity.sha256 = checksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data });
     writeFileSync(resolve(outputPath), `${JSON.stringify(archive, null, 2)}\n`, { flag: 'wx' });
     return archive.manifest;
   } finally {
@@ -345,13 +393,14 @@ export function restoreCampaignBackup(inputPath, destinationPath, { modulesDirec
     const schemaSql = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8').match(/const schema = `([\s\S]*?)`;/)?.[1];
     if (!schemaSql) fail('host schema could not be loaded');
     db.exec(schemaSql);
-    if (archive.schemaVersion === 6) db.exec(`${V2_HOST_LOCK_SCHEMA}\n${V2_EFFECT_SCHEMA}\n${V2_EXTENSION_SCHEMA}\n${V2_REACTION_SCHEMA}`);
+    const hasV2Archive = archive.schemaVersion === 6 || [7, 8, 9].includes(archive.schemaVersion) && (archive.data.v2_campaign_locks?.length || 0) > 0;
+    if (hasV2Archive) db.exec(`${V2_HOST_LOCK_SCHEMA}\n${V2_EFFECT_SCHEMA}\n${V2_EXTENSION_SCHEMA}\n${V2_REACTION_SCHEMA}`);
     const archiveLayout = archive.schemaVersion === 2 ? 'v2'
       : archive.schemaVersion === 3 && JSON.stringify([...archive.manifest.includedCollections].sort()) === JSON.stringify([...PR45_V3_COLLECTIONS].sort()) ? 'pr45-v3'
-        : archive.schemaVersion === 3 ? 'lore-v3' : archive.schemaVersion === 4 ? 'v4' : archive.schemaVersion === 6 ? 'v6' : 'v5';
+        : archive.schemaVersion === 3 ? 'lore-v3' : archive.schemaVersion === 4 ? 'v4' : archive.schemaVersion === 6 ? 'v6' : archive.schemaVersion === 7 ? archive.data.v2_campaign_locks?.length ? 'v7' : 'v7-base' : archive.schemaVersion === 8 ? archive.data.v2_campaign_locks?.length ? 'v8' : 'v8-base' : archive.schemaVersion === 9 ? archive.data.v2_campaign_locks?.length ? 'v9' : 'v9-base' : 'v5';
     const collections = archiveLayout === 'pr45-v3' ? PR45_V3_COLLECTIONS
       : archiveLayout === 'v2' || archiveLayout === 'lore-v3' ? V2_COLLECTIONS.concat(archiveLayout === 'lore-v3' ? ['lore_entries','lore_operations','lore_links'] : [])
-        : archiveLayout === 'v4' ? V4_TABLE_COLLECTIONS : archiveLayout === 'v6' ? V6_TABLE_COLLECTIONS : TABLE_COLLECTIONS;
+        : archiveLayout === 'v4' ? V4_TABLE_COLLECTIONS : archiveLayout === 'v6' ? V6_TABLE_COLLECTIONS : archiveLayout === 'v7' ? V7_TABLE_COLLECTIONS : archiveLayout === 'v7-base' ? V7_BASE_TABLE_COLLECTIONS : archiveLayout === 'v8' ? V8_TABLE_COLLECTIONS : archiveLayout === 'v8-base' ? V8_BASE_TABLE_COLLECTIONS : archiveLayout === 'v9' ? V9_TABLE_COLLECTIONS : archiveLayout === 'v9-base' ? V9_BASE_TABLE_COLLECTIONS : TABLE_COLLECTIONS;
     for (const table of collections) {
       const columns = TABLES[table];
       const insert = db.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`);
@@ -360,11 +409,13 @@ export function restoreCampaignBackup(inputPath, destinationPath, { modulesDirec
         if (column === 'archived') return 0;
         if (column === 'visibility') return table === 'encounters' ? 'public' : '{}';
         if (column === 'gm_notes') return '';
+        if (column === 'positions_json') return '[]';
+        if (column === 'kind' && table === 'catalog_entities') return 'creature';
         return null;
       }));
       if (table === collections[0]) onRestoreStage?.('during-row-import');
     }
-    if (archive.schemaVersion === 6) createV2HostAdapter({ db, campaignId: archive.manifest.campaignId, authenticateBearer: () => true, reauthorizePrincipal: () => true });
+    if (hasV2Archive) createV2HostAdapter({ db, campaignId: archive.manifest.campaignId, authenticateBearer: () => true, reauthorizePrincipal: () => true });
     db.exec('COMMIT;');
     db.close(); stagedDb = undefined;
     mkdirSync(stagedAssets);

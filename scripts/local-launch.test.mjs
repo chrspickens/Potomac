@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:net';
 import test from 'node:test';
-import { ensureViteShim, resetPlaytest, viteShimPath } from './local-launch.mjs';
+import { ensureViteShim, resetPlaytest, selectLocalPorts, viteShimPath } from './local-launch.mjs';
 
 async function withDirectory(run) {
   const directory = await mkdtemp(join(tmpdir(), 'potomac-local-launch-'));
@@ -12,6 +13,36 @@ async function withDirectory(run) {
 
 test('Vite shim path uses the Windows command shim name', () => {
   assert.match(viteShimPath('C:/potomac', 'win32'), /\.bin[\\/]vite\.CMD$/);
+});
+
+async function reservePort() {
+  const server = createServer();
+  await new Promise((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolvePromise);
+  });
+  return { port: server.address().port, close: () => new Promise((resolvePromise, reject) => server.close(error => error ? reject(error) : resolvePromise())) };
+}
+
+test('preferred ports are preserved when available and occupied ports fall back to distinct OS-assigned ports', async () => {
+  const occupied = await reservePort();
+  const preferredWeb = await reservePort();
+  await preferredWeb.close();
+  try {
+    const selected = await selectLocalPorts(occupied.port, preferredWeb.port);
+    assert.equal(selected.hostChanged, true);
+    assert.notEqual(selected.hostPort, occupied.port);
+    assert.equal(selected.webChanged, false);
+    assert.equal(selected.webPort, preferredWeb.port);
+    assert.notEqual(selected.hostPort, selected.webPort);
+  } finally {
+    await occupied.close();
+  }
+});
+
+test('invalid or duplicate preferred ports remain configuration errors', async () => {
+  await assert.rejects(selectLocalPorts(0, 5173), /different valid TCP ports/);
+  await assert.rejects(selectLocalPorts(4177, 4177), /different valid TCP ports/);
 });
 
 test('a missing Vite shim gets one repair attempt and succeeds when restored', async () => withDirectory(async directory => {
@@ -29,14 +60,23 @@ test('a missing Vite shim gets one repair attempt and succeeds when restored', a
 
 test('a failed Vite shim repair stops after one attempt with an actionable error', async () => withDirectory(async directory => {
   let attempts = 0;
-  await assert.rejects(ensureViteShim({ repoRoot: directory, platform: 'win32', runInstall: async () => { attempts++; return { code: 1, detail: 'pnpm exited with code 1' }; } }), /pnpm install --filter @potomac\/web\.\.\./);
+  await assert.rejects(ensureViteShim({ repoRoot: directory, platform: 'win32', runInstall: async () => { attempts++; return { code: 1, detail: 'pnpm exited with code 1' }; } }), /bounded dependency repair did not fix it/);
   assert.equal(attempts, 1);
 }));
 
-test('a successful install that leaves the shim missing is reported after one attempt', async () => withDirectory(async directory => {
+test('a successful no-op install gets one forced offline repair to restore the shim', async () => withDirectory(async directory => {
   let attempts = 0;
-  await assert.rejects(ensureViteShim({ repoRoot: directory, platform: 'win32', runInstall: async () => { attempts++; return { code: 0 }; } }), /still missing/);
-  assert.equal(attempts, 1);
+  const shim = viteShimPath(directory, 'win32');
+  const result = await ensureViteShim({ repoRoot: directory, platform: 'win32', runInstall: async (_root, options) => {
+    attempts++;
+    if (options?.force && options?.offline) {
+      await mkdir(join(directory, 'clients', 'web', 'node_modules', '.bin'), { recursive: true });
+      await writeFile(shim, '@echo off\r\n');
+    }
+    return { code: 0 };
+  } });
+  assert.equal(result, shim);
+  assert.equal(attempts, 2);
 }));
 
 test('an existing Vite shim does not invoke repair', async () => withDirectory(async directory => {
