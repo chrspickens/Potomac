@@ -29,6 +29,72 @@ async function readWithTimeout(reader) {
   } finally { clearTimeout(timer); }
 }
 
+test('importing a battle map makes an independent encounter copy without consuming the reusable design', async () => fixture(async ({ request, restart, getBase }) => {
+  const createdEncounter = await request('/api/encounters', 'gm', { id: 'map-import-encounter', name: 'Vault encounter' });
+  assert.equal(createdEncounter.status, 201);
+  const source = await json(await send(request, '/api/maps', { operationId: 'import-source-create', baseRevision: 0, id: 'reusable-vault', name: 'Vault layout', kind: 'battle', width: 40, height: 30, grid: { type: 'square', size: 5, fills: [{ x: 2, y: 3, color: '#A1B2C3' }] } }));
+  await send(request, '/api/maps/reusable-vault/commands', { operationId: 'import-source-piece', baseRevision: source.revision, command: 'piece.put', piece: { id: 'source-pin', kind: 'pin', label: 'Door', x: 10, y: 15, visible: true } });
+  const image = Buffer.alloc(24); Buffer.from([137,80,78,71,13,10,26,10]).copy(image); image.writeUInt32BE(2,16); image.writeUInt32BE(3,20);
+  const upload = await fetch(`${getBase()}/api/maps/reusable-vault/background`, { method: 'POST', headers: { authorization: 'Bearer local-gm', 'content-type': 'image/png', 'x-file-name': 'vault.png', 'x-operation-id': 'import-source-background', 'x-base-revision': '2' }, body: image });
+  assert.equal(upload.status, 201);
+  const sourceAfterEdit = await json(await request('/api/maps/reusable-vault'));
+  const importRequest = { operationId: 'import-copy-once', sourceSceneId: 'reusable-vault', sourceRevision: sourceAfterEdit.revision, copiedSceneId: 'vault-encounter-copy', expectedCurrentSceneId: null };
+  const importedResponse = await send(request, '/api/encounters/map-import-encounter/map/import', importRequest);
+  assert.equal(importedResponse.status, 200);
+  const imported = await json(importedResponse);
+  assert.equal(imported.sourceSceneId, 'reusable-vault');
+  assert.equal((await json(await send(request, '/api/encounters/map-import-encounter/map/import', importRequest))).sceneId, imported.sceneId, 'retry returns the original snapshot');
+  const sourceAfterImport = await json(await request('/api/maps/reusable-vault'));
+  const copied = await json(await request(`/api/maps/${imported.sceneId}`));
+  assert.equal(sourceAfterImport.encounterId, null, 'the design remains unassigned');
+  assert.equal(copied.encounterId, 'map-import-encounter');
+  assert.equal(copied.id, 'vault-encounter-copy');
+  assert.equal(copied.name, 'Encounter map: Vault encounter');
+  assert.deepEqual(copied.grid, sourceAfterEdit.grid);
+  assert.equal((await json(await request('/api/encounters/map-import-encounter/map'))).scene.id, copied.id, 'encounter lookup returns its associated map copy');
+  assert.equal(copied.background.sha256, sourceAfterEdit.background.sha256, 'the snapshot references the same content-addressed bytes');
+  assert.equal(copied.pieces.length, 1);
+  assert.notEqual(copied.pieces[0].id, sourceAfterEdit.pieces[0].id, 'scene-local piece identity is copied');
+  assert.equal(copied.pieces[0].label, 'Door');
+  await send(request, `/api/maps/${copied.id}/commands`, { operationId: 'edit-copy-only', baseRevision: copied.revision, command: 'update', name: 'Vault encounter layout' });
+  assert.equal((await json(await request('/api/maps/reusable-vault'))).name, 'Vault layout');
+  assert.equal((await request('/api/encounters', 'gm', { id: 'map-import-second-encounter', name: 'Second vault encounter' })).status, 201);
+  const secondImport = await send(request, '/api/encounters/map-import-second-encounter/map/import', { ...importRequest, operationId: 'import-copy-second', copiedSceneId: 'vault-second-copy', expectedCurrentSceneId: null });
+  assert.equal(secondImport.status, 200, 'the same reusable design can be imported into another encounter');
+  const secondCopy = await json(await request('/api/maps/vault-second-copy'));
+  assert.equal(secondCopy.encounterId, 'map-import-second-encounter');
+  assert.notEqual(secondCopy.id, copied.id);
+  assert.equal(secondCopy.pieces[0].label, copied.pieces[0].label);
+  await restart();
+  assert.deepEqual(await json(await send(request, '/api/encounters/map-import-encounter/map/import', importRequest)), imported, 'import receipt and copied map survive host restart');
+  assert.equal((await json(await request('/api/maps/reusable-vault'))).encounterId, null, 'reusable source remains independent after restart');
+  assert.equal((await json(await request(`/api/maps/${copied.id}`))).pieces[0].label, 'Door');
+  assert.equal((await request(`/api/maps/${copied.id}`, 'player')).status, 404, 'private imported map is still host-filtered from players');
+  assert.equal((await request('/api/encounters/map-import-encounter/map', 'player')).status, 404, 'player cannot resolve a private encounter map copy');
+
+  const conflict = await send(request, '/api/encounters/map-import-encounter/map/import', { ...importRequest, operationId: 'stale-map-copy', copiedSceneId: 'stale-map-copy-id', sourceRevision: sourceAfterEdit.revision, expectedCurrentSceneId: null });
+  assert.equal(conflict.status, 409, 'a stale encounter association cannot silently replace the current copy');
+  assert.equal((await send(request, '/api/encounters/map-import-encounter/map/import', { ...importRequest, operationId: 'player-map-copy', copiedSceneId: 'player-copy' }, 'player')).status, 403);
+  const world = await send(request, '/api/maps', { operationId: 'import-world-create', baseRevision: 0, id: 'import-world', name: 'World', kind: 'world', width: 20, height: 20 });
+  assert.equal(world.status, 200);
+  assert.equal((await send(request, '/api/encounters/map-import-encounter/map/import', { ...importRequest, operationId: 'import-world-reject', sourceSceneId: 'import-world', copiedSceneId: 'bad-world-copy' })).status, 404);
+}));
+
+test('square battle-map colors are RGB validated, revisioned, player-read-only, and durable', async () => fixture(async ({ request, restart }) => {
+  const created = await json(await send(request, '/api/maps', { operationId: 'paint-map-create', baseRevision: 0, id: 'paint-map', name: 'Paint map', kind: 'battle', width: 20, height: 20, grid: { type: 'square', size: 5 } }));
+  const fill = { x: 1, y: 2, color: '#12aBef' };
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-cell', baseRevision: created.revision, command: 'update', grid: { type: 'square', size: 5, fills: [fill] } })).status, 200);
+  assert.deepEqual((await json(await request('/api/maps/paint-map'))).grid.fills, [{ x: 1, y: 2, color: '#12ABEF' }]);
+  const current = await json(await request('/api/maps/paint-map'));
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-invalid-rgb', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [{ ...fill, color: 'rgb(12, 34, 56)' }] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-malformed-cell', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [null] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-duplicate-cell', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [fill, fill] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'paint-outside-map', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [{ ...fill, x: 4 }] } })).status, 400);
+  assert.equal((await send(request, '/api/maps/paint-map/commands', { operationId: 'player-paints', baseRevision: current.revision, command: 'update', grid: { ...current.grid, fills: [] } }, 'player')).status, 403);
+  await restart();
+  assert.deepEqual((await json(await request('/api/maps/paint-map'))).grid.fills, [{ x: 1, y: 2, color: '#12ABEF' }]);
+}));
+
 test('map scenes use revisioned idempotent commands, protect linked private destinations and manage shared image bytes', async () => fixture(async ({ request, restart, getBase }) => {
   const enrollment = await request('/api/members/enroll', 'gm', { displayName: 'Map player' });
   assert.equal(enrollment.status, 201);

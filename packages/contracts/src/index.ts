@@ -132,7 +132,7 @@ export type OfflineReceipt = {
 
 /** Host-authoritative scene and piece DTOs shared by the Maps app and bricks. */
 export type MapSceneKind = "world" | "battle";
-export type MapGrid = { type: "square" | "hex" | "none"; size: number; units?: string };
+export type MapGrid = { type: "square" | "hex" | "none"; size: number; units?: string; origin?: { x: number; y: number }; fills?: Array<{ x: number; y: number; color: string }> };
 export type MapScene = {
   id: string; campaignId: string; name: string; kind: MapSceneKind; revision: number;
   width: number; height: number; grid: MapGrid; visibility: "gm" | "shared";
@@ -151,6 +151,14 @@ export type MapPiece = {
 export type MapSceneCommand = { operationId: string; baseRevision: number };
 export type MapSceneCreate = MapSceneCommand & Pick<MapScene, "id" | "name" | "kind" | "width" | "height"> & Partial<Pick<MapScene, "grid" | "gmNotes">> & { campaignId?: string; visibility?: "gm" };
 export type MapSceneOperation = "update" | "archive" | "restore" | "publish" | "revoke" | "piece.put" | "piece.delete" | "link.put" | "link.delete" | "lore-link.put" | "lore-link.delete" | "encounter.set" | "background.remove";
+/** Importing is a host-side snapshot operation: the source remains reusable. */
+export type EncounterMapImport = {
+  operationId: string;
+  sourceSceneId: string;
+  sourceRevision: number;
+  copiedSceneId: string;
+  expectedCurrentSceneId: string | null;
+};
 export type MapPieceCommand = MapSceneCommand & {
   pieceId?: string; piece?: Omit<MapPiece, "revision">;
 };

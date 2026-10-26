@@ -28,6 +28,7 @@ The current localhost 0.3 experiment uses SSE rather than the proposed WebSocket
 | Lore assets and portable archive | SQLite metadata plus host-managed bytes; backup carries bytes and integrity data; next archive imports supported v2/v3 without merging or overwriting | Accepted for 0.6 requirements; see [ADR-0013](adr/0013-managed-assets-and-portable-backup.md) |
 | Normal UI entry for trusted V2 | Experimental loopback-only selection from the host trusted catalog on a fresh single-campaign host; immutable host-pinned lock opens the generic module workspace | Implemented as a first onboarding increment; see [ADR-0014](adr/0014-normal-ui-trusted-v2-onboarding.md) |
 | Trusted V2 task applications | Compose module-owned schemas, preparation, actions, and session controls through Characters, Encounters, and Table; no Rules navigation destination | Implemented for the experimental local-host flow; see [ADR-0015](adr/0015-v2-task-applications.md) |
+| Entity catalog and encounter roster | Campaign-scoped named records with managed images; encounters select quantities and grid-snapped placements without changing character participation | Implemented as a GM-only first pass; see [ADR-0029](adr/0029-entity-catalog-and-encounter-roster.md) |
 
 ## Questions to answer through experiments
 
@@ -57,6 +58,8 @@ Record consequential new implementation decisions as small ADRs under `docs/adr/
 - [ADR 0013 — Managed Lore assets and portable backup](adr/0013-managed-assets-and-portable-backup.md)
 - [ADR 0014 — Normal UI entry for trusted V2 campaigns](adr/0014-normal-ui-trusted-v2-onboarding.md)
 - [ADR 0015 — Compose trusted V2 modules through task applications](adr/0015-v2-task-applications.md)
+- [ADR 0029 — Campaign entity catalog and encounter roster](adr/0029-entity-catalog-and-encounter-roster.md)
+- [ADR 0030 — Battle map grid calibration](adr/0030-battle-map-grid-calibration.md)
 - [ADR 0004 — One campaign per host and exact system pin](adr/0004-single-campaign-and-system-pin.md)
 - [ADR 0005 — Host authorization and entity visibility](adr/0005-host-authorization-and-entity-visibility.md)
 - [ADR 0006 — Encounter lifecycle and session activation](adr/0006-encounter-lifecycle.md)

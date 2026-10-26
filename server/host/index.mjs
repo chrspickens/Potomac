@@ -20,6 +20,12 @@ CREATE INDEX IF NOT EXISTS offline_proposals_status_created ON offline_proposals
 CREATE INDEX IF NOT EXISTS offline_proposals_member_created ON offline_proposals(member_id, created_at);
 CREATE TABLE IF NOT EXISTS campaign (id TEXT PRIMARY KEY, context TEXT NOT NULL DEFAULT '{}', name TEXT NOT NULL DEFAULT '', system_module_id TEXT, system_module_version TEXT, revision INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS encounters (id TEXT PRIMARY KEY, name TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'prepared', revision INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT 'public', gm_notes TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS catalog_entities (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'creature', revision INTEGER NOT NULL DEFAULT 1, image_asset_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS catalog_entities_campaign ON catalog_entities(campaign_id,name,id);
+CREATE TABLE IF NOT EXISTS entity_assets (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, entity_id TEXT NOT NULL REFERENCES catalog_entities(id) ON DELETE CASCADE, original_name TEXT NOT NULL, media_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS entity_assets_entity ON entity_assets(campaign_id,entity_id);
+CREATE TABLE IF NOT EXISTS encounter_entities (encounter_id TEXT NOT NULL REFERENCES encounters(id) ON DELETE CASCADE, entity_id TEXT NOT NULL REFERENCES catalog_entities(id), quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 1000), positions_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(encounter_id,entity_id));
+CREATE TABLE IF NOT EXISTS entity_operations (operation_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL, request_hash TEXT NOT NULL, response TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, encounter_id TEXT, status TEXT NOT NULL CHECK(status IN ('active','paused','finished')), revision INTEGER NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT);
 CREATE TABLE IF NOT EXISTS session_state (campaign_id TEXT PRIMARY KEY, current_session_id TEXT REFERENCES sessions(id), revision INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS session_operations (operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, principal_id TEXT NOT NULL, response TEXT NOT NULL);
@@ -47,12 +53,37 @@ CREATE TABLE IF NOT EXISTS map_operations (operation_id TEXT PRIMARY KEY, princi
 
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_CAMPAIGN_ASSET_BYTES = 100 * 1024 * 1024;
+const validBattleGrid = (grid, kind, width, height) => {
+  if (!grid || !['none','square','hex'].includes(grid.type) || !Number.isFinite(grid.size) || grid.size < 0 || grid.size > 10000 || grid.type !== 'none' && grid.size < 1 || grid.units !== undefined && (typeof grid.units !== 'string' || grid.units.length > 32)) return false;
+  if (grid.origin !== undefined && (grid.type !== 'square' || !grid.origin || Object.keys(grid.origin).some(key => !['x','y'].includes(key)) || !Number.isFinite(grid.origin.x) || !Number.isFinite(grid.origin.y) || grid.origin.x < 0 || grid.origin.y < 0 || grid.origin.x >= grid.size || grid.origin.y >= grid.size)) return false;
+  if (grid.fills === undefined) return true;
+  if (!Array.isArray(grid.fills) || grid.fills.length > 10000 || grid.fills.length > 0 && (kind !== 'battle' || grid.type !== 'square')) return false;
+  const cells = new Set();
+  for (const fill of grid.fills) {
+    const origin = grid.origin || { x: 0, y: 0 };
+    if (!fill || Object.keys(fill).some(key => !['x','y','color'].includes(key)) || !Number.isInteger(fill.x) || !Number.isInteger(fill.y) || origin.x + (fill.x + 1) * grid.size <= 0 || origin.x + fill.x * grid.size >= width || origin.y + (fill.y + 1) * grid.size <= 0 || origin.y + fill.y * grid.size >= height || typeof fill.color !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(fill.color)) return false;
+    const cellId = `${fill.x},${fill.y}`;
+    if (cells.has(cellId)) return false;
+    cells.add(cellId);
+  }
+  return true;
+};
 const v2AuthorityProof = Symbol('v2AuthorityProof');
 const ASSET_TYPES = {
   'image/png': { extension: '.png', signature: bytes => bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) },
   'image/jpeg': { extension: '.jpg', signature: bytes => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
   'image/gif': { extension: '.gif', signature: bytes => bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6)) },
   'image/webp': { extension: '.webp', signature: bytes => bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' }
+};
+const validImageBytes = (bytes, mediaType) => {
+  const type = ASSET_TYPES[mediaType];
+  if (!type || !type.signature(bytes)) return false;
+  let width = 0, height = 0;
+  if (mediaType === 'image/png' && bytes.length >= 24) { width = bytes.readUInt32BE(16); height = bytes.readUInt32BE(20); }
+  else if (mediaType === 'image/gif' && bytes.length >= 10) { width = bytes.readUInt16LE(6); height = bytes.readUInt16LE(8); }
+  else if (mediaType === 'image/webp' && bytes.length >= 30 && bytes.toString('ascii',12,16) === 'VP8X') { width = 1 + bytes.readUIntLE(24,3); height = 1 + bytes.readUIntLE(27,3); }
+  else if (mediaType === 'image/jpeg') { for (let offset=2; offset+9<bytes.length;) { if (bytes[offset++] !== 0xff) continue; const marker=bytes[offset++]; if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)) { height=bytes.readUInt16BE(offset+3); width=bytes.readUInt16BE(offset+5); break; } const length=bytes.readUInt16BE(offset); if (length<2) break; offset+=length; } }
+  return Boolean(width && height && width <= 20000 && height <= 20000 && width * height <= 100_000_000);
 };
 
 const readRawBody = (req, limit) => new Promise((resolveBody, reject) => {
@@ -168,8 +199,12 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const db = new DatabaseSync(databasePath);
   db.exec(schema);
   const loreColumns = new Set(db.prepare('PRAGMA table_info(lore_entries)').all().map(column => column.name));
+  const encounterEntityColumns = new Set(db.prepare('PRAGMA table_info(encounter_entities)').all().map(column => column.name));
+  const catalogEntityColumns = new Set(db.prepare('PRAGMA table_info(catalog_entities)').all().map(column => column.name));
   db.exec('BEGIN IMMEDIATE;');
   try {
+    if (!encounterEntityColumns.has('positions_json')) db.exec("ALTER TABLE encounter_entities ADD COLUMN positions_json TEXT NOT NULL DEFAULT '[]'");
+    if (!catalogEntityColumns.has('kind')) db.exec("ALTER TABLE catalog_entities ADD COLUMN kind TEXT NOT NULL DEFAULT 'creature'");
     if (!loreColumns.has('type')) db.exec("ALTER TABLE lore_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'note'");
     if (!loreColumns.has('visibility')) {
       db.exec("ALTER TABLE lore_entries ADD COLUMN visibility TEXT NOT NULL DEFAULT 'gm'");
@@ -182,6 +217,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
     try { db.exec('ROLLBACK;'); } catch { /* transaction may not be active */ }
     throw error;
   }
+  db.exec('CREATE INDEX IF NOT EXISTS catalog_entities_campaign_kind ON catalog_entities(campaign_id,kind,name,id)');
   // These tables are additive: opening a pre-Lore 0.5 database preserves all
   // existing host records and starts the new campaign-scoped collection empty.
   const actorColumns = new Set(db.prepare('PRAGMA table_info(actors)').all().map(column => column.name));
@@ -231,6 +267,9 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
   const actorRow = db.prepare('SELECT * FROM actors WHERE id=?');
   const loreRow = db.prepare('SELECT * FROM lore_entries WHERE id=? AND campaign_id=?');
   const assetPath = hash => resolve(assetDirectory, hash);
+  const catalogEntityRow = db.prepare('SELECT * FROM catalog_entities WHERE id=? AND campaign_id=?');
+  const catalogEntityJson = row => ({ id: row.id, name: row.name, kind: row.kind || 'creature', revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
+    image: row.image_asset_id ? (() => { const asset = db.prepare('SELECT id,original_name,media_type,byte_size,sha256 FROM entity_assets WHERE id=? AND entity_id=? AND campaign_id=?').get(row.image_asset_id,row.id,campaignId); return asset ? { id: asset.id, name: asset.original_name, mediaType: asset.media_type, byteSize: asset.byte_size, sha256: asset.sha256 } : null; })() : null });
   const loreAssetRow = db.prepare('SELECT * FROM lore_assets WHERE id=? AND campaign_id=?');
   const mapSceneRow = db.prepare('SELECT * FROM map_scenes WHERE id=? AND campaign_id=?');
   const canReadMap = (scene, auth) => Boolean(scene && scene.campaign_id === campaignId && (auth.role === 'gm' || !scene.archived && scene.visibility === 'shared' && memberIsActive(auth.memberId)));
@@ -445,7 +484,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       .all(row.id).filter(participant => {
         const actor = actorRow.get(participant.actor_id);
         return actor && !actor.archived && canReadActor(actor, auth);
-      }).map(({ actor_id, initiative, status, activation_order }) => ({ actorId: actor_id, initiative, status, activationOrder: activation_order }))
+      }).map(({ actor_id, initiative, status, activation_order }) => ({ actorId: actor_id, initiative, status, activationOrder: activation_order })),
+    ...(auth.role === 'gm' ? { entities: db.prepare('SELECT ce.*,ee.quantity,ee.positions_json FROM encounter_entities ee JOIN catalog_entities ce ON ce.id=ee.entity_id WHERE ee.encounter_id=? AND ce.campaign_id=? ORDER BY ce.name COLLATE NOCASE,ce.id').all(row.id,campaignId).map(entity => ({ ...catalogEntityJson(entity), quantity: entity.quantity, positions: JSON.parse(entity.positions_json || '[]') })) } : {})
   });
   const publicEncounters = (auth) => db.prepare('SELECT * FROM encounters ORDER BY id').all().filter(row => auth.role === 'gm' || row.visibility === 'public').map(row => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, revision: row.revision, ...(auth.role === 'gm' ? { gmNotes: row.gm_notes || '' } : {}) }));
   const searchKey = result => `${result.kind}:${result.id}`;
@@ -694,6 +734,83 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           return json(res, 404, { error: 'V2 endpoint not found', reasonCode: 'unavailable' });
         } catch (error) { return v2Error(error); }
       }
+      if (url.pathname === '/api/entities' && req.method === 'GET') {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+        const query = (url.searchParams.get('q') || '').trim();
+        const kind = url.searchParams.get('kind');
+        if (query.length > 200) return json(res, 400, { error: 'Entity search query is too long', reasonCode: 'invalid_entity_query' });
+        if (kind !== null && !['item','creature'].includes(kind)) return json(res, 400, { error: 'Entity kind must be item or creature', reasonCode: 'invalid_entity_kind' });
+        const where = `campaign_id=?${kind ? ' AND kind=?' : ''}`;
+        const args = kind ? [campaignId,kind] : [campaignId];
+        const search = query ? " AND name LIKE ? ESCAPE '\\'" : '';
+        if (query) args.push(`%${query.replace(/[\\%_]/g, '\\$&')}%`);
+        const rows = db.prepare(`SELECT * FROM catalog_entities WHERE ${where}${search} ORDER BY name COLLATE NOCASE,id LIMIT 200`).all(...args);
+        return json(res, 200, { entities: rows.map(catalogEntityJson) });
+      }
+      if (url.pathname === '/api/entities' && req.method === 'POST') {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+        const body = await readBody(req);
+        if (!body || Object.keys(body).some(key => !['operationId','name','kind'].includes(key)) || typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.operationId) || typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 160 || body.kind !== undefined && !['item','creature'].includes(body.kind)) return json(res, 400, { error: 'A valid operation ID, entity name, and supported kind are required', reasonCode: 'invalid_entity' });
+        const name = body.name.trim(), kind = body.kind || 'creature', identity = kind === 'creature' ? { campaignId, name } : { campaignId, kind, name }, requestHash = createHash('sha256').update(canonicalJson(identity)).digest('hex');
+        const cached = db.prepare('SELECT * FROM entity_operations WHERE operation_id=?').get(body.operationId);
+        if (cached) {
+          if (cached.principal_id !== auth.principalId || cached.request_hash !== requestHash) return json(res, 409, { error: 'Operation ID was already used for a different entity command', reasonCode: 'operation_conflict' });
+          const response = JSON.parse(cached.response);
+          const current = response.entity && catalogEntityRow.get(response.entity.id,campaignId);
+          if (current) response.entity = catalogEntityJson(current);
+          return json(res, 200, response);
+        }
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM map_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=?').get(body.operationId,body.operationId,body.operationId,body.operationId,body.operationId)) return json(res, 409, { error: 'Operation ID is already in use', reasonCode: 'operation_conflict' });
+        const id = randomUUID(), now = new Date().toISOString();
+        const result = transaction(() => {
+          db.prepare('INSERT INTO catalog_entities(id,campaign_id,name,kind,revision,created_at,updated_at) VALUES(?,?,?,?,1,?,?)').run(id,campaignId,name,kind,now,now);
+          const entity = catalogEntityJson(catalogEntityRow.get(id,campaignId));
+          const response = { operationId: body.operationId, status: 'applied', entity };
+          insertEvent({ operationId: body.operationId, kind: 'entity.created', visibility: 'gm', payload: { entityId: id, revision: 1 } });
+          db.prepare('INSERT INTO entity_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId,auth.principalId,requestHash,JSON.stringify(response));
+          return response;
+        });
+        notify(); return json(res, 201, result);
+      }
+      const entityImageMatch = url.pathname.match(/^\/api\/entities\/([^/]+)\/image(?:\/content)?$/);
+      if (entityImageMatch && req.method === 'POST' && url.pathname.endsWith('/image')) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+        const id = decodeURIComponent(entityImageMatch[1]), entity = catalogEntityRow.get(id,campaignId);
+        if (!entity) return json(res,404,{error:'Entity not found'});
+        const operationId=req.headers['x-operation-id'], baseRevision=Number(req.headers['x-base-revision']), name=req.headers['x-file-name'], mediaType=String(req.headers['content-type']||'').split(';',1)[0].trim().toLowerCase(), type=ASSET_TYPES[mediaType];
+        const extensionMatches = mediaType === 'image/jpeg' ? /\.(?:jpe?g)$/i.test(name || '') : Boolean(type && typeof name === 'string' && name.toLowerCase().endsWith(type.extension));
+        if (typeof operationId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(operationId)||!Number.isInteger(baseRevision)||typeof name!=='string'||!type||name.length<1||name.length>160||/[\\/\u0000-\u001f\u007f]/.test(name)||name.trim()!==name||!extensionMatches) return json(res,400,{error:'Operation, revision, safe filename and supported image type are required',reasonCode:'invalid_asset'});
+        const bytes=await readRawBody(req,MAX_ASSET_BYTES);
+        if(!bytes.length||!validImageBytes(bytes,mediaType)) return json(res,400,{error:'Image bytes, type or dimensions are invalid',reasonCode:'invalid_asset'});
+        const hash=createHash('sha256').update(bytes).digest('hex'), requestHash=createHash('sha256').update(canonicalJson({campaignId,id,baseRevision,name,mediaType,sha256:hash})).digest('hex');
+        const cached=db.prepare('SELECT * FROM entity_operations WHERE operation_id=?').get(operationId);
+        if(cached) return cached.principal_id===auth.principalId&&cached.request_hash===requestHash?json(res,200,JSON.parse(cached.response)):json(res,409,{error:'Operation ID was already used for a different entity command',reasonCode:'operation_conflict'});
+        if(db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM map_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=?').get(operationId,operationId,operationId,operationId,operationId)) return json(res,409,{error:'Operation ID is already in use',reasonCode:'operation_conflict'});
+        if(entity.revision!==baseRevision) return json(res,409,{error:'Entity revision conflict',reasonCode:'revision_conflict',currentRevision:entity.revision});
+        const used=Number(db.prepare('SELECT COALESCE(SUM(size),0) total FROM (SELECT MAX(byte_size) size,sha256 FROM (SELECT byte_size,sha256 FROM lore_assets WHERE campaign_id=? UNION ALL SELECT byte_size,sha256 FROM map_assets WHERE campaign_id=? UNION ALL SELECT byte_size,sha256 FROM entity_assets WHERE campaign_id=?) GROUP BY sha256)').get(campaignId,campaignId,campaignId).total);
+        if(used+(db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(hash,hash,hash)?0:bytes.length)>MAX_CAMPAIGN_ASSET_BYTES) return json(res,413,{error:'Campaign asset storage exceeds the 100 MiB limit',reasonCode:'campaign_asset_limit'});
+        const destination=assetPath(hash),temporary=resolve(assetDirectory,`.upload-${randomUUID()}.tmp`);
+        if(existsSync(destination)){const stat=lstatSync(destination);if(!stat.isFile()||stat.isSymbolicLink()||createHash('sha256').update(readFileSync(destination)).digest('hex')!==hash)return json(res,500,{error:'Stored asset integrity check failed',reasonCode:'asset_storage_error'});}
+        else {writeFileSync(temporary,bytes,{flag:'wx',mode:0o600});try{linkSync(temporary,destination);}finally{if(existsSync(temporary))unlinkSync(temporary);}}
+        const assetId=randomUUID(),now=new Date().toISOString(),prior=entity.image_asset_id?db.prepare('SELECT sha256 FROM entity_assets WHERE id=? AND entity_id=?').get(entity.image_asset_id,id):null;
+        const result=transaction(()=>{
+          const current=catalogEntityRow.get(id,campaignId);if(!current||current.revision!==baseRevision)throw Object.assign(new Error('Entity revision conflict'),{statusCode:409});
+          db.prepare('INSERT INTO entity_assets(id,campaign_id,entity_id,original_name,media_type,byte_size,sha256,created_at) VALUES(?,?,?,?,?,?,?,?)').run(assetId,campaignId,id,name,mediaType,bytes.length,hash,now);
+          db.prepare('UPDATE catalog_entities SET image_asset_id=?,revision=revision+1,updated_at=? WHERE id=? AND campaign_id=? AND revision=?').run(assetId,now,id,campaignId,baseRevision);
+          if(entity.image_asset_id)db.prepare('DELETE FROM entity_assets WHERE id=? AND entity_id=?').run(entity.image_asset_id,id);
+          const updated=catalogEntityJson(catalogEntityRow.get(id,campaignId)),response={operationId,status:'applied',entity:updated};
+          insertEvent({operationId,kind:'entity.image.updated',visibility:'gm',payload:{entityId:id,revision:updated.revision}});
+          db.prepare('INSERT INTO entity_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(operationId,auth.principalId,requestHash,JSON.stringify(response));return response;
+        });
+        if(prior&&!db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(prior.sha256,prior.sha256,prior.sha256)){try{const path=assetPath(prior.sha256),stat=lstatSync(path);if(stat.isFile()&&!stat.isSymbolicLink())unlinkSync(path);}catch{}}
+        notify();return json(res,201,result);
+      }
+      if(entityImageMatch&&req.method==='GET'&&url.pathname.endsWith('/content')){
+        if(auth.role!=='gm')return json(res,404,{error:'Entity image not found'});
+        const entity=catalogEntityRow.get(decodeURIComponent(entityImageMatch[1]),campaignId),asset=entity?.image_asset_id&&db.prepare('SELECT * FROM entity_assets WHERE id=? AND entity_id=? AND campaign_id=?').get(entity.image_asset_id,entity.id,campaignId);
+        if(!asset)return json(res,404,{error:'Entity image not found'});
+        try{const path=assetPath(asset.sha256),stat=lstatSync(path),bytes=readFileSync(path);if(!stat.isFile()||stat.isSymbolicLink()||bytes.length!==asset.byte_size||createHash('sha256').update(bytes).digest('hex')!==asset.sha256)return json(res,404,{error:'Entity image unavailable'});res.writeHead(200,{'content-type':asset.media_type,'content-length':bytes.length,'content-disposition':'inline','x-content-type-options':'nosniff','cache-control':'private, no-store'});return res.end(bytes);}catch{return json(res,404,{error:'Entity image unavailable'});}
+      }
       const loreAssetsMatch = url.pathname.match(/^\/api\/lore\/([^/]+)\/assets$/);
       const mapBackgroundMatch = url.pathname.match(/^\/api\/maps\/([^/]+)\/background(?:\/content)?$/);
       if (mapBackgroundMatch && req.method === 'POST' && url.pathname.endsWith('/background')) {
@@ -703,23 +820,18 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!scene) return json(res, 404, { error: 'Map scene not found' });
         const operationId = req.headers['x-operation-id'], baseRevision = Number(req.headers['x-base-revision']);
         const name = req.headers['x-file-name'], mediaType = String(req.headers['content-type'] || '').split(';',1)[0].trim().toLowerCase(), type = ASSET_TYPES[mediaType];
-        if (typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId) || !Number.isInteger(baseRevision) || typeof name !== 'string' || !type || name.length < 1 || name.length > 160 || /[\\/\u0000-\u001f\u007f]/.test(name) || name.trim() !== name || !name.toLowerCase().endsWith(type.extension)) return json(res,400,{error:'Operation, revision, safe filename and supported image type are required',reasonCode:'invalid_asset'});
+        const extensionMatches = mediaType === 'image/jpeg' ? /\.(?:jpe?g)$/i.test(name || '') : Boolean(type && typeof name === 'string' && name.toLowerCase().endsWith(type.extension));
+        if (typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId) || !Number.isInteger(baseRevision) || typeof name !== 'string' || !type || name.length < 1 || name.length > 160 || /[\\/\u0000-\u001f\u007f]/.test(name) || name.trim() !== name || !extensionMatches) return json(res,400,{error:'Operation, revision, safe filename and supported image type are required',reasonCode:'invalid_asset'});
         const bytes = await readRawBody(req, MAX_ASSET_BYTES);
-        if (!bytes.length || !type.signature(bytes)) return json(res,400,{error:'Image bytes do not match the declared image type',reasonCode:'invalid_asset'});
-        let width = 0, height = 0;
-        if (mediaType === 'image/png' && bytes.length >= 24) { width = bytes.readUInt32BE(16); height = bytes.readUInt32BE(20); }
-        else if (mediaType === 'image/gif' && bytes.length >= 10) { width = bytes.readUInt16LE(6); height = bytes.readUInt16LE(8); }
-        else if (mediaType === 'image/webp' && bytes.length >= 30 && bytes.toString('ascii',12,16) === 'VP8X') { width = 1 + bytes.readUIntLE(24,3); height = 1 + bytes.readUIntLE(27,3); }
-        else if (mediaType === 'image/jpeg') { for (let offset=2; offset+9<bytes.length;) { if (bytes[offset++] !== 0xff) continue; const marker=bytes[offset++]; if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)) { height=bytes.readUInt16BE(offset+3); width=bytes.readUInt16BE(offset+5); break; } const length=bytes.readUInt16BE(offset); if (length<2) break; offset+=length; } }
-        if (!width || !height || width > 20000 || height > 20000 || width * height > 100_000_000) return json(res,400,{error:'Image dimensions are invalid or exceed the supported limit',reasonCode:'invalid_asset'});
+        if (!bytes.length || !validImageBytes(bytes, mediaType)) return json(res,400,{error:'Image bytes, type or dimensions are invalid',reasonCode:'invalid_asset'});
         const hash = createHash('sha256').update(bytes).digest('hex');
         const requestHash = createHash('sha256').update(canonicalJson({sceneId,baseRevision,name,mediaType,sha256:hash})).digest('hex');
         const cached = db.prepare('SELECT * FROM map_operations WHERE operation_id=?').get(operationId);
         if (cached) return cached.principal_id === auth.principalId && cached.request_hash === requestHash ? json(res,200,JSON.parse(cached.response)) : json(res,409,{error:'Operation ID was already used for a different command',reasonCode:'operation_conflict'});
-        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(operationId,operationId,operationId,operationId,operationId)) return json(res,409,{error:'Operation ID is already in use',reasonCode:'operation_conflict'});
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM entity_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(operationId,operationId,operationId,operationId,operationId,operationId)) return json(res,409,{error:'Operation ID is already in use',reasonCode:'operation_conflict'});
         if (scene.revision !== baseRevision) return json(res,409,{error:'Map revision conflict',reasonCode:'revision_conflict',currentRevision:scene.revision});
-        const used = Number(db.prepare('SELECT COALESCE(SUM(size),0) total FROM (SELECT MAX(byte_size) size,sha256 FROM (SELECT byte_size,sha256 FROM lore_assets WHERE campaign_id=? UNION ALL SELECT byte_size,sha256 FROM map_assets WHERE campaign_id=?) GROUP BY sha256)').get(campaignId,campaignId).total);
-        if (used + (db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=?').get(hash,hash) ? 0 : bytes.length) > MAX_CAMPAIGN_ASSET_BYTES) return json(res,413,{error:'Campaign asset storage exceeds the 100 MiB limit',reasonCode:'campaign_asset_limit'});
+        const used = Number(db.prepare('SELECT COALESCE(SUM(size),0) total FROM (SELECT MAX(byte_size) size,sha256 FROM (SELECT byte_size,sha256 FROM lore_assets WHERE campaign_id=? UNION ALL SELECT byte_size,sha256 FROM map_assets WHERE campaign_id=? UNION ALL SELECT byte_size,sha256 FROM entity_assets WHERE campaign_id=?) GROUP BY sha256)').get(campaignId,campaignId,campaignId).total);
+        if (used + (db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(hash,hash,hash) ? 0 : bytes.length) > MAX_CAMPAIGN_ASSET_BYTES) return json(res,413,{error:'Campaign asset storage exceeds the 100 MiB limit',reasonCode:'campaign_asset_limit'});
         const destination = assetPath(hash), temporary = resolve(assetDirectory,`.upload-${randomUUID()}.tmp`);
         if (existsSync(destination)) { const stat=lstatSync(destination); if (!stat.isFile() || stat.isSymbolicLink() || createHash('sha256').update(readFileSync(destination)).digest('hex')!==hash) return json(res,500,{error:'Stored asset integrity check failed',reasonCode:'asset_storage_error'}); }
         else { writeFileSync(temporary,bytes,{flag:'wx',mode:0o600}); try { linkSync(temporary,destination); } finally { if (existsSync(temporary)) unlinkSync(temporary); } }
@@ -734,7 +846,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           insertEvent({operationId,kind:'map.background.updated',visibility:scene.visibility,payload:{sceneId,revision:baseRevision+1}});
           db.prepare('INSERT INTO map_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(operationId,auth.principalId,requestHash,JSON.stringify(response)); return response;
         });
-        if (priorBackground && !db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=?').get(priorBackground.sha256,priorBackground.sha256)) { try { const path=assetPath(priorBackground.sha256),stat=lstatSync(path); if(stat.isFile()&&!stat.isSymbolicLink()) unlinkSync(path); } catch {} }
+        if (priorBackground && !db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(priorBackground.sha256,priorBackground.sha256,priorBackground.sha256)) { try { const path=assetPath(priorBackground.sha256),stat=lstatSync(path); if(stat.isFile()&&!stat.isSymbolicLink()) unlinkSync(path); } catch {} }
         notify(); return json(res,201,result);
       }
       if (mapBackgroundMatch && req.method === 'GET' && url.pathname.endsWith('/content')) {
@@ -765,9 +877,10 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!bytes.length || !type.signature(bytes)) return json(res, 400, { error: 'Asset bytes do not match the declared image type', reasonCode: 'invalid_asset' });
         const currentEntry = loreRow.get(entryId, campaignId);
         if (!currentEntry || !canReadLore(currentEntry, auth)) return json(res, 404, { error: 'Lore entry not found' });
-        const usedBytes = Number(db.prepare('SELECT COALESCE(SUM(size),0) AS total FROM (SELECT MAX(byte_size) AS size FROM lore_assets WHERE campaign_id=? GROUP BY sha256)').get(campaignId).total);
-        if (usedBytes + bytes.length > MAX_CAMPAIGN_ASSET_BYTES) return json(res, 413, { error: 'Campaign asset storage exceeds the 100 MiB limit', reasonCode: 'campaign_asset_limit' });
         const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const usedBytes = Number(db.prepare('SELECT COALESCE(SUM(size),0) AS total FROM (SELECT MAX(byte_size) AS size,sha256 FROM (SELECT byte_size,sha256 FROM lore_assets WHERE campaign_id=? UNION ALL SELECT byte_size,sha256 FROM map_assets WHERE campaign_id=? UNION ALL SELECT byte_size,sha256 FROM entity_assets WHERE campaign_id=?) GROUP BY sha256)').get(campaignId,campaignId,campaignId).total);
+        const alreadyStored = db.prepare('SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(sha256,sha256,sha256);
+        if (usedBytes + (alreadyStored ? 0 : bytes.length) > MAX_CAMPAIGN_ASSET_BYTES) return json(res, 413, { error: 'Campaign asset storage exceeds the 100 MiB limit', reasonCode: 'campaign_asset_limit' });
         const destination = assetPath(sha256);
         const temporary = resolve(assetDirectory, `.upload-${randomUUID()}.tmp`);
         let createdObject = false;
@@ -827,7 +940,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (req.method === 'DELETE') {
           if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
           db.prepare('DELETE FROM lore_assets WHERE id=? AND campaign_id=?').run(asset.id, campaignId);
-          if (!db.prepare('SELECT 1 FROM lore_assets WHERE sha256=? LIMIT 1').get(asset.sha256)) {
+          if (!db.prepare('SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(asset.sha256,asset.sha256,asset.sha256)) {
             const path = assetPath(asset.sha256);
             try { const stat = lstatSync(path); if (stat.isFile() && !stat.isSymbolicLink()) unlinkSync(path); } catch {}
           }
@@ -878,13 +991,75 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
       const mapMatch = url.pathname.match(/^\/api\/maps\/([^/]+)$/);
       const mapCommandMatch = url.pathname.match(/^\/api\/maps\/([^/]+)\/commands$/);
       const encounterMapMatch = url.pathname.match(/^\/api\/encounters\/([^/]+)\/map$/);
+      const encounterMapImportMatch = url.pathname.match(/^\/api\/encounters\/([^/]+)\/map\/import$/);
+      if (req.method === 'POST' && encounterMapImportMatch) {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'forbidden' });
+        const encounterId = decodeURIComponent(encounterMapImportMatch[1]);
+        const body = await readBody(req);
+        const allowed = ['operationId','sourceSceneId','sourceRevision','copiedSceneId','expectedCurrentSceneId'];
+        if (!body || Object.keys(body).some(key => !allowed.includes(key)) || typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.operationId)
+          || typeof body.sourceSceneId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.sourceSceneId)
+          || !Number.isInteger(body.sourceRevision) || body.sourceRevision < 1
+          || typeof body.copiedSceneId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.copiedSceneId)
+          || !(body.expectedCurrentSceneId === null || typeof body.expectedCurrentSceneId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(body.expectedCurrentSceneId)))
+          return json(res, 400, { error: 'A valid source battle map and expected encounter map are required', reasonCode: 'invalid_command' });
+        const hash = createHash('sha256').update(canonicalJson({ encounterId, ...body })).digest('hex');
+        const cached = db.prepare('SELECT * FROM map_operations WHERE operation_id=?').get(body.operationId);
+        if (cached) return cached.principal_id === auth.principalId && cached.request_hash === hash ? json(res, 200, JSON.parse(cached.response)) : json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_conflict' });
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM entity_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId, body.operationId, body.operationId)) return json(res, 409, { error: 'Operation ID is already in use', reasonCode: 'operation_conflict' });
+        const encounter = db.prepare('SELECT * FROM encounters WHERE id=?').get(encounterId);
+        if (!encounter) return json(res, 404, { error: 'Encounter not found', reasonCode: 'not_found' });
+        const source = mapSceneRow.get(body.sourceSceneId, campaignId);
+        if (!source || source.archived || source.kind !== 'battle') return json(res, 404, { error: 'Reusable battle map not found', reasonCode: 'invalid_reference' });
+        if (source.revision !== body.sourceRevision) return json(res, 409, { error: 'Battle map changed; refresh and try again', reasonCode: 'revision_conflict', currentRevision: source.revision });
+        const currentAssociation = db.prepare('SELECT scene_id FROM map_encounter_scenes WHERE campaign_id=? AND encounter_id=?').get(campaignId, encounterId);
+        if ((currentAssociation?.scene_id ?? null) !== body.expectedCurrentSceneId) return json(res, 409, { error: 'Encounter map changed; refresh and try again', reasonCode: 'revision_conflict', currentSceneId: currentAssociation?.scene_id ?? null });
+        if (mapSceneRow.get(body.copiedSceneId, campaignId)) return json(res, 409, { error: 'Imported map ID already exists', reasonCode: 'operation_conflict' });
+        const now = new Date().toISOString();
+        const response = transaction(() => {
+          const sourceAsset = source.background_id && db.prepare('SELECT * FROM map_assets WHERE id=? AND scene_id=? AND campaign_id=?').get(source.background_id, source.id, campaignId);
+          const copiedAssetId = sourceAsset ? randomUUID() : null;
+          const copiedName = `Encounter map: ${encounter.name}`.slice(0, 160);
+          db.prepare('INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,gm_notes,created_at,updated_at,background_id) VALUES(?,?,? ,\'battle\',1,?,?,?,\'gm\',?,?,?,?)')
+            .run(body.copiedSceneId, campaignId, copiedName, source.width, source.height, source.grid, source.gm_notes, now, now, copiedAssetId);
+          if (sourceAsset) db.prepare('INSERT INTO map_assets(id,campaign_id,scene_id,original_name,media_type,byte_size,sha256,created_at) VALUES(?,?,?,?,?,?,?,?)')
+            .run(copiedAssetId, campaignId, body.copiedSceneId, sourceAsset.original_name, sourceAsset.media_type, sourceAsset.byte_size, sourceAsset.sha256, now);
+          const copyPiece = db.prepare('INSERT INTO map_pieces(id,scene_id,kind,actor_id,label,x,y,visible,revision) VALUES(?,?,?,?,?,?,?,?,1)');
+          for (const piece of db.prepare('SELECT * FROM map_pieces WHERE scene_id=? ORDER BY id').all(source.id)) copyPiece.run(randomUUID(), body.copiedSceneId, piece.kind, piece.actor_id, piece.label, piece.x, piece.y, piece.visible);
+          db.prepare('INSERT INTO map_encounter_scenes(campaign_id,encounter_id,scene_id) VALUES(?,?,?) ON CONFLICT(campaign_id,encounter_id) DO UPDATE SET scene_id=excluded.scene_id').run(campaignId, encounterId, body.copiedSceneId);
+          insertEvent({ operationId: body.operationId, kind: 'map.imported', visibility: 'gm', payload: { encounterId, sourceSceneId: source.id, sceneId: body.copiedSceneId, revision: 1 } });
+          const result = { operationId: body.operationId, status: 'applied', sceneId: body.copiedSceneId, revision: 1, sourceSceneId: source.id };
+          db.prepare('INSERT INTO map_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId, auth.principalId, hash, JSON.stringify(result));
+          return result;
+        });
+        notify(); return json(res, 200, response);
+      }
+      if (req.method === 'DELETE' && encounterMapMatch) {
+        if (auth.role !== 'gm') return json(res,403,{error:'GM role required',reasonCode:'forbidden'});
+        const encounterId=decodeURIComponent(encounterMapMatch[1]),body=await readBody(req);
+        if (!body || Object.keys(body).some(key=>!['operationId','expectedCurrentSceneId'].includes(key)) || typeof body.operationId!=='string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.operationId) || typeof body.expectedCurrentSceneId!=='string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.expectedCurrentSceneId)) return json(res,400,{error:'A valid operation ID and current map are required',reasonCode:'invalid_command'});
+        const hash=createHash('sha256').update(canonicalJson({encounterId,...body})).digest('hex'),cached=db.prepare('SELECT * FROM map_operations WHERE operation_id=?').get(body.operationId);
+        if(cached)return cached.principal_id===auth.principalId&&cached.request_hash===hash?json(res,200,JSON.parse(cached.response)):json(res,409,{error:'Operation ID was already used for a different command',reasonCode:'operation_conflict'});
+        if(db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM entity_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(body.operationId,body.operationId,body.operationId,body.operationId,body.operationId,body.operationId))return json(res,409,{error:'Operation ID is already in use',reasonCode:'operation_conflict'});
+        const encounter=db.prepare('SELECT * FROM encounters WHERE id=?').get(encounterId);
+        if(!encounter)return json(res,404,{error:'Encounter not found',reasonCode:'not_found'});
+        const association=db.prepare('SELECT scene_id FROM map_encounter_scenes WHERE campaign_id=? AND encounter_id=?').get(campaignId,encounterId);
+        if((association?.scene_id??null)!==body.expectedCurrentSceneId)return json(res,409,{error:'Encounter map changed; refresh and try again',reasonCode:'revision_conflict',currentSceneId:association?.scene_id??null});
+        const now=new Date().toISOString(),response=transaction(()=>{
+          db.prepare('DELETE FROM map_encounter_scenes WHERE campaign_id=? AND encounter_id=? AND scene_id=?').run(campaignId,encounterId,body.expectedCurrentSceneId);
+          insertEvent({operationId:body.operationId,kind:'map.unassigned',visibility:'gm',payload:{encounterId,sceneId:body.expectedCurrentSceneId}});
+          const result={operationId:body.operationId,status:'applied',encounterId};
+          db.prepare('INSERT INTO map_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId,auth.principalId,hash,JSON.stringify(result));return result;
+        });
+        notify();return json(res,200,response);
+      }
       if (req.method === 'GET' && encounterMapMatch) {
         const encounterId=decodeURIComponent(encounterMapMatch[1]), encounter=db.prepare('SELECT * FROM encounters WHERE id=?').get(encounterId);
         if (!encounter || auth.role !== 'gm' && encounter.visibility !== 'public') return json(res,404,{error:'Encounter map not found'});
         const association=db.prepare('SELECT scene_id FROM map_encounter_scenes WHERE campaign_id=? AND encounter_id=?').get(campaignId,encounterId);
         const scene=association && mapSceneRow.get(association.scene_id,campaignId);
         if (!canReadMap(scene,auth)) return json(res,404,{error:'Encounter map not found'});
-        return json(res,200,{scene:{...mapProjection(scene,auth),pieces:mapPieces(scene,auth)}});
+        return json(res,200,{scene:{...mapProjection(scene,auth),encounterId,pieces:mapPieces(scene,auth)}});
       }
       if (req.method === 'GET' && mapMatch) {
         const scene = mapSceneRow.get(decodeURIComponent(mapMatch[1]), campaignId);
@@ -896,7 +1071,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const body = await readBody(req);
         const creating = url.pathname === '/api/maps';
         const id = creating ? body.id : decodeURIComponent(mapCommandMatch[1]);
-        const allowedKeys = creating ? ['operationId','baseRevision','id','campaignId','name','kind','width','height','grid','visibility','gmNotes'] : ['operationId','baseRevision','command','name','kind','width','height','grid','visibility','gmNotes','piece','pieceId','targetSceneId','targetLoreEntryId','label','encounterId'];
+        const allowedKeys = creating ? ['operationId','baseRevision','id','campaignId','name','kind','width','height','grid','visibility','gmNotes'] : ['operationId','baseRevision','command','name','kind','width','height','grid','scalePieces','visibility','gmNotes','piece','pieceId','targetSceneId','targetLoreEntryId','label','encounterId'];
         if (!body || Object.keys(body).some(key => !allowedKeys.includes(key)) || typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.operationId) || !Number.isInteger(body.baseRevision) || body.baseRevision < 0)
           return json(res, 400, { error: 'Valid operationId, baseRevision, and map command are required', reasonCode: 'invalid_command' });
         if (creating && (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))) return json(res, 400, { error: 'Map ID must be a stable opaque identifier', reasonCode: 'invalid_map' });
@@ -904,18 +1079,19 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         const hash = createHash('sha256').update(canonicalJson({ creating, id, ...body })).digest('hex');
         const cached = db.prepare('SELECT * FROM map_operations WHERE operation_id=?').get(body.operationId);
         if (cached) return cached.principal_id === auth.principalId && cached.request_hash === hash ? json(res, 200, JSON.parse(cached.response)) : json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_conflict' });
-        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId, body.operationId)) return json(res, 409, { error: 'Operation ID is already in use', reasonCode: 'operation_conflict' });
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM entity_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId, body.operationId, body.operationId)) return json(res, 409, { error: 'Operation ID is already in use', reasonCode: 'operation_conflict' });
         if (creating && mapSceneRow.get(id,campaignId)) return json(res,409,{error:'Map scene already exists',reasonCode:'revision_conflict'});
         const current = creating ? null : mapSceneRow.get(id, campaignId);
         if (!creating && (!current || body.baseRevision !== current.revision)) return json(res, current ? 409 : 404, current ? { error: 'Map revision conflict', reasonCode: 'revision_conflict', currentRevision: current.revision } : { error: 'Map scene not found' });
         const command = creating ? 'create' : body.command;
         if (!creating && !['update','archive','restore','publish','revoke','piece.put','piece.delete','link.put','link.delete','lore-link.put','lore-link.delete','encounter.set','background.remove'].includes(command)) return json(res, 400, { error: 'Unsupported map command', reasonCode: 'unsupported_command' });
         const commandFields = creating ? ['operationId','baseRevision','id','campaignId','name','kind','width','height','grid','visibility','gmNotes']
-          : ['operationId','baseRevision','command', ...(command === 'update' ? ['name','kind','width','height','grid','gmNotes'] : command === 'piece.put' ? ['piece'] : command === 'piece.delete' || command === 'link.delete' || command === 'lore-link.delete' ? ['pieceId'] : command === 'link.put' ? ['pieceId','targetSceneId','label'] : command === 'lore-link.put' ? ['pieceId','targetLoreEntryId','label'] : command === 'encounter.set' ? ['encounterId'] : [])];
+          : ['operationId','baseRevision','command', ...(command === 'update' ? ['name','kind','width','height','grid','scalePieces','gmNotes'] : command === 'piece.put' ? ['piece'] : command === 'piece.delete' || command === 'link.delete' || command === 'lore-link.delete' ? ['pieceId'] : command === 'link.put' ? ['pieceId','targetSceneId','label'] : command === 'lore-link.put' ? ['pieceId','targetLoreEntryId','label'] : command === 'encounter.set' ? ['encounterId'] : [])];
         if (Object.keys(body).some(key => !commandFields.includes(key))) return json(res,400,{error:'Fields are not valid for this map command',reasonCode:'invalid_command'});
         const next = { name: body.name ?? current?.name, kind: body.kind ?? current?.kind, width: body.width ?? current?.width, height: body.height ?? current?.height,
           grid: body.grid ?? (current ? JSON.parse(current.grid) : { type: body.kind === 'world' ? 'none' : 'square', size: 1 }), visibility: body.visibility ?? current?.visibility ?? 'gm', gmNotes: body.gmNotes ?? current?.gm_notes ?? '' };
-        if ((creating || command === 'update') && (typeof next.name !== 'string' || !next.name.trim() || next.name.length > 160 || !['world','battle'].includes(next.kind) || !Number.isFinite(next.width) || next.width < 1 || next.width > 100000 || !Number.isFinite(next.height) || next.height < 1 || next.height > 100000 || !next.grid || !['none','square','hex'].includes(next.grid.type) || !Number.isFinite(next.grid.size) || next.grid.size < 0 || next.grid.size > 10000 || next.grid.type !== 'none' && next.grid.size < 1 || next.grid.units !== undefined && (typeof next.grid.units !== 'string' || next.grid.units.length > 32) || typeof next.gmNotes !== 'string' || next.gmNotes.length > 8000)) return json(res, 400, { error: 'Map fields or geometry are invalid', reasonCode: 'invalid_map' });
+        if ((creating || command === 'update') && (typeof next.name !== 'string' || !next.name.trim() || next.name.length > 160 || !['world','battle'].includes(next.kind) || !Number.isFinite(next.width) || next.width < 1 || next.width > 100000 || !Number.isFinite(next.height) || next.height < 1 || next.height > 100000 || !validBattleGrid(next.grid, next.kind, next.width, next.height) || typeof next.gmNotes !== 'string' || next.gmNotes.length > 8000)) return json(res, 400, { error: 'Map fields or geometry are invalid', reasonCode: 'invalid_map' });
+        if (next.grid && Array.isArray(next.grid.fills)) next.grid = { ...next.grid, fills: next.grid.fills.map(fill => ({ ...fill, color: fill.color.toUpperCase() })) };
         if (!creating && command.startsWith('piece.') && command === 'piece.put') {
           const piece = body.piece;
           const conflictingPiece = piece && db.prepare('SELECT scene_id FROM map_pieces WHERE id=?').get(piece.id);
@@ -926,7 +1102,8 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!creating && command === 'piece.delete' && !db.prepare('SELECT 1 FROM map_pieces WHERE id=? AND scene_id=?').get(body.pieceId,id)) return json(res,404,{error:'Map piece not found',reasonCode:'not_found'});
         if (!creating && command === 'link.delete' && !db.prepare('SELECT 1 FROM map_links WHERE source_scene_id=? AND piece_id=?').get(id,body.pieceId)) return json(res,404,{error:'Map link not found',reasonCode:'not_found'});
         if (!creating && command === 'lore-link.delete' && !db.prepare('SELECT 1 FROM map_lore_links WHERE source_scene_id=? AND piece_id=?').get(id,body.pieceId)) return json(res,404,{error:'Map Lore link not found',reasonCode:'not_found'});
-        if (!creating && command === 'update' && (db.prepare('SELECT 1 FROM map_pieces WHERE scene_id=? AND (x>? OR y>?) LIMIT 1').get(id,next.width,next.height))) return json(res,400,{error:'Scene dimensions cannot exclude existing pieces',reasonCode:'invalid_geometry'});
+        if (!creating && command === 'update' && body.scalePieces !== undefined && typeof body.scalePieces !== 'boolean') return json(res,400,{error:'scalePieces must be boolean',reasonCode:'invalid_command'});
+        if (!creating && command === 'update' && body.scalePieces !== true && db.prepare('SELECT 1 FROM map_pieces WHERE scene_id=? AND (x>? OR y>?) LIMIT 1').get(id,next.width,next.height)) return json(res,400,{error:'Scene dimensions cannot exclude existing pieces',reasonCode:'invalid_geometry'});
         if (!creating && command === 'link.put' && (!/^[A-Za-z0-9_-]{1,128}$/.test(body.pieceId || '') || !mapSceneRow.get(body.targetSceneId, campaignId) || !db.prepare("SELECT 1 FROM map_pieces WHERE id=? AND scene_id=? AND kind='pin'").get(body.pieceId, id) || typeof body.label !== 'string' || body.label.length > 200)) return json(res, 404, { error: 'Map link target or pin unavailable', reasonCode: 'invalid_reference' });
         if (!creating && command === 'lore-link.put' && (!/^[A-Za-z0-9_-]{1,128}$/.test(body.pieceId || '') || !/^[A-Za-z0-9_-]{1,128}$/.test(body.targetLoreEntryId || '') || !canReadLore(loreRow.get(body.targetLoreEntryId, campaignId), { role: 'gm', memberId: null }) || !db.prepare("SELECT 1 FROM map_pieces WHERE id=? AND scene_id=? AND kind='pin'").get(body.pieceId, id) || body.label !== undefined && (typeof body.label !== 'string' || body.label.length > 200))) return json(res,404,{error:'Map Lore target or pin unavailable',reasonCode:'invalid_reference'});
         if (!creating && command === 'encounter.set' && body.encounterId !== null && !db.prepare('SELECT 1 FROM encounters WHERE id=?').get(body.encounterId)) return json(res, 404, { error: 'Encounter unavailable', reasonCode: 'invalid_reference' });
@@ -941,6 +1118,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
             const visibility = command === 'publish' ? 'shared' : command === 'revoke' ? 'gm' : current.visibility;
             db.prepare('UPDATE map_scenes SET name=?,kind=?,width=?,height=?,grid=?,visibility=?,gm_notes=?,archived=?,background_id=?,revision=?,updated_at=? WHERE id=? AND revision=?')
               .run(next.name.trim(),next.kind,next.width,next.height,JSON.stringify(next.grid),visibility,next.gmNotes,command === 'archive' ? 1 : command === 'restore' ? 0 : current.archived,command === 'background.remove' ? null : current.background_id,revision,now,id,current.revision);
+            if (command === 'update' && body.scalePieces === true && (next.width !== current.width || next.height !== current.height)) db.prepare('UPDATE map_pieces SET x=MIN(?,x*?),y=MIN(?,y*?),revision=revision+1 WHERE scene_id=?').run(next.width,next.width/current.width,next.height,next.height/current.height,id);
             if (command === 'piece.put') db.prepare('INSERT INTO map_pieces(id,scene_id,kind,actor_id,label,x,y,visible,revision) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,actor_id=excluded.actor_id,label=excluded.label,x=excluded.x,y=excluded.y,visible=excluded.visible,revision=map_pieces.revision+1 WHERE map_pieces.scene_id=excluded.scene_id').run(body.piece.id,id,body.piece.kind,body.piece.actorId || null,body.piece.label || '',body.piece.x,body.piece.y,body.piece.visible === false ? 0 : 1);
             if (command === 'piece.delete') db.prepare('DELETE FROM map_pieces WHERE id=? AND scene_id=?').run(body.pieceId,id);
             if (command === 'link.put') {
@@ -961,7 +1139,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           const result = { operationId: body.operationId, status: 'applied', sceneId: id, revision };
           db.prepare('INSERT INTO map_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId,auth.principalId,hash,JSON.stringify(result)); return result;
         });
-        if (command === 'background.remove' && current.background_id) { const prior=db.prepare('SELECT sha256 FROM map_assets WHERE id=?').get(current.background_id); if (prior && !db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=?').get(prior.sha256,prior.sha256)) { try { const path=assetPath(prior.sha256),stat=lstatSync(path); if(stat.isFile()&&!stat.isSymbolicLink()) unlinkSync(path); } catch {} } }
+        if (command === 'background.remove' && current.background_id) { const prior=db.prepare('SELECT sha256 FROM map_assets WHERE id=?').get(current.background_id); if (prior && !db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(prior.sha256,prior.sha256,prior.sha256)) { try { const path=assetPath(prior.sha256),stat=lstatSync(path); if(stat.isFile()&&!stat.isSymbolicLink()) unlinkSync(path); } catch {} } }
         notify(); return json(res, 200, response);
       }
       const loreEntryMatch = url.pathname.match(/^\/api\/lore\/([^/]+)$/);
@@ -999,7 +1177,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           if (cached.principal_id !== auth.principalId || cached.request_hash !== requestHash) return json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_id_collision' });
           return json(res, 200, JSON.parse(cached.response));
         }
-        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId, body.operationId))
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM entity_operations WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId, body.operationId, body.operationId))
           return json(res, 409, { error: 'Operation ID was already used', reasonCode: 'operation_id_collision' });
         const current = id ? loreRow.get(id, campaignId) : null;
         if (mode !== 'create' && !current) return json(res, 404, { error: 'Lore entry not found' });
@@ -1156,7 +1334,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
           if (cached.request_hash !== requestHash || cached.principal_id !== auth.principalId) return json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_id_collision' });
           return json(res, 200, JSON.parse(cached.response));
         }
-        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=? UNION SELECT 1 FROM events WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId))
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM entity_operations WHERE operation_id=?').get(body.operationId, body.operationId, body.operationId, body.operationId))
           return json(res, 409, { error: 'Operation ID was already used', reasonCode: 'operation_id_collision' });
         const state = db.prepare('SELECT current_session_id,revision FROM session_state WHERE campaign_id=?').get(campaignId);
         if (state.revision !== body.baseRevision) return json(res, 409, { error: 'Session revision conflict', reasonCode: 'revision_conflict', currentRevision: state.revision });
@@ -1318,6 +1496,21 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         });
         notify();
         return json(res, 200, encounterJson(db.prepare('SELECT * FROM encounters WHERE id=?').get(id), auth));
+      }
+      if (req.method === 'PUT' && /^\/api\/encounters\/[^/]+\/entities$/.test(url.pathname)) {
+        if (auth.role !== 'gm') return json(res,403,{error:'GM role required',reasonCode:'unauthorized'});
+        const body=await readBody(req),id=decodeURIComponent(url.pathname.slice('/api/encounters/'.length,-'/entities'.length)),encounter=db.prepare('SELECT * FROM encounters WHERE id=?').get(id);
+        if(!encounter)return json(res,404,{error:'Encounter not found'});
+        if(!Number.isInteger(body.baseRevision)||body.baseRevision!==encounter.revision)return json(res,409,{error:'Encounter revision conflict',reasonCode:'revision_conflict',currentRevision:encounter.revision});
+        if(Object.keys(body).some(key=>!['baseRevision','entities'].includes(key))||!Array.isArray(body.entities)||body.entities.length>200||body.entities.some((item,index)=>!item||Object.keys(item).some(key=>!['entityId','quantity','positions'].includes(key))||typeof item.entityId!=='string'||!item.entityId||!Number.isInteger(item.quantity)||item.quantity<1||item.quantity>1000||item.positions!==undefined&&(!Array.isArray(item.positions)||item.positions.length!==item.quantity||item.positions.some(point=>!point||Object.keys(point).some(key=>!['x','y'].includes(key))||!Number.isFinite(point.x)||point.x<0||point.x>1||!Number.isFinite(point.y)||point.y<0||point.y>1))||body.entities.findIndex(candidate=>candidate?.entityId===item.entityId)!==index))return json(res,400,{error:'Entity selections must have unique IDs, valid quantities, and normalized map positions',reasonCode:'invalid_encounter_entities'});
+        for(const item of body.entities){const entity=catalogEntityRow.get(item.entityId,campaignId);if(!entity)return json(res,404,{error:'Encounter entity not found',reasonCode:'entity_unavailable'});if(entity.kind!=='creature')return json(res,400,{error:'Only creatures can be added as encounter participants',reasonCode:'invalid_encounter_entity_kind'});}
+        transaction(()=>{
+          db.prepare('DELETE FROM encounter_entities WHERE encounter_id=?').run(id);
+          const add=db.prepare('INSERT INTO encounter_entities(encounter_id,entity_id,quantity,positions_json) VALUES(?,?,?,?)');for(const item of body.entities){const positions=item.positions??Array.from({length:item.quantity},(_,index)=>({x:0.06+(index%12)*0.08,y:0.06+(Math.floor(index/12)%12)*0.08}));add.run(id,item.entityId,item.quantity,JSON.stringify(positions));}
+          db.prepare('UPDATE encounters SET revision=revision+1,updated_at=? WHERE id=? AND revision=?').run(new Date().toISOString(),id,body.baseRevision);
+          insertEvent({kind:'encounter.entities.changed',visibility:encounter.visibility==='public'?'public':'gm',payload:{encounterId:id,revision:encounter.revision+1}});
+        });
+        notify();return json(res,200,encounterJson(db.prepare('SELECT * FROM encounters WHERE id=?').get(id),auth));
       }
       if ((req.method === 'GET' || req.method === 'PUT') && url.pathname === '/api/campaign') {
         if (req.method === 'GET') return json(res, 200, campaignJson());
@@ -1657,7 +1850,7 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return json(res, 400, { error: 'parameters must be an object' });
         const requestHash = createHash('sha256').update(canonicalJson({ campaignId: body.campaignId || campaignId, memberId: auth.memberId, entityId, baseRevision, moduleId: body.moduleId || actor.module_id, moduleVersion: body.moduleVersion || actor.module_version, schemaVersion: body.schemaVersion || JSON.parse(actor.data).schemaVersion, actionId, parameters, dependencies: body.dependencies || [], sessionId })).digest('hex');
         const legacyRequestHash = createHash('sha256').update(JSON.stringify({ entityId, baseRevision, actionId, parameters })).digest('hex');
-        if (db.prepare('SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=?').get(operationId, operationId)) return json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_id_collision' });
+        if (db.prepare('SELECT 1 FROM session_operations WHERE operation_id=? UNION SELECT 1 FROM offline_receipts WHERE operation_id=? UNION SELECT 1 FROM entity_operations WHERE operation_id=?').get(operationId, operationId, operationId)) return json(res, 409, { error: 'Operation ID was already used for a different command', reasonCode: 'operation_id_collision' });
         const cached = db.prepare('SELECT response,actor_id,action_id,request_hash,principal_id FROM operations WHERE id=?').get(operationId);
         if (cached) {
           // Pre-0.3 receipts had no principal ID. The GM may replay those old

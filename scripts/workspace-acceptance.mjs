@@ -659,8 +659,8 @@ try {
   await evaluate(gm.sessionId, "(() => { const field=document.querySelector('.encounters-page .schema-form textarea'); const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; setter.call(field, 'Prepared in the Encounters app'); field.dispatchEvent(new Event('input', { bubbles:true })); })()");
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form textarea')?.value === 'Prepared in the Encounters app'", 'encounter preparation summary input updated');
   await evaluate(gm.sessionId, "(() => { const item=[...document.querySelectorAll('.encounters-page .schema-form fieldset label')].find(label=>label.textContent.includes('UI Created Character')); if (!item) throw new Error('Created actor missing from participant selector'); const input=item.querySelector('input'); if (!input.checked) input.click(); })()");
-  await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Encounter and participants saved on host.')", 'encounter update result');
+  await clickText(gm.sessionId, 'Save encounter, participants, and entities', '.encounters-page .schema-form button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Encounter, participants, entity quantities, and map placements saved on host.')", 'encounter update result');
   let preparedEncounter;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     preparedEncounter = await (await request('/api/encounters/' + encodeURIComponent(createdEncounter.id), gmToken)).json();
@@ -756,8 +756,8 @@ try {
   await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounter-card')].find(card=>card.textContent.includes('Edited Acceptance Encounter'))?.querySelectorAll('button').forEach(button=>{ if(button.textContent==='Prepare / edit') button.click() })");
   await waitForExpression(gm.sessionId, "document.querySelector('.encounters-page .schema-form h2')?.textContent.includes('Prepare Edited Acceptance Encounter')", 'return through Encounters rail hydrates full preparation details');
   assert.equal(await evaluate(gm.sessionId, "[...document.querySelectorAll('.encounters-page .schema-form fieldset input[type=checkbox]')].filter(input=>input.checked).length"), 3, 'all participants remain selected after returning from Table');
-  await clickText(gm.sessionId, 'Save encounter and participants', '.encounters-page .schema-form button');
-  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Encounter and participants saved on host.')", 'encounter saves after Table re-entry');
+  await clickText(gm.sessionId, 'Save encounter, participants, and entities', '.encounters-page .schema-form button');
+  await waitForExpression(gm.sessionId, "document.querySelector('.app-notification')?.textContent.includes('Encounter, participants, entity quantities, and map placements saved on host.')", 'encounter saves after Table re-entry');
   const rosterAfterTableNavigation = await (await request(`/api/encounters/${encodeURIComponent(createdEncounter.id)}`, gmToken)).json();
   assert.deepEqual(rosterAfterTableNavigation.participants.map(item=>item.actorId).sort(), rosterBeforeTableNavigation.participants.map(item=>item.actorId).sort(), 'saving after Table navigation preserves the authoritative participant roster');
   await clickText(gm.sessionId, 'Dashboard', 'nav[aria-label="Applications"] button');
@@ -912,7 +912,7 @@ try {
   const backupPath = join(scratch, 'campaign-backup.json');
   const restoredPath = join(scratch, 'campaign-restored.sqlite');
   const exportManifest = exportCampaignBackup(dbPath, backupPath);
-  assert.equal(exportManifest.potomacDataVersion, 5, 'campaign export format includes persistent encounters, Lore and Maps');
+  assert.equal(exportManifest.potomacDataVersion, 9, 'campaign export format includes persistent encounters, Lore, Maps and typed entities');
   assert.ok(exportManifest.includedCollections.includes('encounters'));
   assert.ok(exportManifest.includedCollections.includes('encounter_participants'));
   assert.ok(exportManifest.includedCollections.includes('map_scenes'));

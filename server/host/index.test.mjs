@@ -46,6 +46,30 @@ async function prepareSessionEncounter(request, { encounterId = 'session-encount
   return { encounterId, encounterRevision: 2, actorId, moduleId, moduleVersion };
 }
 
+test('entity kinds filter encounter searches to creatures and host rejects items as participants', async () => {
+  await withHost(async ({ request }) => {
+    const create = async (id, kind, name) => {
+      const response = await postJson(request, '/api/entities', { operationId: `create-${id}`, name, kind });
+      assert.equal(response.status, 201);
+      return (await response.json()).entity;
+    };
+    const creature = await create('creature', 'creature', 'Marsh Hound');
+    const item = await create('item', 'item', 'Silver Key');
+    assert.equal(creature.kind, 'creature');
+    assert.equal(item.kind, 'item');
+    const creatures = await (await request('/api/entities?kind=creature')).json();
+    assert.deepEqual(creatures.entities.map(entity => entity.id), [creature.id]);
+    const items = await (await request('/api/entities?kind=item')).json();
+    assert.deepEqual(items.entities.map(entity => entity.id), [item.id]);
+
+    assert.equal((await postJson(request, '/api/encounters', { id: 'typed-encounter', name: 'Typed encounter' })).status, 201);
+    const rejectItem = await request('/api/encounters/typed-encounter/entities', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision: 1, entities: [{ entityId: item.id, quantity: 1, positions: [{ x: 0.5, y: 0.5 }] }] }) });
+    assert.equal(rejectItem.status, 400);
+    const addCreature = await request('/api/encounters/typed-encounter/entities', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision: 1, entities: [{ entityId: creature.id, quantity: 1, positions: [{ x: 0.5, y: 0.5 }] }] }) });
+    assert.equal(addCreature.status, 200);
+  });
+});
+
 test('durable session commands enforce GM transitions, revisions, and operation receipt identity', async () => {
   await withHost(async fixture => {
     const { request, restart } = fixture;

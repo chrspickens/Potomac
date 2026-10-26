@@ -2,6 +2,16 @@ import type { MapGrid, MapPiece, MapSceneView } from './api.ts'
 
 export type Point = { x: number; y: number }
 
+export function selectEncounterPreviewScene<T extends { id: string }>(assigned: T | null, reusable: readonly T[], selectedId: string): T | null {
+  return assigned || reusable.find(scene => scene.id === selectedId) || null
+}
+
+export function mapMarkerRadius(width: number, height: number, cellSize: number): number {
+  const mapUnit = Math.min(width, height)
+  const effectiveCellSize = Number.isFinite(cellSize) && cellSize > 0 ? cellSize : mapUnit / 20
+  return effectiveCellSize * .4
+}
+
 export function viewportToScene(point: Point, pan: Point, zoom: number): Point {
   if (!Number.isFinite(zoom) || zoom <= 0) throw new Error('Zoom must be a positive finite number')
   return { x: (point.x - pan.x) / zoom, y: (point.y - pan.y) / zoom }
@@ -11,7 +21,10 @@ export function gridPoints(width: number, height: number, grid: MapGrid): Point[
   if (grid.type === 'none' || !Number.isFinite(grid.size) || grid.size <= 0) return []
   const points: Point[] = []
   if (grid.type === 'square') {
-    for (let x = 0; x <= width; x += grid.size) for (let y = 0; y <= height; y += grid.size) points.push({ x, y })
+    const origin = grid.origin || { x: 0, y: 0 }
+    const firstX = origin.x - Math.ceil(origin.x / grid.size) * grid.size
+    const firstY = origin.y - Math.ceil(origin.y / grid.size) * grid.size
+    for (let x = firstX; x <= width; x += grid.size) for (let y = firstY; y <= height; y += grid.size) points.push({ x, y })
     return points
   }
   const rowStep = grid.size * Math.sqrt(3) / 2
@@ -23,7 +36,7 @@ export function gridPoints(width: number, height: number, grid: MapGrid): Point[
 
 export function nearestGridPoint(point: Point, grid: MapGrid): Point {
   if (grid.type === 'none' || grid.size <= 0) return point
-  if (grid.type === 'square') return { x: Math.round(point.x / grid.size) * grid.size, y: Math.round(point.y / grid.size) * grid.size }
+  if (grid.type === 'square') { const origin = grid.origin || { x: 0, y: 0 }; return { x: origin.x + Math.round((point.x - origin.x) / grid.size) * grid.size, y: origin.y + Math.round((point.y - origin.y) / grid.size) * grid.size } }
   const q = (2 / 3 * point.x) / grid.size
   const r = (-point.x / 3 + Math.sqrt(3) / 3 * point.y) / grid.size
   const cubeX = q, cubeZ = r, cubeY = -cubeX - cubeZ
@@ -37,6 +50,17 @@ export function nearestGridPoint(point: Point, grid: MapGrid): Point {
 
 export function positionForMove(point: Point, scene: Pick<MapSceneView, 'width' | 'height' | 'grid'>, snap: boolean): Point {
   return clampPoint(snap ? nearestGridPoint(point, scene.grid) : point, scene)
+}
+
+export function positionForEntityMove(point: Point, scene: Pick<MapSceneView, 'width' | 'height' | 'grid'>): Point {
+  const { grid } = scene
+  if (grid.type !== 'square' || !Number.isFinite(grid.size) || grid.size <= 0) return positionForMove(point, scene, true)
+  const origin = grid.origin || { x: 0, y: 0 }
+  const center = {
+    x: origin.x + (Math.round((point.x - origin.x) / grid.size - 0.5) + 0.5) * grid.size,
+    y: origin.y + (Math.round((point.y - origin.y) / grid.size - 0.5) + 0.5) * grid.size
+  }
+  return clampPoint(center, scene)
 }
 
 export function clampPoint(point: Point, scene: Pick<MapSceneView, 'width' | 'height'>): Point {

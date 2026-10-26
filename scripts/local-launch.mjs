@@ -25,12 +25,17 @@ export async function ensureViteShim({ repoRoot = root, platform = process.platf
   const shim = viteShimPath(repoRoot, platform);
   if (await fileExists(shim)) return shim;
   console.warn(`[Potomac] Vite command shim is missing: ${shim}`);
-  console.warn('[Potomac] Attempting one bounded repair: pnpm install --filter @potomac/web...');
+  console.warn('[Potomac] Attempting a bounded dependency repair: pnpm install --filter @potomac/web...');
   let repair;
   try { repair = await runInstall(repoRoot); }
   catch (error) { repair = { code: 1, detail: error.message }; }
+  if (repair.code === 0 && !(await fileExists(shim))) {
+    console.warn('[Potomac] Install reported success but the shim is still missing; retrying a forced offline relink from the local package store.');
+    try { repair = await runInstall(repoRoot, { force: true, offline: true }); }
+    catch (error) { repair = { code: 1, detail: error.message }; }
+  }
   if (repair.code !== 0 || !(await fileExists(shim))) {
-    throw new Error(`Vite is installed incompletely and its executable shim is still missing. The one repair attempt did not fix it${repair.detail ? ` (${repair.detail})` : ''}. From the repository folder, run "pnpm install --filter @potomac/web..." once, then launch again. No dependency folders were deleted.`);
+    throw new Error(`Vite is installed incompletely and its executable shim is still missing. The bounded dependency repair did not fix it${repair.detail ? ` (${repair.detail})` : ''}. Check pnpm's output and restore dependencies with network access, then launch again. No dependency folders were deleted.`);
   }
   log('Vite command shim repaired successfully.');
   return shim;
@@ -40,11 +45,14 @@ async function fileExists(path) {
   try { await access(path, fsConstants.F_OK); return true; } catch { return false; }
 }
 
-function runPackageInstall(repoRoot) {
+function runPackageInstall(repoRoot, { force = false, offline = false } = {}) {
+  const args = ['install', '--filter', '@potomac/web...'];
+  if (force) args.push('--force');
+  if (offline) args.push('--offline');
   return new Promise((resolvePromise, reject) => {
     const child = isWindows
-      ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'pnpm install --filter @potomac/web...'], { cwd: repoRoot, stdio: 'inherit', windowsHide: true })
-      : spawn('pnpm', ['install', '--filter', '@potomac/web...'], { cwd: repoRoot, stdio: 'inherit' });
+      ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `pnpm ${args.join(' ')}`], { cwd: repoRoot, stdio: 'inherit', windowsHide: true })
+      : spawn('pnpm', args, { cwd: repoRoot, stdio: 'inherit' });
     child.once('error', reject);
     child.once('exit', (code, signal) => resolvePromise({ code: code ?? 1, detail: signal ? `pnpm exited on ${signal}` : '' }));
   });
@@ -52,13 +60,48 @@ function runPackageInstall(repoRoot) {
 
 function pnpmCommand() { return 'pnpm'; }
 
-async function assertPortFree(port, label) {
+async function probePort(port) {
   const server = createServer();
-  await new Promise((resolvePromise, reject) => {
-    server.once('error', error => reject(new Error(`${label} port ${port} is unavailable on 127.0.0.1 (${error.code || error.message}). Close the application using that port, then try again.`)));
-    server.listen(port, '127.0.0.1', resolvePromise);
-  });
-  await new Promise((resolvePromise, reject) => server.close(error => error ? reject(error) : resolvePromise()));
+  try {
+    const actualPort = await new Promise((resolvePromise, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', () => resolvePromise(server.address().port));
+    });
+    return actualPort;
+  } finally {
+    if (server.listening) await new Promise((resolvePromise, reject) => server.close(error => error ? reject(error) : resolvePromise()));
+  }
+}
+
+export async function selectLocalPorts(preferredHostPort, preferredWebPort) {
+  if (!Number.isInteger(preferredHostPort) || preferredHostPort < 1 || preferredHostPort > 65535 || !Number.isInteger(preferredWebPort) || preferredWebPort < 1 || preferredWebPort > 65535 || preferredHostPort === preferredWebPort) {
+    throw new Error('Local host and web ports must be different valid TCP ports.');
+  }
+
+  async function select(preferredPort, label, excluded) {
+    try {
+      const port = await probePort(preferredPort);
+      if (!excluded.has(port)) return { port, changed: false };
+    } catch (error) {
+      if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw new Error(`${label} port ${preferredPort} could not be checked on 127.0.0.1 (${error.code || error.message}).`);
+    }
+
+    // Ask the OS for an available local port instead of guessing a nearby one.
+    // Retry only if that ephemeral choice collides with the other service.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const port = await probePort(0);
+      if (!excluded.has(port)) return { port, changed: true };
+    }
+    throw new Error(`Could not find an available port for ${label} after 10 attempts.`);
+  }
+
+  const host = await select(preferredHostPort, 'Host', new Set());
+  const web = await select(preferredWebPort, 'Web', new Set([host.port]));
+  return { hostPort: host.port, webPort: web.port, hostChanged: host.changed, webChanged: web.changed };
+}
+
+function reportPort(label, preferredPort, actualPort, changed) {
+  if (changed) log(`${label} port ${preferredPort} is unavailable; using ${actualPort} instead.`);
 }
 
 async function health(url, label, children, timeoutMs = 30000) {
@@ -143,13 +186,11 @@ async function supervise({ playtest }) {
     for (const session of active) log(`Potomac is already running at http://127.0.0.1:${session.webPort}/ (host http://127.0.0.1:${session.hostPort}). Use stop-potomac before starting another session.`);
     return;
   }
-  const hostPort = Number(process.env.POTOMAC_LOCAL_HOST_PORT || hostDefault);
-  const webPort = Number(process.env.POTOMAC_LOCAL_WEB_PORT || webDefault);
-  if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535 || !Number.isInteger(webPort) || webPort < 1 || webPort > 65535 || hostPort === webPort) {
-    throw new Error('Local host and web ports must be different valid TCP ports.');
-  }
-  await assertPortFree(hostPort, 'Host');
-  await assertPortFree(webPort, 'Web');
+  const preferredHostPort = Number(process.env.POTOMAC_LOCAL_HOST_PORT || hostDefault);
+  const preferredWebPort = Number(process.env.POTOMAC_LOCAL_WEB_PORT || webDefault);
+  const { hostPort, webPort, hostChanged, webChanged } = await selectLocalPorts(preferredHostPort, preferredWebPort);
+  reportPort('Host', preferredHostPort, hostPort, hostChanged);
+  reportPort('Web', preferredWebPort, webPort, webChanged);
   await ensureViteShim();
   const session = await makeSession(playtest);
   const manifestPath = join(session.directory, 'session.json');

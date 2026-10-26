@@ -158,7 +158,7 @@ try {
 
   stopHost();
   const manifest = exportCampaignBackup(databasePath, backupPath);
-  assert.equal(manifest.potomacDataVersion, 5, 'Maps backup uses schema v5');
+  assert.equal(manifest.potomacDataVersion, 9, 'Maps backup uses schema v9');
   assert.ok(manifest.includedCollections.includes('map_scenes'));
   assert.ok(manifest.includedCollections.includes('map_pieces'));
   assert.ok(manifest.includedCollections.includes('map_links'));
@@ -205,7 +205,7 @@ try {
   const restoredPlayerBytes = await (await request('/api/maps', playerA)).text();
   assert.ok(!restoredPlayerBytes.includes('acceptance-world'), 'restored host keeps revoked map private to players');
 
-  console.log('PASS: isolated host; World/Battle creation; publication and revocation privacy; map pieces and destination links; idempotent retries and conflicting operation IDs; stale revision conflict; player HTTP/state projections; v5 export/restore and tamper rejection.');
+  console.log('PASS: isolated host; World/Battle creation; publication and revocation privacy; map pieces and destination links; idempotent retries and conflicting operation IDs; stale revision conflict; player HTTP/state projections; schema v9 export/restore and tamper rejection.');
 } catch (error) {
   console.error(`FAIL: ${error.stack || error.message}`);
   process.exitCode = 1;

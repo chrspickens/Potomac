@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clampPoint, nearestGridPoint, positionForMove, viewportToScene } from './maps.ts';
+import { clampPoint, nearestGridPoint, positionForMove, selectEncounterPreviewScene, viewportToScene } from './maps.ts';
+
+test('encounter preview uses the assigned scene consistently for its background and geometry', () => {
+  const assigned = { id: 'assigned', width: 120, height: 80, grid: { type: 'square', size: 10 }, background: { id: 'assigned-image' } };
+  const selectedReusable = { id: 'reusable', width: 400, height: 300, grid: { type: 'hex', size: 20 }, background: { id: 'reusable-image' } };
+  const scene = selectEncounterPreviewScene(assigned, [selectedReusable], 'reusable');
+  const imageSource = selectEncounterPreviewScene(assigned, [selectedReusable], 'reusable');
+  assert.equal(scene, assigned);
+  assert.equal(imageSource, scene);
+  assert.equal(imageSource?.background.id, scene?.background.id);
+  assert.equal(selectEncounterPreviewScene(null, [selectedReusable], 'reusable'), selectedReusable);
+});
 
 test('viewport transforms preserve scene coordinates at any pan and zoom', () => {
   assert.deepEqual(viewportToScene({ x: 120, y: 100 }, { x: 20, y: 40 }, 2), { x: 50, y: 30 });
