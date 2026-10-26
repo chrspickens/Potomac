@@ -69,7 +69,7 @@ try {
   assert.equal(draws, 1);
   exportCampaignBackup(databasePath, backupPath);
   const pendingArchive = JSON.parse(readFileSync(backupPath, 'utf8'));
-  assert.equal(pendingArchive.schemaVersion, 6);
+  assert.equal(pendingArchive.schemaVersion, 9);
   assert.equal(pendingArchive.data.v2_extension_pending_commands.find(row => row.operation_id === operationId).status, 'pending');
   const brokenLink = structuredClone(pendingArchive); brokenLink.data.v2_extension_pending_commands.find(row => row.operation_id === operationId).window_id = 'missing-window'; rehash(brokenLink);
   const brokenPath = join(scratch, 'pending-broken-link.json'); const brokenDestination = join(scratch, 'broken-link.sqlite');
@@ -113,7 +113,7 @@ try {
   const persisted = await (await request('/api/v2/entities/interrupt-record', playerB.credential, { headers: lockHeader })).json(); assert.equal(persisted.data.status, 'accepted', 'completed continuation persists after the second restart');
   const playerAView = await (await request('/api/v2/entities/interrupt-record', playerA.credential, { headers: lockHeader })).json(); assert.equal('gmNote' in playerAView.data, false, 'GM-only field remains hidden from Player A');
   assert.ok(!await evaluate(a, `document.body.innerText.includes(${JSON.stringify(pendingArchive.data.members[0].credential_hash)})`), 'browser projections never display credential hashes');
-  console.log('V2 reaction real-browser acceptance passed: isolated GM/Player A/Player B Chromium contexts, pending v6 export/restore, semantic reaction-link tamper rejection, restored lock/epoch, Player B one-time response, exactly-once resume and private projection.');
+  console.log('V2 reaction real-browser acceptance passed: isolated GM/Player A/Player B Chromium contexts, pending schema v9 export/restore, semantic reaction-link tamper rejection, restored lock/epoch, Player B one-time response, exactly-once resume and private projection.');
   for (const browserContextId of contexts.values()) await call('Target.disposeBrowserContext', { browserContextId });
 } finally {
   try { if (socket?.readyState === WebSocket.OPEN) socket.close(); } catch {}

@@ -45,9 +45,9 @@ test('campaign backup round-trips Lore and asset bytes along with host tables', 
 
   const manifest = restoreCampaignBackup(backupPath, restoredPath);
   assert.equal(manifest.campaignId, 'foundation-demo');
-  assert.equal(manifest.potomacDataVersion, 5);
+  assert.equal(manifest.potomacDataVersion, 9);
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
-  assert.equal(archive.schemaVersion, 5);
+  assert.equal(archive.schemaVersion, 9);
   assert.ok(manifest.includedCollections.includes('encounters'));
   assert.ok(manifest.includedCollections.includes('encounter_participants'));
   const restored = createHost({ databasePath: restoredPath });
@@ -84,6 +84,8 @@ test('v6 backup preserves the exact trusted V2 lock, authority epoch, ownership 
     await req('/api/v2/campaign/lock', 'local-gm', { moduleId: 'example.starship.system' }, 'PUT');
     const lock = await (await req('/api/v2/campaign/lock')).json(); const proof = { 'x-v2-lock-digest': lock.digest };
     await req('/api/v2/entities', 'local-gm', { operationId: 'backup-create-entity', entityId: 'reactor', typeId: 'example.starship.reactor', visibility: 'owner', ownerPrincipalId: enrolled.memberId, data: { power: 40, safe: false, allocations: { propulsion: 0, lifeSupport: 0 }, engineeringLog: ['secret'] } }, 'POST', proof);
+    host.db.prepare('INSERT INTO actor_grants(actor_id,member_id,can_read,can_act,granted_at) VALUES(?,?,?,?,?)').run('v2:backup-v2:reactor', enrolled.memberId, 1, 1, '2026-01-01T00:00:00.000Z');
+    host.db.prepare("INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,created_at,updated_at) VALUES('backup-battle','backup-v2','Backup battle','battle',1,100,80,'{\"type\":\"square\",\"size\":10}','gm','now','now')").run();
     const command = { operationId: 'backup-command', commandId: 'example.starship.reactor.allocate-power', entityId: 'reactor', expectedRevision: 1, input: { subsystem: 'propulsion', amount: 12 } };
     const committed = await (await req('/api/v2/commands', 'local-gm', command, 'POST', proof)).json();
     const assetBytes = Buffer.from('schema-v6 asset publication rollback'); const assetDigest = createHashHex(assetBytes);
@@ -115,6 +117,7 @@ test('v6 backup preserves the exact trusted V2 lock, authority epoch, ownership 
     rejectMutation('bad-authority-epoch', archive => { archive.data.v2_authority_versions[0].version = -1; archive.manifest.v2.authorityVersion = -1; });
     rejectMutation('bad-receipt-payload', archive => { archive.data.v2_extension_receipts[0].response = '{'; });
     rejectMutation('bad-event-payload', archive => { archive.data.v2_extension_events[0].payload = '{'; });
+    rejectMutation('bad-v9-map-geometry', archive => { archive.data.map_scenes[0].width = 0; });
     rejectMutation('bad-checksum', archive => { archive.data.v2_campaign_locks[0].lock_digest = 'corrupt'; }, { recompute: false });
     const catalog = await loadTrustedV2Catalog();
     rejectMutation('missing-trusted-module', () => undefined, { options: { trustedCatalog: { byId: new Map() } } });
@@ -134,7 +137,9 @@ test('v6 backup preserves the exact trusted V2 lock, authority epoch, ownership 
     assert.equal(restoredLock.digest, lock.digest);
     const state = JSON.parse(readFileSync(backupPath, 'utf8'));
     assert.deepEqual(state.manifest.v2.lock, JSON.parse(state.data.v2_campaign_locks[0].lock_json));
-    assert.equal(state.schemaVersion, 6); assert.equal(state.data.v2_extension_entities[0].owner_principal_id, enrolled.memberId);
+    assert.equal(state.schemaVersion, 9); assert.equal(state.data.v2_extension_entities[0].owner_principal_id, enrolled.memberId);
+    assert.deepEqual({ ...host.db.prepare('SELECT actor_id,member_id,can_read,can_act FROM actor_grants WHERE actor_id=?').get('v2:backup-v2:reactor') }, { actor_id: 'v2:backup-v2:reactor', member_id: enrolled.memberId, can_read: 1, can_act: 1 });
+    assert.equal(host.db.prepare('SELECT id FROM map_scenes WHERE id=?').get('backup-battle').id, 'backup-battle');
     assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_extension_receipts WHERE operation_id=?').get('backup-command').n, 1);
     assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM v2_effect_receipts WHERE operation_id=?').get('backup-command').n, 1);
     assert.equal(host.db.prepare('SELECT version FROM v2_authority_versions WHERE campaign_id=?').get('backup-v2').version, state.manifest.v2.authorityVersion);
@@ -143,6 +148,24 @@ test('v6 backup preserves the exact trusted V2 lock, authority epoch, ownership 
     assert.deepEqual(await (await req('/api/v2/commands', 'local-gm', command, 'POST', proof)).json(), committed, 'exact retry after restore replays its committed receipt');
     assert.equal((await req('/api/v2/commands', 'local-gm', { ...command, input: { subsystem: 'propulsion', amount: 11 } }, 'POST', proof)).status, 409, 'altered retry remains a conflict after restore');
   } finally { host?.close(); }
+}));
+
+test('schema 9 base-layout map archive rejects corrupt geometry before restore publication', async () => withDirectory(async directory => {
+  const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'maps.json'), corruptPath = join(directory, 'corrupt.json'), destination = join(directory, 'restored.sqlite');
+  const host = createHost({ databasePath: sourcePath });
+  try {
+    host.db.prepare("INSERT INTO map_scenes(id,campaign_id,name,kind,revision,width,height,grid,visibility,created_at,updated_at) VALUES('battle','foundation-demo','Battle','battle',1,100,80,'{\"type\":\"square\",\"size\":10}','gm','now','now')").run();
+    exportCampaignBackup(sourcePath, backupPath);
+  } finally { host.close(); }
+  const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  assert.equal(archive.schemaVersion, 9);
+  assert.equal(archive.manifest.v2, undefined);
+  archive.data.map_scenes[0].grid = '{malformed';
+  archive.integrity.sha256 = archiveChecksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data });
+  writeFileSync(corruptPath, JSON.stringify(archive));
+  assert.throws(() => restoreCampaignBackup(corruptPath, destination), /Backup map grid is malformed/);
+  assert.equal(existsSync(destination), false);
+  assert.equal(existsSync(`${destination}.assets`), false);
 }));
 
 test('v5 backup round-trips World and Battle scenes, pieces, map links and managed image bytes', async () => withDirectory(async directory => {
@@ -167,7 +190,7 @@ test('v5 backup round-trips World and Battle scenes, pieces, map links and manag
   } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
   assert.deepEqual(archive.data.assets.map(asset => asset.sha256), [hash]);
-  assert.equal(archive.schemaVersion, 5);
+  assert.equal(archive.schemaVersion, 9);
   restoreCampaignBackup(backupPath, restoredPath);
   const restored = createHost({ databasePath: restoredPath });
   try {
@@ -187,6 +210,9 @@ test('v5 restore accepts the previously published collection layout without map 
     exportCampaignBackup(sourcePath, backupPath);
   } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  removeEntityCollections(archive);
+  archive.schemaVersion = 5;
+  archive.manifest.potomacDataVersion = 5;
   delete archive.data.map_lore_links;
   archive.manifest.includedCollections = archive.manifest.includedCollections.filter(name => name !== 'map_lore_links');
   archive.integrity = { algorithm: 'sha256', sha256: archiveChecksum({ format: archive.format, schemaVersion: archive.schemaVersion, manifest: archive.manifest, data: archive.data }) };
@@ -236,6 +262,7 @@ test('PR #45 v3 archives retain sessions and privacy fields on restore', async (
     exportCampaignBackup(sourcePath, backupPath);
   } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  removeEntityCollections(archive);
   archive.schemaVersion = 3;
   for (const key of ['map_scenes','map_pieces','map_links','map_lore_links','map_encounter_scenes','map_assets','map_operations']) delete archive.data[key];
   archive.manifest.potomacDataVersion = 3;
@@ -260,6 +287,10 @@ function createHashHex(value) { return createHash('sha256').update(value).digest
 const canonicalize = value => Array.isArray(value) ? value.map(canonicalize)
   : value !== null && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])])) : value;
 const archiveChecksum = value => createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
+const removeEntityCollections = archive => {
+  for (const key of ['catalog_entities', 'entity_assets', 'encounter_entities', 'entity_operations']) delete archive.data[key];
+  archive.manifest.includedCollections = archive.manifest.includedCollections.filter(key => !['catalog_entities', 'entity_assets', 'encounter_entities', 'entity_operations'].includes(key));
+};
 
 test('backup schema 9 preserves entity kinds and restores older untyped records as creatures', async () => withDirectory(async directory => {
   const sourcePath = join(directory, 'source.sqlite'), backupPath = join(directory, 'campaign.json');
@@ -293,6 +324,7 @@ test('pre-Lore v2 campaign backups restore without synthesizing Lore records', a
   const host = createHost({ databasePath: sourcePath });
   try { exportCampaignBackup(sourcePath, backupPath); } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  removeEntityCollections(archive);
   for (const name of ['lore_entries', 'lore_operations', 'lore_links', 'lore_assets', 'sessions', 'session_state', 'session_operations', 'assets','map_scenes','map_pieces','map_links','map_lore_links','map_encounter_scenes','map_assets','map_operations']) delete archive.data[name];
   archive.schemaVersion = 2;
   archive.manifest.potomacDataVersion = 2;
@@ -319,6 +351,7 @@ test('historical Lore v3 layout restores Lore records and attached assets', asyn
     exportCampaignBackup(sourcePath, backupPath);
   } finally { host.close(); }
   const archive = JSON.parse(readFileSync(backupPath, 'utf8'));
+  removeEntityCollections(archive);
   archive.schemaVersion = 3; archive.manifest.potomacDataVersion = 3;
   for (const key of ['map_scenes','map_pieces','map_links','map_lore_links','map_encounter_scenes','map_assets','map_operations']) delete archive.data[key];
   archive.manifest.includedCollections = ['campaign','modules','actors','encounters','encounter_participants','members','actor_grants','events','operations','offline_receipts','offline_proposals','offline_decisions','lore_entries','lore_operations','lore_links','assets'];
@@ -465,7 +498,7 @@ test('v5 export includes only referenced Lore asset bytes and ignores safe orpha
     host.db.prepare('INSERT INTO lore_assets(id,campaign_id,entry_id,original_name,media_type,byte_size,sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
       .run('asset-1','foundation-demo','article','reference.png','image/png',bytes.length,hash,'gm','now');
     const manifest = exportCampaignBackup(dbPath, archivePath);
-    assert.equal(manifest.potomacDataVersion, 5);
+    assert.equal(manifest.potomacDataVersion, 9);
     const archive = JSON.parse(readFileSync(archivePath, 'utf8'));
     assert.deepEqual(archive.data.assets.map(asset => asset.sha256), [hash]);
     assert.equal(archive.data.assets[0].bytes, bytes.toString('base64'));

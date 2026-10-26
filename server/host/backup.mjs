@@ -217,7 +217,7 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
   if (context.activeEncounter !== null && context.activeEncounter !== undefined && !encounterIds.has(context.activeEncounter)) fail('active encounter reference is invalid');
   const ids = (name, key) => new Set(archive.data[name].map(row => row[key]));
   const actors = ids('actors', 'id'), members = ids('members', 'id'), proposals = ids('offline_proposals', 'id');
-  const v2GrantActors = new Set(['v6', 'v7', 'v8'].includes(archiveLayout) ? archive.data.v2_effect_entities.map(row => `v2:${archive.manifest.campaignId}:${row.entity_id}`) : []);
+  const v2GrantActors = new Set(['v6', 'v7', 'v8', 'v9', 'v9-base'].includes(archiveLayout) ? (archive.data.v2_effect_entities ?? []).map(row => `v2:${archive.manifest.campaignId}:${row.entity_id}`) : []);
   for (const participant of archive.data.encounter_participants)
     if (!encounterIds.has(participant.encounter_id) || !actors.has(participant.actor_id)) fail('participant references a missing encounter or actor');
   for (const grant of archive.data.actor_grants) if (!actors.has(grant.actor_id) && !v2GrantActors.has(grant.actor_id) || !members.has(grant.member_id)) fail('actor grant references a missing actor or member');
@@ -275,7 +275,7 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
   const assetHashes = new Set(archive.data.assets.map(asset => asset.sha256));
   const referencedHashes = new Set(archive.data.lore_assets.map(asset => asset.sha256));
   if (archiveLayout === 'v4' && (assetHashes.size !== referencedHashes.size || [...assetHashes].some(hash => !referencedHashes.has(hash)))) fail('asset objects do not match Lore references');
-  if (archiveLayout === 'v5' || archiveLayout === 'v5-legacy' || archiveLayout === 'v7' || archiveLayout === 'v7-base' || archiveLayout === 'v8' || archiveLayout === 'v8-base') {
+  if (archiveLayout === 'v5' || archiveLayout === 'v5-legacy' || archiveLayout === 'v7' || archiveLayout === 'v7-base' || archiveLayout === 'v8' || archiveLayout === 'v8-base' || archiveLayout === 'v9' || archiveLayout === 'v9-base') {
     const scenes = ids('map_scenes','id'), pieces = ids('map_pieces','id');
     for (const scene of archive.data.map_scenes) {
       let grid; try { grid=JSON.parse(scene.grid); } catch { fail('map grid is malformed'); }
@@ -294,7 +294,7 @@ function validateArchive(archive, modulesDirectory, trustedCatalog = TRUSTED_V2_
       if (asset.campaign_id !== archive.manifest.campaignId || !scenes.has(asset.scene_id) || !archive.data.map_scenes.some(scene=>scene.id===asset.scene_id&&scene.background_id===asset.id) || !Number.isSafeInteger(asset.byte_size) || asset.byte_size < 0 || !/^[a-f0-9]{64}$/.test(asset.sha256) || !object || !signature) fail('map asset reference is invalid');
     }
     const referencedMapHashes = archive.data.map_assets.map(asset => asset.sha256);
-    const referencedEntityHashes = ['v7','v7-base','v8','v8-base'].includes(archiveLayout) ? archive.data.entity_assets.map(asset => asset.sha256) : [];
+    const referencedEntityHashes = ['v7','v7-base','v8','v8-base','v9','v9-base'].includes(archiveLayout) ? archive.data.entity_assets.map(asset => asset.sha256) : [];
     if (assetHashes.size !== new Set([...referencedHashes, ...referencedMapHashes, ...referencedEntityHashes]).size || [...assetHashes].some(hash => !referencedHashes.has(hash) && !referencedMapHashes.includes(hash) && !referencedEntityHashes.includes(hash))) fail('asset objects do not match Lore, map or entity references');
   }
   return archive;

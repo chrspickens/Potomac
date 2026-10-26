@@ -2,6 +2,10 @@ import type { MapGrid, MapPiece, MapSceneView } from './api.ts'
 
 export type Point = { x: number; y: number }
 
+export function selectEncounterPreviewScene<T extends { id: string }>(assigned: T | null, reusable: readonly T[], selectedId: string): T | null {
+  return assigned || reusable.find(scene => scene.id === selectedId) || null
+}
+
 export function mapMarkerRadius(width: number, height: number, cellSize: number): number {
   const mapUnit = Math.min(width, height)
   const effectiveCellSize = Number.isFinite(cellSize) && cellSize > 0 ? cellSize : mapUnit / 20

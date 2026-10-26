@@ -26,7 +26,7 @@ import './v2-navigation.css'
 import { V2ModulesApp } from './v2-modules'
 import { EntitiesApp } from './entities-app'
 import { isLoopbackV2Origin, v2CampaignSetupBlockReason } from './campaign-v2-setup'
-import { mapMarkerRadius, positionForEntityMove } from './maps'
+import { mapMarkerRadius, positionForEntityMove, selectEncounterPreviewScene } from './maps'
 
 const profileKey = 'potomac.workspace.demo-profile'
 const newId = () => crypto.randomUUID()
@@ -279,7 +279,7 @@ export default function App() {
   const [battleMapPreviewUrl, setBattleMapPreviewUrl] = useState('')
   const [battleMapPreviewState, setBattleMapPreviewState] = useState<'loading' | 'unavailable' | ''>('')
   useEffect(() => {
-    const source = reusableBattleMaps.find(scene => scene.id === battleMapImportSourceId) || encounterBattleMap
+    const source = selectEncounterPreviewScene(encounterBattleMap, reusableBattleMaps, battleMapImportSourceId)
     if (!source?.background || connection !== 'connected') {
       setBattleMapPreviewUrl('')
       setBattleMapPreviewState('')
@@ -934,7 +934,7 @@ export default function App() {
       const latest = await saveEncounterParticipants(updated.id, updated.revision,
         encounterParticipantIds.map((actorId, index) => ({ actorId, status: 'active', activationOrder: index })))
       if (latest.revision === undefined) throw new Error('Encounter revision missing from host response')
-      const placementMap = encounterBattleMap || reusableBattleMaps.find(scene => scene.id === battleMapImportSourceId)
+      const placementMap = selectEncounterPreviewScene(encounterBattleMap, reusableBattleMaps, battleMapImportSourceId)
       const saved = await saveEncounterEntities(latest.id, latest.revision, encounterEntitySelections.map(selection => ({
         entityId: selection.entityId,
         quantity: selection.quantity,
@@ -1121,8 +1121,7 @@ export default function App() {
     onCloseProposal={() => setActiveProposal(null)}
     onToggleCredential={memberId => setIssuedCredentials(current => current.map(item => item.memberId === memberId ? { ...item, visible: !item.visible } : item))}
   /> : undefined
-  const selectedBattleMap = reusableBattleMaps.find(scene => scene.id === battleMapImportSourceId)
-  const encounterPreviewScene = encounterBattleMap || selectedBattleMap
+  const encounterPreviewScene = selectEncounterPreviewScene(encounterBattleMap, reusableBattleMaps, battleMapImportSourceId)
   const encounterPreviewMarkers = encounterEntitySelections.flatMap(selection => {
     const entity = encounterEntityRecords.find(item => item.id === selection.entityId)
     if (!entity) return []
