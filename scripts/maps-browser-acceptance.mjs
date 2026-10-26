@@ -744,8 +744,9 @@ try {
   const afterClick = await api(`/api/maps/${battle.id}`, gmToken)
   assert.equal(afterClick.body.revision, revisionBeforeClick, 'stationary piece click only selects and does not commit or snap')
   await evaluate(gm, `[...document.querySelectorAll('.map-piece')].find(piece=>piece.getAttribute('aria-label')?.startsWith(${JSON.stringify(actorA.name)}))?.focus()`)
-  await pressKey(gm, 'ArrowRight'); await pressKey(gm, 'ArrowRight'); await pressKey(gm, 'ArrowRight')
-  const keyboardMoved = await waitMap(battle.id, gmToken, map => map.pieces?.some(piece => piece.id === tokenA && piece.x === 35.5), 'three rapid keyboard moves serialize without stale revisions')
+  await waitExpr(gm, "document.activeElement?.classList.contains('map-piece')", 'battle token receives keyboard focus')
+  for (let move = 0; move < 3; move += 1) { await pressKey(gm, 'ArrowRight'); await delay(40) }
+  const keyboardMoved = await waitMap(battle.id, gmToken, map => map.pieces?.some(piece => piece.id === tokenA && piece.x === 35.5), 'three rapid keyboard moves serialize without stale revisions', 30000)
   assert.ok(keyboardMoved.revision > movedToken.revision, 'rapid keyboard movement commits with refreshed host revisions')
   const dragStart = { x: mapRect.left + keyboardMoved.pieces.find(piece => piece.id === tokenA).x / 100 * mapRect.width, y: mapRect.top + 35 / 70 * mapRect.height }
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...dragStart }, gm)
