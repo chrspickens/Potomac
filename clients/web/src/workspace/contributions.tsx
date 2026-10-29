@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { Activity, Encounter, SessionSnapshot } from '../api.ts';
 import type { Actor } from '../modules.ts';
@@ -115,9 +115,21 @@ function ActivityBrick({ data }: BrickRenderProps<Activity[]>) {
   return <div className="activity-list">{data?.length ? data.slice(-12).reverse().map(item => <div className="activity-item" key={item.id}><span className="activity-dot" /><div><strong>{item.action}</strong><p>{item.detail || 'Campaign event'}</p><small>{item.actor} · {item.time}{item.visibility === 'gm' ? ' · GM only' : ''}</small></div></div>) : <p className="brick-message">Actions and encounter changes will appear here.</p>}</div>;
 }
 
-function MapSceneBrick({ data, adapter, onOpenApp, offline }: BrickRenderProps<MapSceneView>) {
+function MapSceneBrick({ data, adapter, onOpenApp, offline, mapBackground, entityImageUrls }: BrickRenderProps<MapSceneView>) {
+  const [backgroundUrl, setBackgroundUrl] = useState('');
+  useEffect(() => {
+    if (!mapBackground) { setBackgroundUrl(''); return; }
+    const objectUrl = URL.createObjectURL(mapBackground);
+    setBackgroundUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [mapBackground]);
   if (!data) return <p className="brick-message">This map is unavailable to your current host authorization.</p>;
-  return <div className="map-brick"><button type="button" onClick={() => onOpenApp?.('maps', data.id)}>Open Maps app · {data.name}</button><MapCanvas scene={data} actors={adapter.getActorOptions().map(item => adapter.getActor(item.id)).filter((actor): actor is Actor => Boolean(actor))} showPrivate={adapter.getRole() === 'gm'} /><small>{data.kind} scene · {offline ? 'cached and read only' : `host revision ${data.revision}`}</small></div>;
+  const entities = adapter.getActiveEncounter()?.entities ?? [];
+  const entityMarkers = entities.flatMap(entity => Array.from({ length: entity.quantity }, (_, index) => {
+    const position = entity.positions[index];
+    return position ? { key: `${entity.id}:${index}`, name: entity.name, imageUrl: entityImageUrls?.[entity.id], position } : undefined;
+  }).filter((marker): marker is NonNullable<typeof marker> => Boolean(marker)));
+  return <div className="map-brick"><button type="button" onClick={() => onOpenApp?.('maps', data.id)}>Open Maps app · {data.name}</button><MapCanvas scene={data} actors={adapter.getActorOptions().map(item => adapter.getActor(item.id)).filter((actor): actor is Actor => Boolean(actor))} backgroundUrl={backgroundUrl} entityMarkers={entityMarkers} showPrivate={adapter.getRole() === 'gm'} /><small>{data.kind} scene · {offline ? 'cached and read only' : `host revision ${data.revision}`}</small></div>;
 }
 
 function TableSessionBrick({ data, adapter, onSessionCommand, onOpenApp, busy, offline }: BrickRenderProps<SessionSnapshot>) {

@@ -275,9 +275,21 @@ export async function createEntity(name: string, kind: EntityKind = 'creature', 
   const response = await http<{ entity: EntityRecord }>('/api/entities', 'gm', { method: 'POST', body: JSON.stringify({ name, kind, operationId }) })
   return response.entity
 }
+export async function updateEntity(entity: EntityRecord, name: string, kind: EntityKind, operationId = crypto.randomUUID()): Promise<EntityRecord> {
+  if (!baseUrl) throw new Error('Entity records require a configured host')
+  const response = await http<{ entity: EntityRecord }>(`/api/entities/${encodeURIComponent(entity.id)}`, 'gm', { method: 'PUT', body: JSON.stringify({ operationId, baseRevision: entity.revision, name, kind }) })
+  return response.entity
+}
 export async function uploadEntityImage(entity: EntityRecord, file: File): Promise<EntityRecord> {
   if (!baseUrl) throw new Error('Entity images require a configured host')
   const response = await fetch(`${baseUrl}/api/entities/${encodeURIComponent(entity.id)}/image`, { method: 'POST', headers: { authorization: `Bearer ${tokenFor('gm')}`, 'content-type': file.type, 'x-file-name': file.name, 'x-operation-id': crypto.randomUUID(), 'x-base-revision': String(entity.revision) }, body: file })
+  const body = await response.json().catch(() => ({})) as { error?: string; entity?: EntityRecord }
+  if (!response.ok || !body.entity) throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status)
+  return body.entity
+}
+export async function removeEntityImage(entity: EntityRecord): Promise<EntityRecord> {
+  if (!baseUrl) throw new Error('Entity images require a configured host')
+  const response = await fetch(`${baseUrl}/api/entities/${encodeURIComponent(entity.id)}/image`, { method: 'DELETE', headers: { authorization: `Bearer ${tokenFor('gm')}`, 'x-operation-id': crypto.randomUUID(), 'x-base-revision': String(entity.revision) } })
   const body = await response.json().catch(() => ({})) as { error?: string; entity?: EntityRecord }
   if (!response.ok || !body.entity) throw new HostRequestError(body.error || `Host request failed (${response.status})`, response.status)
   return body.entity

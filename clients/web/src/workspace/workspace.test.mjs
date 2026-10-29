@@ -9,6 +9,7 @@ import {
   moveBrick,
   removeBrick,
   resizeBrick,
+  resizeDashboardGrid,
   sanitizeWorkspace,
   selectDashboard,
 } from './index.ts';
@@ -44,6 +45,22 @@ test('brick edits are immutable and retain independent instances and dashboard c
   assert.equal(withAddedBrick.dashboards[0].bricks.length, 6);
   assert.equal(withAddedBrick.dashboards[1].bricks.length, 1);
   assert.equal(selectDashboard(initial, other.id).activeDashboardId, other.id);
+});
+
+test('dashboard grid row and column counts change without resizing the dashboard footprint', () => {
+  const initial = createDefaultWorkspace('campaign-a', 'profile-a');
+  const dashboard = initial.dashboards[1];
+  const wider = resizeDashboardGrid(initial, dashboard.id, 'columns', 1);
+  const tallerGrid = resizeDashboardGrid(wider, dashboard.id, 'rows', 1);
+  assert.equal(tallerGrid.dashboards[1].columns, dashboard.columns + 1);
+  assert.equal(tallerGrid.dashboards[1].rows, dashboard.rows + 1);
+  assert.equal(tallerGrid.dashboards[1].height, dashboard.height);
+  assert.equal(resizeDashboardGrid(tallerGrid, dashboard.id, 'rows', -1).dashboards[1].height, dashboard.height);
+
+  const withBrick = addBrick(initial, dashboard.id, 'activity.log');
+  assert.equal(resizeDashboardGrid(withBrick, dashboard.id, 'rows', -1), withBrick, 'an occupied bottom row cannot be removed');
+  const atRightEdge = moveBrick(withBrick, dashboard.id, withBrick.dashboards[1].bricks[0].id, 8, 0);
+  assert.equal(resizeDashboardGrid(atRightEdge, dashboard.id, 'columns', -1), atRightEdge, 'an occupied rightmost column cannot be removed');
 });
 
 test('binding validation rejects unsupported and malformed binding values', () => {
@@ -91,6 +108,18 @@ test('recovery clamps bad layouts, preserves unknown bricks, and resets incompat
   assert.equal(incompatible.recovered, true);
   assert.equal(incompatible.state.schemaVersion, 1);
   assert.equal(incompatible.state.dashboards.length, 2);
+});
+
+test('workspace recovery supplies grid dimensions for older dashboard records', () => {
+  const state = structuredClone(createDefaultWorkspace('campaign-a', 'profile-a'));
+  delete state.dashboards[0].columns;
+  delete state.dashboards[0].rows;
+  delete state.dashboards[0].height;
+  const recovered = sanitizeWorkspace(state, 'campaign-a', 'profile-a');
+  assert.equal(recovered.recovered, true);
+  assert.equal(recovered.state.dashboards[0].columns, 12);
+  assert.ok(recovered.state.dashboards[0].rows >= 10);
+  assert.ok(recovered.state.dashboards[0].height >= recovered.state.dashboards[0].rows * 90);
 });
 
 test('recovery preserves unsupported saved bindings for explicit repair', () => {

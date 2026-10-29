@@ -2,3 +2,4 @@
 @media(max-width:800px){.lore-page{padding:20px 14px}.lore-layout{grid-template-columns:1fr}.lore-list{max-height:260px;overflow:auto}}
 
 .lore-asset{border-top:1px solid var(--border);padding:9px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.lore-asset p{flex-basis:100%;margin:0}.lore-asset-preview{display:block;max-width:min(100%,540px);max-height:360px;object-fit:contain;border:1px solid var(--border);border-radius:6px;margin-top:8px}
+.lore-check{justify-content:flex-start;min-width:0;white-space:nowrap}.lore-check input[type=checkbox]{width:16px;flex:none;margin:0}

@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clampPoint, nearestGridPoint, positionForMove, selectEncounterPreviewScene, viewportToScene } from './maps.ts';
+import { clampMapZoom, clampPoint, nearestGridPoint, positionForMove, selectEncounterPreviewScene, viewportToScene } from './maps.ts';
+
+test('map zoom is clamped to 1–4 for every input method', () => {
+  assert.equal(clampMapZoom(0.5), 1);
+  assert.equal(clampMapZoom(1), 1);
+  assert.equal(clampMapZoom(2.4), 2.4);
+  assert.equal(clampMapZoom(8), 4);
+  assert.equal(clampMapZoom(Number.NaN), 1);
+});
 
 test('encounter preview uses the assigned scene consistently for its background and geometry', () => {
   const assigned = { id: 'assigned', width: 120, height: 80, grid: { type: 'square', size: 10 }, background: { id: 'assigned-image' } };

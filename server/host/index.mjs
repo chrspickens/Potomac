@@ -772,6 +772,33 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         });
         notify(); return json(res, 201, result);
       }
+      const entityMatch = url.pathname.match(/^\/api\/entities\/([^/]+)$/);
+      if (entityMatch && req.method === 'PUT') {
+        if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
+        const body = await readBody(req);
+        if (!body || Object.keys(body).some(key => !['operationId','baseRevision','name','kind'].includes(key)) || typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.operationId) || !Number.isInteger(body.baseRevision) || body.baseRevision < 1 || typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 160 || !['item','creature'].includes(body.kind)) return json(res, 400, { error: 'A valid operation ID, base revision, entity name, and supported kind are required', reasonCode: 'invalid_entity' });
+        const id = decodeURIComponent(entityMatch[1]), name = body.name.trim(), kind = body.kind;
+        const entity = catalogEntityRow.get(id,campaignId);
+        if (!entity) return json(res, 404, { error: 'Entity not found', reasonCode: 'not_found' });
+        const requestHash = createHash('sha256').update(canonicalJson({ campaignId,id,baseRevision:body.baseRevision,name,kind })).digest('hex');
+        const cached = db.prepare('SELECT * FROM entity_operations WHERE operation_id=?').get(body.operationId);
+        if (cached) return cached.principal_id === auth.principalId && cached.request_hash === requestHash ? json(res,200,JSON.parse(cached.response)) : json(res,409,{error:'Operation ID was already used for a different entity command',reasonCode:'operation_conflict'});
+        if (db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM map_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=?').get(body.operationId,body.operationId,body.operationId,body.operationId,body.operationId)) return json(res,409,{error:'Operation ID is already in use',reasonCode:'operation_conflict'});
+        if (entity.revision !== body.baseRevision) return json(res,409,{error:'Entity revision conflict',reasonCode:'revision_conflict',currentRevision:entity.revision});
+        if (entity.kind !== kind && kind === 'item' && db.prepare('SELECT 1 FROM encounter_entities WHERE entity_id=? LIMIT 1').get(id)) return json(res,409,{error:'An entity assigned to an encounter cannot be changed to an item',reasonCode:'entity_in_use'});
+        const now = new Date().toISOString();
+        const result = transaction(() => {
+          const current = catalogEntityRow.get(id,campaignId);
+          if (!current || current.revision !== body.baseRevision) throw Object.assign(new Error('Entity revision conflict'),{statusCode:409});
+          if (current.kind !== kind && kind === 'item' && db.prepare('SELECT 1 FROM encounter_entities WHERE entity_id=? LIMIT 1').get(id)) throw Object.assign(new Error('An entity assigned to an encounter cannot be changed to an item'),{statusCode:409});
+          db.prepare('UPDATE catalog_entities SET name=?,kind=?,revision=revision+1,updated_at=? WHERE id=? AND campaign_id=? AND revision=?').run(name,kind,now,id,campaignId,body.baseRevision);
+          const updated = catalogEntityJson(catalogEntityRow.get(id,campaignId)), response = { operationId:body.operationId,status:'applied',entity:updated };
+          insertEvent({ operationId:body.operationId,kind:'entity.updated',visibility:'gm',payload:{entityId:id,revision:updated.revision} });
+          db.prepare('INSERT INTO entity_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(body.operationId,auth.principalId,requestHash,JSON.stringify(response));
+          return response;
+        });
+        notify(); return json(res,200,result);
+      }
       const entityImageMatch = url.pathname.match(/^\/api\/entities\/([^/]+)\/image(?:\/content)?$/);
       if (entityImageMatch && req.method === 'POST' && url.pathname.endsWith('/image')) {
         if (auth.role !== 'gm') return json(res, 403, { error: 'GM role required', reasonCode: 'unauthorized' });
@@ -804,6 +831,29 @@ export function createHost({ databasePath = './data/potomac.sqlite', gmToken = '
         });
         if(prior&&!db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(prior.sha256,prior.sha256,prior.sha256)){try{const path=assetPath(prior.sha256),stat=lstatSync(path);if(stat.isFile()&&!stat.isSymbolicLink())unlinkSync(path);}catch{}}
         notify();return json(res,201,result);
+      }
+      if(entityImageMatch&&req.method==='DELETE'&&url.pathname.endsWith('/image')){
+        if(auth.role!=='gm')return json(res,403,{error:'GM role required',reasonCode:'unauthorized'});
+        const id=decodeURIComponent(entityImageMatch[1]),entity=catalogEntityRow.get(id,campaignId),operationId=req.headers['x-operation-id'],baseRevision=Number(req.headers['x-base-revision']);
+        if(!entity)return json(res,404,{error:'Entity not found',reasonCode:'not_found'});
+        if(typeof operationId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(operationId)||!Number.isInteger(baseRevision)||baseRevision<1)return json(res,400,{error:'Operation ID and base revision are required',reasonCode:'invalid_asset'});
+        const requestHash=createHash('sha256').update(canonicalJson({campaignId,id,baseRevision,removeImage:true})).digest('hex'),cached=db.prepare('SELECT * FROM entity_operations WHERE operation_id=?').get(operationId);
+        if(cached)return cached.principal_id===auth.principalId&&cached.request_hash===requestHash?json(res,200,JSON.parse(cached.response)):json(res,409,{error:'Operation ID was already used for a different entity command',reasonCode:'operation_conflict'});
+        if(db.prepare('SELECT 1 FROM operations WHERE id=? UNION SELECT 1 FROM events WHERE operation_id=? UNION SELECT 1 FROM lore_operations WHERE operation_id=? UNION SELECT 1 FROM map_operations WHERE operation_id=? UNION SELECT 1 FROM session_operations WHERE operation_id=?').get(operationId,operationId,operationId,operationId,operationId))return json(res,409,{error:'Operation ID is already in use',reasonCode:'operation_conflict'});
+        if(entity.revision!==baseRevision)return json(res,409,{error:'Entity revision conflict',reasonCode:'revision_conflict',currentRevision:entity.revision});
+        if(!entity.image_asset_id)return json(res,409,{error:'Entity has no image to remove',reasonCode:'entity_image_missing'});
+        const prior=db.prepare('SELECT sha256 FROM entity_assets WHERE id=? AND entity_id=? AND campaign_id=?').get(entity.image_asset_id,id,campaignId),now=new Date().toISOString();
+        const result=transaction(()=>{
+          const current=catalogEntityRow.get(id,campaignId);if(!current||current.revision!==baseRevision)throw Object.assign(new Error('Entity revision conflict'),{statusCode:409});
+          const assetId=current.image_asset_id;
+          db.prepare('UPDATE catalog_entities SET image_asset_id=NULL,revision=revision+1,updated_at=? WHERE id=? AND campaign_id=? AND revision=?').run(now,id,campaignId,baseRevision);
+          db.prepare('DELETE FROM entity_assets WHERE id=? AND entity_id=? AND campaign_id=?').run(assetId,id,campaignId);
+          const updated=catalogEntityJson(catalogEntityRow.get(id,campaignId)),response={operationId,status:'applied',entity:updated};
+          insertEvent({operationId,kind:'entity.image.removed',visibility:'gm',payload:{entityId:id,revision:updated.revision}});
+          db.prepare('INSERT INTO entity_operations(operation_id,principal_id,request_hash,response) VALUES(?,?,?,?)').run(operationId,auth.principalId,requestHash,JSON.stringify(response));return response;
+        });
+        if(prior&&!db.prepare('SELECT 1 FROM map_assets WHERE sha256=? UNION SELECT 1 FROM lore_assets WHERE sha256=? UNION SELECT 1 FROM entity_assets WHERE sha256=?').get(prior.sha256,prior.sha256,prior.sha256)){try{const path=assetPath(prior.sha256),stat=lstatSync(path);if(stat.isFile()&&!stat.isSymbolicLink())unlinkSync(path);}catch{}}
+        notify();return json(res,200,result);
       }
       if(entityImageMatch&&req.method==='GET'&&url.pathname.endsWith('/content')){
         if(auth.role!=='gm')return json(res,404,{error:'Entity image not found'});

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { Actor } from './modules.ts'
 import type { ConnectionStatus, Encounter, LoreArticle, MapPiece, MapPieceView, MapSceneView, Role } from './api.ts'
 import { commandMap, createMap, fetchMapBackground, listMaps, loadMap, uploadMapBackground } from './api.ts'
-import { gridPoints, mapMarkerRadius, pieceDisplayLabel, positionForMove, viewportToScene } from './maps.ts'
+import { clampMapPan, clampMapZoom, gridPoints, mapMarkerRadius, pieceDisplayLabel, positionForMove, viewportToScene } from './maps.ts'
 import './maps.css'
 import './maps-controls.css'
 import './maps-responsive.css'
@@ -10,13 +10,20 @@ import './maps-responsive.css'
 type Props = { role: Role; connection: ConnectionStatus; campaignId: string; actors: Actor[]; encounters: Encounter[]; loreArticles?: LoreArticle[]; hostAvailable: boolean; initialSceneId?: string; cachedScenes?: MapSceneView[]; cachedBackgrounds?: Record<string, Blob>; cacheTimes?: Record<string, number>; onHandoff?: (app: 'encounters' | 'characters' | 'lore', id?: string, originSceneId?: string) => void; onSceneChange?: (scenes: MapSceneView[]) => void; onSelectedSceneChange?: (sceneId: string) => void }
 const newId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`
 
-export function MapCanvas({ scene, actors, onSelect, onDropPiece, onKeyboardMovePiece, backgroundUrl, showPrivate = false, snapToGrid = false, onSnapToGridChange, paintEnabled = false, paintColor, onPaintCell, calibratingGrid = false, calibrationPoints = [], imageSize, onCalibrationPoint }: { scene: MapSceneView; actors: Actor[]; onSelect?: (piece: MapPieceView) => void; onDropPiece?: (piece: MapPieceView, point: { x: number; y: number }) => void; onKeyboardMovePiece?: (piece: MapPieceView, point: { x: number; y: number }) => void; backgroundUrl?: string; showPrivate?: boolean; snapToGrid?: boolean; onSnapToGridChange?: (enabled: boolean) => void; paintEnabled?: boolean; paintColor?: string; onPaintCell?: (cell: { x: number; y: number }, color: string | null) => void; calibratingGrid?: boolean; calibrationPoints?: { x: number; y: number }[]; imageSize?: { width: number; height: number }; onCalibrationPoint?: (point: { x: number; y: number }) => void }) {
+export function MapCanvas({ scene, actors, onSelect, onDropPiece, onKeyboardMovePiece, backgroundUrl, entityMarkers = [], showPrivate = false, snapToGrid = false, onSnapToGridChange, paintEnabled = false, paintColor, onPaintCell, calibratingGrid = false, calibrationPoints = [], imageSize, onCalibrationPoint }: { scene: MapSceneView; actors: Actor[]; onSelect?: (piece: MapPieceView) => void; onDropPiece?: (piece: MapPieceView, point: { x: number; y: number }) => void; onKeyboardMovePiece?: (piece: MapPieceView, point: { x: number; y: number }) => void; backgroundUrl?: string; entityMarkers?: Array<{ key: string; name: string; imageUrl?: string; position: { x: number; y: number } }>; showPrivate?: boolean; snapToGrid?: boolean; onSnapToGridChange?: (enabled: boolean) => void; paintEnabled?: boolean; paintColor?: string; onPaintCell?: (cell: { x: number; y: number }, color: string | null) => void; calibratingGrid?: boolean; calibrationPoints?: { x: number; y: number }[]; imageSize?: { width: number; height: number }; onCalibrationPoint?: (point: { x: number; y: number }) => void }) {
+  const markerId = useId()
   const actorNames = useMemo(() => new Map(actors.map(actor => [actor.entityId, actor.name])), [actors])
   const [dragging, setDragging] = useState<string>()
   const [dragPoint, setDragPoint] = useState<{ x: number; y: number }>()
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [panStart, setPanStart] = useState<{ x: number; y: number; originX: number; originY: number }>()
+  const zoomMapTo = useCallback((value: number) => {
+    const nextZoom = clampMapZoom(value)
+    setZoom(nextZoom)
+    setPan(current => clampMapPan(current, scene.width, scene.height, nextZoom))
+    if (nextZoom === 1) setPanStart(undefined)
+  }, [scene.width, scene.height])
   const dragPointRef = useRef<{ x: number; y: number } | undefined>(undefined)
   const piecePointerStart = useRef<{ id: string; startX: number; startY: number } | undefined>(undefined)
   const mapCanvasRef = useRef<SVGSVGElement | null>(null)
@@ -38,19 +45,19 @@ export function MapCanvas({ scene, actors, onSelect, onDropPiece, onKeyboardMove
     if (!canvas) return
     const zoomMap = (event: WheelEvent) => {
       event.preventDefault()
-      setZoom(value => Math.max(.5, Math.min(4, value * (event.deltaY < 0 ? 1.1 : .9))))
+      zoomMapTo(zoom * (event.deltaY < 0 ? 1.1 : .9))
     }
     canvas.addEventListener('wheel', zoomMap, { passive: false })
     return () => canvas.removeEventListener('wheel', zoomMap)
-  }, [])
-  return <div className="map-canvas-wrap"><div className="map-viewport-controls" aria-label="Map viewport controls"><button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>Fit / Reset view</button><button type="button" aria-label="Zoom in" onClick={() => setZoom(value => Math.min(4, value + .1))}>+</button><label>Zoom<input aria-label="Zoom level" type="number" min="0.5" max="4" step="0.1" value={zoom.toFixed(1)} onChange={event => setZoom(Math.max(.5, Math.min(4, Number(event.target.value))))} /></label><button type="button" aria-label="Zoom out" onClick={() => setZoom(value => Math.max(.5, value - .1))}>−</button>{onDropPiece && scene.grid.type !== 'none' && <label><input type="checkbox" checked={snapToGrid} onChange={event => onSnapToGridChange?.(event.target.checked)} /> Snap to grid</label>}<small>Map is fitted to its grid window. Drag to pan; use wheel, controls, or +/− to zoom.</small></div><div className="map-grid-window" style={{ width: `min(100%, ${(scene.width / scene.height) * 65}vh)`, aspectRatio: `${scene.width} / ${scene.height}` }}><svg ref={mapCanvasRef} className="map-canvas" viewBox={`0 0 ${scene.width} ${scene.height}`} preserveAspectRatio="none" role="img" aria-label={`${scene.name} map`} tabIndex={0} onKeyDown={event => { const amount = scene.grid.type === 'square' ? scene.grid.size : 5; if (event.key === '+' || event.key === '=') setZoom(value => Math.min(4, value * 1.2)); else if (event.key === '-') setZoom(value => Math.max(.5, value / 1.2)); else if (event.key === 'ArrowLeft') setPan(value => ({ ...value, x: value.x + amount })); else if (event.key === 'ArrowRight') setPan(value => ({ ...value, x: value.x - amount })); else if (event.key === 'ArrowUp') setPan(value => ({ ...value, y: value.y + amount })); else if (event.key === 'ArrowDown') setPan(value => ({ ...value, y: value.y - amount })) }} onPointerDown={event => { if (!calibratingGrid && !(event.target as Element).closest('.map-piece')) { event.currentTarget.setPointerCapture(event.pointerId); setPanStart({ x: event.clientX, y: event.clientY, originX: pan.x, originY: pan.y }) } }} onPointerMove={event => {
+  }, [zoom, zoomMapTo])
+  return <div className="map-canvas-wrap"><div className="map-viewport-controls" aria-label="Map viewport controls"><button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>Fit / Reset view</button><button type="button" aria-label="Zoom in" onClick={() => zoomMapTo(zoom + .1)}>+</button><label>Zoom<input aria-label="Zoom level" type="number" min="1" max="4" step="0.1" value={zoom.toFixed(1)} onChange={event => zoomMapTo(Number(event.target.value))} /></label><button type="button" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => zoomMapTo(zoom - .1)}>−</button>{onDropPiece && scene.grid.type !== 'none' && <label><input type="checkbox" checked={snapToGrid} onChange={event => onSnapToGridChange?.(event.target.checked)} /> Snap to grid</label>}<small>Map is fitted to its grid window. Pan by dragging or using arrow keys when zoomed in.</small></div><div className="map-grid-window" style={{ width: `min(100%, ${(scene.width / scene.height) * 65}vh)`, aspectRatio: `${scene.width} / ${scene.height}` }}><svg ref={mapCanvasRef} className="map-canvas" viewBox={`0 0 ${scene.width} ${scene.height}`} preserveAspectRatio="none" role="img" aria-label={`${scene.name} map`} tabIndex={0} onKeyDown={event => { const amount = scene.grid.type === 'square' ? scene.grid.size : 5; if (event.key === '+' || event.key === '=') zoomMapTo(zoom * 1.2); else if (event.key === '-') zoomMapTo(zoom / 1.2); else if (zoom > 1 && event.key === 'ArrowLeft') setPan(value => clampMapPan({ ...value, x: value.x + amount }, scene.width, scene.height, zoom)); else if (zoom > 1 && event.key === 'ArrowRight') setPan(value => clampMapPan({ ...value, x: value.x - amount }, scene.width, scene.height, zoom)); else if (zoom > 1 && event.key === 'ArrowUp') setPan(value => clampMapPan({ ...value, y: value.y + amount }, scene.width, scene.height, zoom)); else if (zoom > 1 && event.key === 'ArrowDown') setPan(value => clampMapPan({ ...value, y: value.y - amount }, scene.width, scene.height, zoom)) }} onPointerDown={event => { if (zoom > 1 && !calibratingGrid && !(event.target as Element).closest('.map-piece')) { event.currentTarget.setPointerCapture(event.pointerId); setPanStart({ x: event.clientX, y: event.clientY, originX: pan.x, originY: pan.y }) } }} onPointerMove={event => {
     if (!dragging || !onDropPiece) return
     const start = piecePointerStart.current
     if (start && Math.hypot(event.clientX - start.startX, event.clientY - start.startY) < 4) return
     const next = position(event)
     dragPointRef.current = next
     setDragPoint(next)
-  }} onPointerMoveCapture={event => { if (panStart && Math.hypot(event.clientX - panStart.x, event.clientY - panStart.y) >= 4) { const bounds = event.currentTarget.getBoundingClientRect(); setPan({ x: panStart.originX + (event.clientX - panStart.x) / bounds.width * scene.width / zoom, y: panStart.originY + (event.clientY - panStart.y) / bounds.height * scene.height / zoom }) } }} onPointerUp={event => { if (calibratingGrid) { const point = scenePosition(event); if (imageSize) { const scale = Math.min(scene.width / imageSize.width, scene.height / imageSize.height); const x = (point.x - (scene.width - imageSize.width * scale) / 2) / scale; const y = (point.y - (scene.height - imageSize.height * scale) / 2) / scale; if (x >= 0 && y >= 0 && x <= imageSize.width && y <= imageSize.height) onCalibrationPoint?.({ x, y }) } setPanStart(undefined); return } const pointerDistance = panStart ? Math.hypot(event.clientX - panStart.x, event.clientY - panStart.y) : Infinity
+  }} onPointerMoveCapture={event => { if (panStart && zoom > 1 && Math.hypot(event.clientX - panStart.x, event.clientY - panStart.y) >= 4) { const bounds = event.currentTarget.getBoundingClientRect(); setPan(clampMapPan({ x: panStart.originX + (event.clientX - panStart.x) / bounds.width * scene.width / zoom, y: panStart.originY + (event.clientY - panStart.y) / bounds.height * scene.height / zoom }, scene.width, scene.height, zoom)) } }} onPointerUp={event => { if (calibratingGrid) { const point = scenePosition(event); if (imageSize) { const scale = Math.min(scene.width / imageSize.width, scene.height / imageSize.height); const x = (point.x - (scene.width - imageSize.width * scale) / 2) / scale; const y = (point.y - (scene.height - imageSize.height * scale) / 2) / scale; if (x >= 0 && y >= 0 && x <= imageSize.width && y <= imageSize.height) onCalibrationPoint?.({ x, y }) } setPanStart(undefined); return } const pointerDistance = panStart ? Math.hypot(event.clientX - panStart.x, event.clientY - panStart.y) : Infinity
     if (pointerDistance < 4 && paintEnabled && onPaintCell && scene.grid.type === 'square') { const point = scenePosition(event), origin = scene.grid.origin || { x: 0, y: 0 }; if (point.x >= 0 && point.y >= 0 && point.x < scene.width && point.y < scene.height) onPaintCell({ x: Math.floor((point.x - origin.x) / scene.grid.size), y: Math.floor((point.y - origin.y) / scene.grid.size) }, paintColor ?? null) }
     setPanStart(undefined)
     const piece = scene.pieces.find(item => item.id === dragging)
@@ -74,7 +81,19 @@ export function MapCanvas({ scene, actors, onSelect, onDropPiece, onKeyboardMove
         <circle r={markerRadius} />
         <text y={markerRadius * 1.55} fontSize={Math.max(1, Math.min(mapUnit * .018, markerRadius * .55))} textAnchor="middle">{pieceDisplayLabel(piece, actorNames)}</text>
       </g>
-    })}</g>
+    })}
+    {entityMarkers.map((marker, index) => {
+      const radius = mapMarkerRadius(scene.width, scene.height, scene.grid.size)
+      const iconRadius = radius * .78
+      const clipId = `map-encounter-${markerId.replace(/[^A-Za-z0-9_-]/g, '')}-${index}`
+      return <g key={marker.key} className="map-encounter-entity" transform={`translate(${marker.position.x * scene.width} ${marker.position.y * scene.height})`} role="img" aria-label={marker.name}>
+        <circle r={radius} className="map-encounter-entity-ring" />
+        {marker.imageUrl ? <><defs><clipPath id={clipId} clipPathUnits="userSpaceOnUse"><circle r={iconRadius} /></clipPath></defs><image href={marker.imageUrl} x={-iconRadius} y={-iconRadius} width={iconRadius * 2} height={iconRadius * 2} preserveAspectRatio="xMidYMid meet" clipPath={`url(#${clipId})`} /></> : <text className="map-encounter-entity-symbol" fontSize={radius * 1.2} textAnchor="middle" dominantBaseline="central">✦</text>}
+        <circle r={radius} className="map-encounter-entity-outline" />
+        <title>{marker.name}</title>
+      </g>
+    })}
+    </g>
   </svg></div></div>
 }
 

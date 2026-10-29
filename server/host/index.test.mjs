@@ -70,6 +70,50 @@ test('entity kinds filter encounter searches to creatures and host rejects items
   });
 });
 
+test('entity edits are GM-only, revisioned, idempotent, and protect encounter participants', async () => {
+  await withHost(async ({ request }) => {
+    const created = await (await postJson(request, '/api/entities', { operationId: 'edit-create', name: 'Marsh Hound', kind: 'creature' })).json();
+    const entity = created.entity;
+    const update = { operationId: 'edit-rename', baseRevision: entity.revision, name: 'Fen Hound', kind: 'creature' };
+    const put = (role, body, id = entity.id) => request(`/api/entities/${encodeURIComponent(id)}`, role, { method: 'PUT', body: JSON.stringify(body) });
+    assert.equal((await put('player', update)).status, 403);
+    const saved = await put('gm', update);
+    assert.equal(saved.status, 200);
+    const result = await saved.json();
+    assert.equal(result.entity.name, 'Fen Hound');
+    assert.equal(result.entity.revision, entity.revision + 1);
+    assert.deepEqual(await (await put('gm', update)).json(), result, 'retry returns the committed receipt');
+    assert.equal((await put('gm', { ...update, name: 'Different retry' })).status, 409);
+    assert.equal((await put('gm', { ...update, operationId: 'edit-stale', name: 'Stale name' })).status, 409);
+
+    const item = await (await postJson(request, '/api/entities', { operationId: 'edit-item-create', name: 'Silver Key', kind: 'item' })).json();
+    assert.equal((await put('gm', { operationId: 'edit-to-creature', baseRevision: item.entity.revision, name: item.entity.name, kind: 'creature' }, item.entity.id)).status, 200);
+    assert.equal((await postJson(request, '/api/encounters', { id: 'entity-edit-encounter', name: 'Entity edit encounter' })).status, 201);
+    assert.equal((await request('/api/encounters/entity-edit-encounter/entities', 'gm', { method: 'PUT', body: JSON.stringify({ baseRevision: 1, entities: [{ entityId: entity.id, quantity: 1, positions: [{ x: 0.5, y: 0.5 }] }] }) })).status, 200);
+    const rejectKindChange = await put('gm', { operationId: 'edit-to-item', baseRevision: result.entity.revision, name: result.entity.name, kind: 'item' });
+    assert.equal(rejectKindChange.status, 409);
+    assert.equal((await (await request('/api/entities?kind=creature')).json()).entities.some(row => row.id === entity.id), true);
+  });
+});
+
+test('entity image removal is GM-only, revisioned, and idempotent', async () => {
+  await withHost(async ({ request }) => {
+    const entity = (await (await postJson(request, '/api/entities', { operationId: 'image-remove-create', name: 'Lantern', kind: 'item' })).json()).entity;
+    const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/nXcAAAAASUVORK5CYII=', 'base64');
+    const upload = await request(`/api/entities/${encodeURIComponent(entity.id)}/image`, 'gm', { method: 'POST', body: bytes, headers: { 'content-type': 'image/png', 'x-file-name': 'lantern.png', 'x-operation-id': 'image-remove-upload', 'x-base-revision': String(entity.revision) } });
+    assert.equal(upload.status, 201);
+    const withImage = (await upload.json()).entity;
+    const remove = role => request(`/api/entities/${encodeURIComponent(entity.id)}/image`, role, { method: 'DELETE', headers: { 'x-operation-id': 'image-remove-delete', 'x-base-revision': String(withImage.revision) } });
+    assert.equal((await remove('player')).status, 403);
+    const removed = await remove('gm');
+    assert.equal(removed.status, 200);
+    const result = await removed.json();
+    assert.equal(result.entity.image, null);
+    assert.equal(result.entity.revision, withImage.revision + 1);
+    assert.deepEqual(await (await remove('gm')).json(), result, 'retry returns the committed receipt');
+  });
+});
+
 test('durable session commands enforce GM transitions, revisions, and operation receipt identity', async () => {
   await withHost(async fixture => {
     const { request, restart } = fixture;

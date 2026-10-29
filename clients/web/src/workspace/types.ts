@@ -21,7 +21,7 @@ export type BrickInstance = {
   layout: BrickLayout;
 };
 
-export type Dashboard = { id: string; name: string; bricks: BrickInstance[] };
+export type Dashboard = { id: string; name: string; columns: number; rows: number; height: number; bricks: BrickInstance[] };
 export type DashboardGroup = { id: string; name: string; dashboardIds: string[] };
 
 export type WorkspaceState = {
@@ -61,6 +61,8 @@ export type BrickRenderProps<TData = unknown> = {
   adapter: AuthorizedBrickDataAdapter;
   busy: boolean;
   offline?: boolean;
+  mapBackground?: Blob;
+  entityImageUrls?: Record<string, string>;
   onAction: (actor: Actor, actionId: string, parameters?: Record<string, unknown>) => void;
   onSessionCommand?: (command: 'start' | 'pause' | 'resume' | 'finish', encounter?: { id: string; revision: number }) => void;
   onMoveMapPiece?: (sceneId: string, piece: MapPieceView, point: { x: number; y: number }) => void;

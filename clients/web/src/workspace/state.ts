@@ -11,6 +11,14 @@ import type {
 export const WORKSPACE_SCHEMA_VERSION = 1;
 const MAX_COORDINATE = 1000;
 const MAX_DIMENSION = 12;
+export const MIN_DASHBOARD_COLUMNS = 2;
+export const MAX_DASHBOARD_COLUMNS = 24;
+export const MIN_DASHBOARD_ROWS = 2;
+export const MAX_DASHBOARD_ROWS = 60;
+const DEFAULT_DASHBOARD_COLUMNS = 12;
+const GRID_ROW_GAP = 10;
+const GRID_ROW_HEIGHT = 90;
+const gridHeightForRows = (rows: number) => rows * (GRID_ROW_HEIGHT + GRID_ROW_GAP) - GRID_ROW_GAP;
 
 function newId(prefix: string): string {
   const randomUUID = globalThis.crypto?.randomUUID;
@@ -35,6 +43,8 @@ export function createDefaultWorkspace(
     createBrick('encounters.summary', { mode: 'follow', contextKey: 'session.activeEncounter' }, { x: actorIds.length * 4, y: 0 }),
     createBrick('activity.log', { mode: 'none' }, { x: 4, y: 7 }),
   );
+  const combatRows = Math.max(2, ...combatBricks.map((brick) => brick.layout.y + brick.layout.h));
+  const planningRows = 3;
   return {
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     campaignId,
@@ -46,8 +56,8 @@ export function createDefaultWorkspace(
       { id: 'group-planning', name: 'Planning', dashboardIds: [planningId] },
     ],
     dashboards: [
-      { id: combatId, name: 'Combat', bricks: combatBricks },
-      { id: planningId, name: 'Planning', bricks: [] },
+      { id: combatId, name: 'Combat', columns: DEFAULT_DASHBOARD_COLUMNS, rows: combatRows, height: gridHeightForRows(combatRows), bricks: combatBricks },
+      { id: planningId, name: 'Planning', columns: DEFAULT_DASHBOARD_COLUMNS, rows: planningRows, height: gridHeightForRows(planningRows), bricks: [] },
     ],
   };
 }
@@ -86,7 +96,7 @@ export function addDashboard(state: WorkspaceState, name: string, groupId = stat
   const id = newId('dashboard');
   return {
     ...state,
-    dashboards: [...state.dashboards, { id, name: name.trim() || 'New dashboard', bricks: [] }],
+    dashboards: [...state.dashboards, { id, name: name.trim() || 'New dashboard', columns: DEFAULT_DASHBOARD_COLUMNS, rows: 3, height: gridHeightForRows(3), bricks: [] }],
     groups: state.groups.map((group) => group.id === groupId ? { ...group, dashboardIds: [...group.dashboardIds, id] } : group),
     activeGroupId: groupId,
     activeDashboardId: id,
@@ -184,6 +194,20 @@ export function updateDashboard(state: WorkspaceState, dashboardId: string, upda
   return { ...state, dashboards: state.dashboards.map((dashboard) => dashboard.id === dashboardId ? update(dashboard) : dashboard) };
 }
 
+export function resizeDashboardGrid(state: WorkspaceState, dashboardId: string, axis: 'columns' | 'rows', delta: -1 | 1): WorkspaceState {
+  const dashboard = state.dashboards.find((item) => item.id === dashboardId);
+  if (!dashboard) return state;
+  const dimension = dashboard[axis] + delta;
+  const minimum = axis === 'columns' ? MIN_DASHBOARD_COLUMNS : MIN_DASHBOARD_ROWS;
+  const maximum = axis === 'columns' ? MAX_DASHBOARD_COLUMNS : MAX_DASHBOARD_ROWS;
+  if (dimension < minimum || dimension > maximum) return state;
+  const edgeIsOccupied = dashboard.bricks.some((brick) => axis === 'columns'
+    ? brick.layout.x + brick.layout.w > dimension
+    : brick.layout.y + brick.layout.h > dimension);
+  if (delta < 0 && edgeIsOccupied) return state;
+  return updateDashboard(state, dashboardId, (item) => ({ ...item, [axis]: dimension }));
+}
+
 function updateBrick(state: WorkspaceState, dashboardId: string, brickId: string, update: (brick: BrickInstance) => BrickInstance): WorkspaceState {
   return updateDashboard(state, dashboardId, (dashboard) => ({ ...dashboard, bricks: dashboard.bricks.map((brick) => brick.id === brickId ? update(brick) : brick) }));
 }
@@ -214,7 +238,13 @@ export function sanitizeWorkspace(value: unknown, campaignId: string, localProfi
       brickIds.add(brick.id);
       bricks.push(brick);
     }
-    dashboards.push({ id: raw.id, name: raw.name, bricks });
+    const columns = sanitizedInteger(raw.columns, MIN_DASHBOARD_COLUMNS, MAX_DASHBOARD_COLUMNS, DEFAULT_DASHBOARD_COLUMNS);
+    const minimumRows = Math.max(MIN_DASHBOARD_ROWS, ...bricks.map((brick) => brick.layout.y + brick.layout.h));
+    const rows = sanitizedInteger(raw.rows, MIN_DASHBOARD_ROWS, MAX_DASHBOARD_ROWS, Math.min(MAX_DASHBOARD_ROWS, minimumRows));
+    const minimumHeight = gridHeightForRows(minimumRows);
+    const height = sanitizedInteger(raw.height, 240, 6000, minimumHeight);
+    if (raw.columns !== columns || raw.rows !== rows || raw.height !== height) recovered = true;
+    dashboards.push({ id: raw.id, name: raw.name, columns, rows: Math.max(rows, Math.min(MAX_DASHBOARD_ROWS, minimumRows)), height: Math.max(height, minimumHeight), bricks });
   }
   if (dashboards.length === 0) return { state: fallback, recovered: true };
   const groupIds = new Set<string>();

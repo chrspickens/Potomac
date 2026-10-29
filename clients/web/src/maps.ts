@@ -2,6 +2,18 @@ import type { MapGrid, MapPiece, MapSceneView } from './api.ts'
 
 export type Point = { x: number; y: number }
 
+export function clampMapZoom(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.min(4, value)) : 1
+}
+
+export function clampMapPan(pan: Point, width: number, height: number, zoom: number): Point {
+  if (zoom <= 1) return { x: 0, y: 0 }
+  return {
+    x: Math.min(0, Math.max(width * (1 - zoom), pan.x)),
+    y: Math.min(0, Math.max(height * (1 - zoom), pan.y)),
+  }
+}
+
 export function selectEncounterPreviewScene<T extends { id: string }>(assigned: T | null, reusable: readonly T[], selectedId: string): T | null {
   return assigned || reusable.find(scene => scene.id === selectedId) || null
 }
